@@ -2,6 +2,9 @@ import cors from "cors";
 import express, { type ErrorRequestHandler, type RequestHandler } from "express";
 import { FixedWindowRateLimiter, type RateLimiter } from "./http/rate-limit.js";
 import { WiktApiProvider } from "./providers/wiktapi.js";
+import { JsonFileStudyStore, normalizeWordbookId } from "./study/store.js";
+import { parseClientId, parseStudyEvent, parseStudyWordEntry } from "./study/validation.js";
+import type { StudyStore } from "./study/types.js";
 import { isValidWordQuery, normalizeWord } from "./words/normalize.js";
 import { WordService, type WordLookup } from "./words/word-service.js";
 import { WordProviderError } from "./words/types.js";
@@ -10,6 +13,8 @@ export interface CreateAppOptions {
   frontendOrigins?: string[];
   wordLookup?: WordLookup;
   wordRateLimiter?: RateLimiter;
+  studyStore?: StudyStore;
+  studyDailyGoal?: number;
 }
 
 interface ApiErrorBody {
@@ -30,6 +35,18 @@ function apiError(code: string, message: string): ApiErrorBody {
   return { error: { code, message } };
 }
 
+function readClientId(request: express.Request, response: express.Response): string | null {
+  const clientId = parseClientId(request.header("x-vocab-client-id"));
+  if (clientId) {
+    return clientId;
+  }
+
+  response
+    .status(400)
+    .json(apiError("INVALID_CLIENT_ID", "X-Vocab-Client-Id must be a valid anonymous client id"));
+  return null;
+}
+
 export function createApp(options: CreateAppOptions = {}) {
   const app = express();
   const allowedOrigins = options.frontendOrigins ?? ["http://localhost:5173"];
@@ -37,6 +54,8 @@ export function createApp(options: CreateAppOptions = {}) {
   const wordRateLimiter =
     options.wordRateLimiter ??
     new FixedWindowRateLimiter({ windowMs: 60_000, maxRequests: 60 });
+  const studyStore = options.studyStore ?? new JsonFileStudyStore("./data/study-state.json");
+  const studyDailyGoal = options.studyDailyGoal ?? 80;
 
   const enforceWordRateLimit: RequestHandler = (request, response, next) => {
     const clientKey = request.ip || request.socket.remoteAddress || "unknown";
@@ -110,6 +129,100 @@ export function createApp(options: CreateAppOptions = {}) {
     },
   );
 
+  app.get("/api/study/summary", async (request, response, next) => {
+    const clientId = readClientId(request, response);
+    if (!clientId) {
+      return;
+    }
+
+    try {
+      response.status(200).json(await studyStore.getSummary(clientId, studyDailyGoal));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/study/events", async (request, response, next) => {
+    const clientId = readClientId(request, response);
+    if (!clientId) {
+      return;
+    }
+
+    const event = parseStudyEvent(request.body);
+    if (!event) {
+      response.status(400).json(apiError("INVALID_STUDY_EVENT", "Study event is invalid"));
+      return;
+    }
+
+    try {
+      response.status(201).json(await studyStore.recordEvent(clientId, event));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/wordbook", async (request, response, next) => {
+    const clientId = readClientId(request, response);
+    if (!clientId) {
+      return;
+    }
+
+    try {
+      response.status(200).json(await studyStore.listWordbook(clientId));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/wordbook", async (request, response, next) => {
+    const clientId = readClientId(request, response);
+    if (!clientId) {
+      return;
+    }
+
+    const entry = parseStudyWordEntry(request.body);
+    if (!entry) {
+      response.status(400).json(apiError("INVALID_WORDBOOK_ENTRY", "Wordbook entry is invalid"));
+      return;
+    }
+
+    try {
+      const result = await studyStore.addWord(clientId, entry);
+      response.status(result.created ? 201 : 200).json(result.item);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.delete("/api/wordbook/:word", async (request, response, next) => {
+    const clientId = readClientId(request, response);
+    if (!clientId) {
+      return;
+    }
+
+    const rawWord = request.params.word;
+    if (typeof rawWord !== "string") {
+      response.status(400).json(apiError("INVALID_WORD", "Word query is invalid"));
+      return;
+    }
+    const word = normalizeWordbookId(rawWord);
+    if (!isValidWordQuery(word)) {
+      response.status(400).json(apiError("INVALID_WORD", "Word query is invalid"));
+      return;
+    }
+
+    try {
+      const removed = await studyStore.removeWord(clientId, word);
+      if (!removed) {
+        response.status(404).json(apiError("WORDBOOK_ENTRY_NOT_FOUND", "Wordbook entry was not found"));
+        return;
+      }
+      response.status(204).end();
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.use((_request, response) => {
     response.status(404).json(apiError("NOT_FOUND", "Route not found"));
   });
@@ -122,7 +235,11 @@ export function createApp(options: CreateAppOptions = {}) {
       return;
     }
 
-    if (error instanceof URIError && request.originalUrl.startsWith("/api/words/")) {
+    if (
+      error instanceof URIError &&
+      (request.originalUrl.startsWith("/api/words/") ||
+        request.originalUrl.startsWith("/api/wordbook/"))
+    ) {
       response.status(400).json(apiError("INVALID_WORD", "Word query is invalid"));
       return;
     }

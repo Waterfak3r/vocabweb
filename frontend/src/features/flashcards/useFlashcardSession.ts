@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useState } from 'react'
 import { shuffled } from '../../domain/score'
-import type { WordbookItem } from '../../domain/types'
+import type { FlashcardVerdict, WordbookItem } from '../../domain/types'
 
 export type FlashcardSession = {
   /** Cards still to review (unknowns re-queue at the end) */
@@ -18,12 +18,20 @@ export type FlashcardSession = {
   restart: () => void
 }
 
+export type FlashcardVerdictReporter = (
+  word: string,
+  verdict: FlashcardVerdict,
+) => void
+
 /**
  * Session-only flashcard queue:
  * 掌握 removes the card; 不熟 sends it to the back of the queue.
  * A verdict requires the card to be flipped first — recall before recognition.
  */
-export function useFlashcardSession(items: readonly WordbookItem[]): FlashcardSession {
+export function useFlashcardSession(
+  items: readonly WordbookItem[],
+  onVerdict?: FlashcardVerdictReporter,
+): FlashcardSession {
   const [queue, setQueue] = useState<WordbookItem[]>(() => shuffled(items))
   const [flipped, setFlipped] = useState(false)
   const [knownIds, setKnownIds] = useState<string[]>([])
@@ -42,7 +50,12 @@ export function useFlashcardSession(items: readonly WordbookItem[]): FlashcardSe
     setQueue((q) => q.slice(1))
     setReviewedCount((count) => count + 1)
     setFlipped(false)
-  }, [current, flipped])
+    try {
+      onVerdict?.(current.word, 'know')
+    } catch {
+      // Reporting learning activity must never interrupt the card session.
+    }
+  }, [current, flipped, onVerdict])
 
   const markUnknown = useCallback(() => {
     if (!current || !flipped) return
@@ -51,7 +64,12 @@ export function useFlashcardSession(items: readonly WordbookItem[]): FlashcardSe
     setQueue((q) => [...q.slice(1), q[0]])
     setReviewedCount((count) => Math.min(count + 1, totalCount))
     setFlipped(false)
-  }, [current, flipped, totalCount])
+    try {
+      onVerdict?.(current.word, 'unknown')
+    } catch {
+      // Reporting learning activity must never interrupt the card session.
+    }
+  }, [current, flipped, totalCount, onVerdict])
 
   const restart = useCallback(() => {
     setQueue(shuffled(items))

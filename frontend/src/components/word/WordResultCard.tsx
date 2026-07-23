@@ -14,7 +14,7 @@ export type WordResultCardProps = {
 /** A full dictionary entry, set like a page from a pocket dictionary. */
 export function WordResultCard({ entry, showAddAction = true }: WordResultCardProps) {
   return (
-    <article className={styles.card}>
+    <article className={`${styles.card} home-word-card`}>
       <header className={styles.header}>
         <WordHeadword word={entry.word} phonetic={entry.phonetic} source={entry.source} />
         <PronounceButton word={entry.word} audioUrl={entry.audioUrl} />

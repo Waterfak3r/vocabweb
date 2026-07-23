@@ -1,6 +1,8 @@
 /* Base typography and elements */
 body {
-  background-color: var(--bg);
+  background:
+    radial-gradient(circle at 50% -15%, #fffefa 0, rgba(255, 254, 250, 0.72) 34%, transparent 64%),
+    var(--bg);
   color: var(--ink);
   font-family: var(--font-sans);
   font-size: var(--text-base);
@@ -8,6 +10,15 @@ body {
   font-optical-sizing: auto;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+}
+
+@media (max-width: 640px) {
+  html,
+  body,
+  #root {
+    max-width: 100%;
+    overflow-x: clip;
+  }
 }
 
 h1,
@@ -23,7 +34,6 @@ a {
 }
 
 a:hover {
-  text-decoration: underline;
   text-underline-offset: 0.2em;
 }
 

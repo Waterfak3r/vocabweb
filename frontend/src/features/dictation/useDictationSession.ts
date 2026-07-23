@@ -23,8 +23,13 @@ export type DictationSession = {
   retryWrong: () => void
 }
 
+export type DictationGradeReporter = (word: string, correct: boolean) => void
+
 /** Session-only dictation: grade each spelling, then review the misses. */
-export function useDictationSession(items: readonly WordbookItem[]): DictationSession {
+export function useDictationSession(
+  items: readonly WordbookItem[],
+  onGrade?: DictationGradeReporter,
+): DictationSession {
   const [deck, setDeck] = useState<WordbookItem[]>(() => shuffled(items))
   const [index, setIndex] = useState(0)
   const [phase, setPhase] = useState<DictationPhase>('prompt')
@@ -52,7 +57,12 @@ export function useDictationSession(items: readonly WordbookItem[]): DictationSe
       { itemId: current.id, word: current.word, given: answer.trim(), grade },
     ])
     setPhase('feedback')
-  }, [current, phase, answer])
+    try {
+      onGrade?.(current.word, grade === 'correct')
+    } catch {
+      // Grading remains available if the optional backend is offline.
+    }
+  }, [current, phase, answer, onGrade])
 
   const next = useCallback(() => {
     if (phase !== 'feedback') return

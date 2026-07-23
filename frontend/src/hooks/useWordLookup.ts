@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { wordRepository } from '../data/createRepositories'
 import { LookupError, type WordRepository } from '../data/wordRepository'
 import { isValidWordQuery, normalizeWord } from '../domain/normalize'
-import type { LookupResult } from '../domain/types'
+import type { LookupResult, WordEntry } from '../domain/types'
 
 type LookupState =
   | { status: 'idle' }
@@ -18,6 +18,7 @@ export type UseWordLookup = {
 
 export function useWordLookup(
   repo: WordRepository = wordRepository,
+  onSuccess?: (entry: WordEntry) => void,
 ): UseWordLookup {
   const [state, setState] = useState<LookupState>({ status: 'idle' })
   const requestRef = useRef(0)
@@ -36,11 +37,17 @@ export function useWordLookup(
         .lookup(query)
         .then((entry) => {
           if (requestRef.current !== requestId) return
-          setState(
-            entry
-              ? { status: 'success', entry }
-              : { status: 'empty', query },
-          )
+          if (entry) {
+            setState({ status: 'success', entry })
+            // Analytics must not be able to turn a successful lookup into an error.
+            try {
+              onSuccess?.(entry)
+            } catch {
+              // Keep dictionary lookup independent from study-record availability.
+            }
+            return
+          }
+          setState({ status: 'empty', query })
         })
         .catch((error: unknown) => {
           if (requestRef.current !== requestId) return
@@ -54,7 +61,7 @@ export function useWordLookup(
 
       return null
     },
-    [repo],
+    [repo, onSuccess],
   )
 
   const reset = useCallback(() => {

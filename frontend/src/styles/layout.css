@@ -1,4 +1,4 @@
-/* App shell: single reading column on warm paper */
+/* App shell: a wide, calm desk on warm paper */
 
 .app-shell {
   display: flex;
@@ -28,20 +28,18 @@
 
 .site-header {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
-  gap: 1.5rem;
-  flex-wrap: wrap;
-  width: min(var(--page-width), calc(100% - 2.5rem));
-  margin-inline: auto;
-  padding-block: 1.1rem 0.9rem;
+  gap: 2.5rem;
+  width: 100%;
+  padding: 1rem max(1.25rem, calc((100% - var(--page-width)) / 2)) 0.9rem;
   border-bottom: 1px solid var(--rule);
 }
 
 .brand {
   display: inline-flex;
-  align-items: baseline;
-  gap: 0.55rem;
+  align-items: center;
+  gap: 0.7rem;
   color: var(--ink);
   text-decoration: none;
 }
@@ -52,29 +50,35 @@
 
 .brand-mark {
   font-family: var(--font-serif);
-  font-size: var(--text-xl);
+  font-size: 2.55rem;
   font-weight: 700;
-  line-height: 1;
+  line-height: 0.9;
   color: var(--accent);
 }
 
 .brand-name {
-  font-size: var(--text-sm);
+  font-family: var(--font-serif);
+  font-size: 1.55rem;
   font-weight: 600;
-  letter-spacing: 0.04em;
+  letter-spacing: -0.025em;
   color: var(--ink);
 }
 
 .main-nav {
+  position: relative;
   display: flex;
-  gap: 1.25rem;
-  flex-wrap: wrap;
+  align-items: stretch;
+  gap: 2.15rem;
+  align-self: stretch;
 }
 
 .nav-link {
   position: relative;
-  padding-block: 0.2rem;
-  font-size: var(--text-sm);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding-block: 0.6rem;
+  font-size: 1.08rem;
   font-weight: 500;
   color: var(--muted);
   text-decoration: none;
@@ -96,10 +100,67 @@
   position: absolute;
   left: 0;
   right: 0;
-  bottom: -0.55rem;
-  height: 2px;
+  bottom: -0.9rem;
+  height: 3px;
   background: var(--accent);
 }
+
+.nav-icon {
+  width: 1.45rem;
+  height: 1.45rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.account-menu { position: relative; }
+
+.account-trigger {
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.nav-chevron {
+  width: 0.85rem;
+  height: 0.85rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.6;
+}
+
+.account-popover {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 0.55rem);
+  right: 0;
+  display: grid;
+  min-width: 10rem;
+  padding: 0.45rem;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-md);
+  background: #fffdfa;
+  box-shadow: var(--shadow-soft);
+}
+
+.account-popover p {
+  padding: 0.4rem 0.55rem;
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.account-popover button {
+  padding: 0.45rem 0.55rem;
+  border-radius: var(--radius-sm);
+  color: var(--ink);
+  text-align: left;
+}
+
+.account-popover button:hover { background: var(--accent-soft); }
 
 /* ── Main column ────────────────────────── */
 
@@ -107,7 +168,7 @@
   flex: 1;
   width: min(var(--page-width), calc(100% - 2.5rem));
   margin-inline: auto;
-  padding-block: 2.5rem 4rem;
+  padding-block: 3.1rem 1.2rem;
 }
 
 .site-main:focus {
@@ -117,17 +178,93 @@
 .page {
   display: flex;
   flex-direction: column;
-  gap: 1.75rem;
+  gap: 1.25rem;
 }
 
 /* ── Footer ─────────────────────────────── */
 
 .site-footer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1.25rem;
   width: min(var(--page-width), calc(100% - 2.5rem));
   margin-inline: auto;
-  padding-block: 1.25rem 2rem;
-  border-top: 1px solid var(--rule);
+  padding-block: 0.3rem 1.1rem;
   font-size: var(--text-sm);
+  letter-spacing: 0.12em;
   color: var(--muted);
   text-align: center;
+}
+
+.site-footer span {
+  width: 1.1rem;
+  height: 1px;
+  background: #aeb4b7;
+}
+
+@media (max-width: 760px) {
+  .site-header {
+    align-items: flex-start;
+    gap: 0.75rem;
+    flex-direction: column;
+    padding-block: 0.9rem 0.55rem;
+  }
+
+  .brand-mark { font-size: 2.15rem; }
+  .brand-name { font-size: 1.3rem; }
+
+  .main-nav {
+    align-self: auto;
+    width: 100%;
+    justify-content: space-between;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+  }
+
+  .account-popover { right: 0; }
+
+  .nav-link {
+    gap: 0.25rem;
+    font-size: 0.875rem;
+    padding-block: 0.45rem;
+  }
+
+  .nav-icon { width: 1.15rem; height: 1.15rem; }
+  .nav-link.active::after { bottom: -0.55rem; }
+  .site-main { padding-top: 1.9rem; }
+}
+
+@media (max-width: 640px) {
+  .app-shell,
+  .site-header,
+  .site-main,
+  .site-footer { min-width: 0; max-width: 100%; }
+
+  .app-shell { width: 100%; overflow-x: clip; }
+
+  .main-nav {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 0.15rem;
+    max-width: 100%;
+  }
+
+  .nav-link {
+    min-width: 0;
+    justify-content: center;
+    gap: 0.2rem;
+    font-size: 0.82rem;
+    white-space: nowrap;
+  }
+
+  .account-menu { min-width: 0; }
+  .account-popover { min-width: 9rem; }
+
+  .nav-icon { width: 1rem; height: 1rem; flex: 0 0 auto; }
+}
+
+@media (max-width: 390px) {
+  .nav-link { font-size: 0.78rem; }
+  .nav-icon { display: none; }
 }

@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useCallback, useMemo } from 'react'
 import { PageHeader } from '../components/layout/PageHeader'
 import { Button, ButtonLink } from '../components/ui/Button'
 import { EmptyState } from '../components/ui/EmptyState'
@@ -7,6 +7,7 @@ import { Flashcard } from '../components/word/Flashcard'
 import { FlashcardControls } from '../components/word/FlashcardControls'
 import { ShortcutHint } from '../components/word/ShortcutHint'
 import { selectWordbookItems, useWordbook } from '../data/wordbookStore'
+import { recordStudyEvent } from '../data/studyApi'
 import { useDocumentTitle } from '../hooks/useDocumentTitle'
 import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts'
 import { useFlashcardSession } from '../features/flashcards/useFlashcardSession'
@@ -15,7 +16,10 @@ export function FlashcardsPage() {
   useDocumentTitle('单词卡')
 
   const items = useWordbook(selectWordbookItems)
-  const session = useFlashcardSession(items)
+  const reportVerdict = useCallback((word: string, verdict: 'know' | 'unknown') => {
+    void recordStudyEvent({ kind: 'flashcard', word, verdict }).catch(() => undefined)
+  }, [])
+  const session = useFlashcardSession(items, reportVerdict)
 
   const shortcuts = useMemo(
     () => [

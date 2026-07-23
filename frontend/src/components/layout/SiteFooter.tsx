@@ -1,3 +1,3 @@
 export function SiteFooter() {
-  return <footer className="site-footer">为 IELTS 学习者准备的纸上词库</footer>
+  return <footer className="site-footer"><span />为单词学习者准备的在线词库<span /></footer>
 }
