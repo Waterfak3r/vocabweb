@@ -1,0 +1,133 @@
+/* App shell: single reading column on warm paper */
+
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
+.skip-link {
+  position: absolute;
+  left: 1rem;
+  top: -3rem;
+  z-index: 10;
+  padding: 0.5rem 1rem;
+  background: var(--ink);
+  color: var(--surface);
+  border-radius: var(--radius-sm);
+  transition: top 120ms ease-out;
+}
+
+.skip-link:focus {
+  top: 0.75rem;
+  text-decoration: none;
+}
+
+/* ── Header ─────────────────────────────── */
+
+.site-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1.5rem;
+  flex-wrap: wrap;
+  width: min(var(--page-width), calc(100% - 2.5rem));
+  margin-inline: auto;
+  padding-block: 1.1rem 0.9rem;
+  border-bottom: 1px solid var(--rule);
+}
+
+.brand {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.55rem;
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.brand:hover {
+  text-decoration: none;
+}
+
+.brand-mark {
+  font-family: var(--font-serif);
+  font-size: var(--text-xl);
+  font-weight: 700;
+  line-height: 1;
+  color: var(--accent);
+}
+
+.brand-name {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--ink);
+}
+
+.main-nav {
+  display: flex;
+  gap: 1.25rem;
+  flex-wrap: wrap;
+}
+
+.nav-link {
+  position: relative;
+  padding-block: 0.2rem;
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--muted);
+  text-decoration: none;
+  transition: color 120ms ease-out;
+}
+
+.nav-link:hover {
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.nav-link.active {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.nav-link.active::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -0.55rem;
+  height: 2px;
+  background: var(--accent);
+}
+
+/* ── Main column ────────────────────────── */
+
+.site-main {
+  flex: 1;
+  width: min(var(--page-width), calc(100% - 2.5rem));
+  margin-inline: auto;
+  padding-block: 2.5rem 4rem;
+}
+
+.site-main:focus {
+  outline: none;
+}
+
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: 1.75rem;
+}
+
+/* ── Footer ─────────────────────────────── */
+
+.site-footer {
+  width: min(var(--page-width), calc(100% - 2.5rem));
+  margin-inline: auto;
+  padding-block: 1.25rem 2rem;
+  border-top: 1px solid var(--rule);
+  font-size: var(--text-sm);
+  color: var(--muted);
+  text-align: center;
+}
