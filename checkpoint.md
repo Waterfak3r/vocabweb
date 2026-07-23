@@ -7,7 +7,7 @@
 - `frontend/` 是独立 Vite/React 前端项目；前端依赖、源码、配置和构建产物均位于该目录。
 - `backend/` 是独立 Node.js 后端项目；后端工作不得修改 `frontend/` 内的源码、配置或依赖。
 - 根目录仅保留仓库级文件与交接文档；每次完成后端工作后必须同步更新本文件。
-- 当前仅提供 HTTP API 基础设施。词典接入、持久化、账号和部署尚未实施。
+- 当前提供 HTTP API 基础设施与 WiktApi 英语词典查询。持久化、账号和部署尚未实施。
 
 ## 技术栈
 
@@ -27,11 +27,20 @@ vacabweb/
 
 backend/
 ├─ src/
-│  ├─ app.ts       # Express 应用、中间件、路由和统一错误响应
-│  ├─ config.ts    # 环境变量读取与校验
-│  └─ server.ts    # 进程入口和端口监听
+│  ├─ app.ts                  # Express 应用、路由与统一错误响应
+│  ├─ config.ts               # 环境变量读取与校验
+│  ├─ server.ts               # 进程组合根和端口监听
+│  ├─ http/rate-limit.ts      # 查词路由单进程 per-IP 限流
+│  ├─ providers/wiktapi.ts    # WiktApi 客户端、运行时校验与 DTO 映射
+│  └─ words/
+│     ├─ normalize.ts         # 查询规范化与合法性校验
+│     ├─ types.ts             # WordEntry 契约及 provider 错误
+│     └─ word-service.ts      # 有界 TTL 成功缓存及并发去重
 ├─ test/
-│  └─ app.test.ts  # API 自动化测试
+│  ├─ app.test.ts             # API 契约与回归测试
+│  ├─ config.test.ts          # 配置测试
+│  ├─ wiktapi.test.ts         # provider 与 mapper 测试
+│  └─ word-service.test.ts    # 缓存及并发去重测试
 ├─ .env.example
 ├─ package.json
 ├─ tsconfig.json
@@ -42,10 +51,20 @@ backend/
 
 - `GET /api/health`
   - `200`: `{ "status": "ok", "service": "vacabweb-backend" }`
+- `GET /api/words/:word`
+  - `200`: `{ word, phonetic, audioUrl?, meanings, source: "backend" }`
+  - `400 INVALID_WORD`：空词、非法词形或非法 URL 编码
+  - `404 WORD_NOT_FOUND`：WiktApi 无此词或没有有效英文释义
+  - `429 RATE_LIMITED`：超过当前进程的 per-IP 查词限额
+  - `502 UPSTREAM_ERROR`：上游网络或非成功 HTTP 响应
+  - `502 UPSTREAM_PARSE_ERROR`：上游响应无法解析或结构不合法
+  - `504 UPSTREAM_TIMEOUT`：上游请求超时
 - 未匹配的路径
   - `404`: `{ "error": { "code": "NOT_FOUND", "message": "Route not found" } }`
 - 非法 JSON 请求体
   - `400`: `{ "error": { "code": "INVALID_JSON", "message": "Request body contains invalid JSON" } }`
+- 不允许的 CORS 来源
+  - `403`: `{ "error": { "code": "CORS_ORIGIN_DENIED", "message": "Origin is not allowed" } }`
 - 未处理异常
   - `500`: `{ "error": { "code": "INTERNAL_ERROR", "message": "An unexpected error occurred" } }`
 
@@ -53,6 +72,10 @@ backend/
 
 - `PORT`：监听端口，默认 `3000`，必须是 `1-65535` 的整数。
 - `FRONTEND_ORIGIN`：允许跨域访问的前端来源，默认 `http://localhost:5173`；多个来源用英文逗号分隔。
+- `WIKTAPI_BASE_URL`：WiktApi 英语单词端点，默认 `https://api.wiktapi.dev/v1/en/word`。
+- `WIKTAPI_TIMEOUT_MS`：上游超时，默认且最大 `5000`。
+- `WORD_CACHE_TTL_MS` / `WORD_CACHE_MAX_ENTRIES`：成功响应缓存 TTL 与容量，默认 `3600000` / `1000`。
+- `WORD_RATE_LIMIT_WINDOW_MS` / `WORD_RATE_LIMIT_MAX_REQUESTS`：查词限流窗口与次数，默认 `60000` / `60`。
 - 本地配置从 `.env.example` 复制到 `.env`；`.env` 不提交版本库。
 
 ## 运行与验证
@@ -74,13 +97,21 @@ npm start
 - `app.ts` 不监听端口，便于自动化测试；只有 `server.ts` 启动服务。
 - API 错误统一使用 `{ error: { code, message } }`，不向客户端泄露堆栈。
 - JSON 请求体限制为 `100kb`；CORS 来源通过环境变量显式配置。
+- 查询词按前端契约执行 trim、连续空白折叠和小写化；仅允许英文字母主体及内部连字符/撇号。
+- WiktApi 使用 `?lang=en`；并行请求 `/definitions`（义项/POS 权威、必需）与完整词条（IPA/HTTPS MP3、可降级），共享最多 5 秒总预算。
+- 运行时校验所有上游结构，聚合英文词性/释义并全局截断至 8 条。
+- `phonetic` 非空时统一为 `/.../`；`audioUrl` 只输出 HTTPS 音频。
+- 仅成功词条进入有界 TTL 进程内缓存；相同词的并发请求共享一次上游调用。
+- 限流仅作用于查词路由，是单进程方案；未配置反向代理信任。
 
 ## 已知问题
 
-- 尚未接入真实词典数据，当前只有健康检查接口。
-- 当前没有数据库、鉴权、速率限制或生产日志方案。
+- 缓存与限流均为单进程内存状态，多实例部署时不会共享。
+- 尚无数据库、鉴权或生产日志方案。
+- 部署到反向代理后，需要按实际代理拓扑审慎配置 Express `trust proxy`，否则客户端 IP 限流可能不准确。
 
 ## 下一步
 
-- 以独立 provider 封装 WiktApi，定义稳定的内部单词数据模型与查询接口。
-- 为第三方超时、无结果及异常响应增加映射和测试。
+- 前端后端 `WordRepository` 与 `VITE_API_BASE` 切换已完成，并通过真实 WiktApi 与 Chrome 联调。
+- 浏览器回归已覆盖单词本筛选/移除、闪卡完整队列、听写错词重试、断网重试、键盘与 reduced-motion。
+- 确定部署拓扑后升级共享缓存/限流与生产日志。

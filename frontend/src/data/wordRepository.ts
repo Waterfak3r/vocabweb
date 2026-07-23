@@ -2,7 +2,7 @@ import type { LookupErrorCode, WordEntry } from '../domain/types'
 
 /**
  * Dictionary lookup seam. UI never talks to a concrete provider.
- * Later the backend implements this contract and the factory swaps it in.
+ * The composition root selects our backend or the development fallback.
  */
 export interface WordRepository {
   /** Resolve a single English lemma. "Not found" resolves to null — never throws. */

@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef } from 'react'
-import { Link } from 'react-router-dom'
 import { PageHeader } from '../components/layout/PageHeader'
-import { Button } from '../components/ui/Button'
+import { Button, ButtonLink } from '../components/ui/Button'
 import { EmptyState } from '../components/ui/EmptyState'
 import { ProgressBar } from '../components/ui/ProgressBar'
 import { DictationPrompt } from '../components/word/DictationPrompt'
@@ -29,8 +28,11 @@ export function DictationPage() {
   useEffect(() => {
     if (!session.current || session.phase !== 'prompt') return
     if (lastPlayedId.current === session.current.id) return
-    lastPlayedId.current = session.current.id
-    const timer = window.setTimeout(pronounce, 350)
+    const currentId = session.current.id
+    const timer = window.setTimeout(() => {
+      lastPlayedId.current = currentId
+      pronounce()
+    }, 350)
     return () => window.clearTimeout(timer)
   }, [session.current, session.phase, pronounce])
 
@@ -48,9 +50,7 @@ export function DictationPage() {
           title="还没有可听写的词"
           body="单词本有词之后再开始。"
           action={
-            <Link to="/wordbook">
-              <Button>去单词本</Button>
-            </Link>
+            <ButtonLink to="/wordbook">去单词本</ButtonLink>
           }
         />
       </section>

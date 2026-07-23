@@ -3,24 +3,89 @@ import "dotenv/config";
 export interface AppConfig {
   port: number;
   frontendOrigins: string[];
+  wiktApiBaseUrl: string;
+  wiktApiTimeoutMs: number;
+  wordCacheTtlMs: number;
+  wordCacheMaxEntries: number;
+  wordRateLimitWindowMs: number;
+  wordRateLimitMaxRequests: number;
 }
 
-function parsePort(value: string | undefined): number {
-  const port = Number(value ?? "3000");
+function parseInteger(
+  name: string,
+  value: string | undefined,
+  defaultValue: number,
+  minimum: number,
+  maximum: number,
+): number {
+  const parsed = Number(value ?? defaultValue);
 
-  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
-    throw new Error("PORT must be an integer between 1 and 65535");
+  if (!Number.isInteger(parsed) || parsed < minimum || parsed > maximum) {
+    throw new Error(`${name} must be an integer between ${minimum} and ${maximum}`);
   }
 
-  return port;
+  return parsed;
+}
+
+function parseWiktApiBaseUrl(value: string | undefined): string {
+  const rawUrl = value ?? "https://api.wiktapi.dev/v1/en/word";
+
+  let url: URL;
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    throw new Error("WIKTAPI_BASE_URL must be a valid HTTP(S) URL");
+  }
+
+  if (!["http:", "https:"].includes(url.protocol)) {
+    throw new Error("WIKTAPI_BASE_URL must be a valid HTTP(S) URL");
+  }
+
+  return rawUrl.replace(/\/+$/, "");
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   return {
-    port: parsePort(env.PORT),
+    port: parseInteger("PORT", env.PORT, 3_000, 1, 65_535),
     frontendOrigins: (env.FRONTEND_ORIGIN ?? "http://localhost:5173")
       .split(",")
       .map((origin) => origin.trim())
       .filter(Boolean),
+    wiktApiBaseUrl: parseWiktApiBaseUrl(env.WIKTAPI_BASE_URL),
+    wiktApiTimeoutMs: parseInteger(
+      "WIKTAPI_TIMEOUT_MS",
+      env.WIKTAPI_TIMEOUT_MS,
+      5_000,
+      1,
+      5_000,
+    ),
+    wordCacheTtlMs: parseInteger(
+      "WORD_CACHE_TTL_MS",
+      env.WORD_CACHE_TTL_MS,
+      60 * 60 * 1_000,
+      1,
+      7 * 24 * 60 * 60 * 1_000,
+    ),
+    wordCacheMaxEntries: parseInteger(
+      "WORD_CACHE_MAX_ENTRIES",
+      env.WORD_CACHE_MAX_ENTRIES,
+      1_000,
+      1,
+      100_000,
+    ),
+    wordRateLimitWindowMs: parseInteger(
+      "WORD_RATE_LIMIT_WINDOW_MS",
+      env.WORD_RATE_LIMIT_WINDOW_MS,
+      60_000,
+      1_000,
+      60 * 60 * 1_000,
+    ),
+    wordRateLimitMaxRequests: parseInteger(
+      "WORD_RATE_LIMIT_MAX_REQUESTS",
+      env.WORD_RATE_LIMIT_MAX_REQUESTS,
+      60,
+      1,
+      100_000,
+    ),
   };
 }

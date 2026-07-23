@@ -2,16 +2,16 @@
 
 > 读者：接手后端实现的 GPT。
 > 前置阅读：`checkpoint.md`（后端现状）。本文档定义前端重构后的结构、后端必须对齐的契约、以及两侧各自与联调的测试清单。
-> 最后更新：2026-07-23（前端全量重构完成时）。
+> 最后更新：2026-07-23（前后端第一阶段契约对齐并完成联调）。
 
 ---
 
 ## 0. 现状摘要
 
-- **前端已全量重构**，代号「墨水词典 · Marginalia」。`npm run typecheck` 与 `npm run build` 通过。
-- 前端**目前不依赖后端**：查词走「本地 50 词 IELTS 精选 → dictionaryapi.dev」二级仓库，单词本存 localStorage。
-- **后端仍只有 `GET /api/health`**。后端按本文档契约实现后，前端只需改 **3 个文件** 即可切换，页面/组件零改动。
-- 前端数据访问收口在一个接口后面（`WordRepository`），后端要做的就是实现同样的 DTO 契约。
+- **前端已全量重构**，代号「墨水词典 · Marginalia」。类型检查、21 项测试与生产构建通过。
+- 查词仍为 local-first：本地 **52** 词 IELTS 精选秒回；配置 `VITE_API_BASE` 后其余词走后端，未配置时保留 dictionaryapi.dev 开发回退。
+- **后端第一阶段已完成**：除 `GET /api/health` 外，已按本文档提供 `GET /api/words/:word`，含校验、稳定错误码、超时、缓存与限流。
+- 前端后端接入仅发生在 `WordRepository` 数据边界；页面和词域组件没有因接入而修改。
 
 ---
 
@@ -19,7 +19,7 @@
 
 ### 1.1 技术栈
 
-Vite 8 + React 19 + TypeScript 7 + react-router-dom 7 + Zustand 5。样式为手写 CSS tokens + 少量 CSS Modules（无 Tailwind/UI kit）。字体经 fontsource 自托管（Source Serif 4 / Source Sans 3 / IBM Plex Mono）。`package.json` 已钉死版本，无 `"latest"`。
+Vite 8 + React 19 + TypeScript 7 + react-router-dom 7 + Zustand 5。样式为手写 CSS tokens + 少量 CSS Modules（无 Tailwind/UI kit）。字体经 fontsource 自托管（Source Serif 4 / Source Sans 3 / IBM Plex Mono）。`package.json` 使用兼容版本范围，lockfile 锁定实际安装版本，无 `"latest"`。
 
 ### 1.2 目录树与职责
 
@@ -41,14 +41,16 @@ frontend/src/
 │  ├─ normalize.ts             # normalizeWord / isValidWordQuery / wordbookId
 │  └─ score.ts                 # 听写判分、错题提取、Fisher–Yates shuffle
 │
-├─ data/                       # 数据访问层（后端替换缝在这里）
+├─ data/                       # 数据访问层（后端接入边界）
 │  ├─ wordRepository.ts        # ★ WordRepository 接口 + LookupError
 │  ├─ localIeltsRepository.ts  # Map 查询本地精选词
 │  ├─ dictionaryApiRepository.ts # dictionaryapi.dev 客户端 + ★ mapper（参考实现）
+│  ├─ backendWordRepository.ts # 后端客户端 + DTO/错误码运行时校验
 │  ├─ compositeWordRepository.ts # local-first，未命中走 remote，错误向上抛
-│  ├─ ieltsWords.ts            # 50 个 IELTS 高频词 + wordOfTheDay
+│  ├─ ieltsWords.ts            # 52 个 IELTS 高频词 + wordOfTheDay
+│  ├─ wordbookStorage.ts       # Zustand JSON 适配、旧双重编码迁移与坏数据过滤
 │  ├─ wordbookStore.ts         # Zustand persist：单词本 CRUD
-│  └─ createRepositories.ts    # ★ 组合根 / factory（后端切换点）
+│  └─ createRepositories.ts    # ★ 组合根 / factory（按 VITE_API_BASE 切换）
 │
 ├─ lib/                        # 无业务工具
 │  ├─ speech.ts                # Web Speech en-GB 朗读，cancel-safe
@@ -83,7 +85,7 @@ frontend/src/
 | 决定 | 含义 |
 |---|---|
 | 全局状态只有单词本 | Zustand persist，key `vocab-ielts:wordbook:v1`；闪卡/听写会话是页面 hook，刷新即弃 |
-| 查词二级仓库 | 本地 50 词秒回 + 离线兜底；未命中才打外部 API；网络错误进 error 态 |
+| 查词二级仓库 | 本地 52 词秒回 + 离线兜底；未命中才打配置的后端或开发回退；网络错误进 error 态 |
 | UI 只依赖 `domain/types.ts` | 组件从不接触 dictionaryapi.dev 原始结构，mapper 在 data 层边界 |
 | id = 规范化词形 | `WordbookItem.id === normalizeWord(word)`（v1 单 lemma 唯一） |
 | 英文义项 + 中文界面 | 词典数据保持英文（IELTS 学习场景），UI chrome 全中文；**不做机翻中义** |
@@ -189,57 +191,48 @@ DELETE /api/wordbook/:id       → 204（id 即规范化词形）
 
 ---
 
-## 4. 前端切换后端的改动面（只有 3 处）
+## 4. 前端后端接入（已完成）
 
-后端 3.1 就绪后，前端按以下方式接入（不需要后端代劳，列出以便评估影响面）：
+第一阶段已经按以下边界接入：
 
-1. **新增 `frontend/src/data/backendWordRepository.ts`**：实现 `WordRepository`，`fetch ${VITE_API_BASE}/api/words/${encodeURIComponent(word)}`，404 → null，其余错误抛 `LookupError`。
-2. **改 `frontend/src/data/createRepositories.ts`**：
-   ```ts
-   export function createWordRepository(): WordRepository {
-     if (import.meta.env.VITE_API_BASE) {
-       return new BackendWordRepository(import.meta.env.VITE_API_BASE)
-     }
-     return new CompositeWordRepository(local, dictionaryApi) // 现有行为
-   }
-   ```
-   建议切换后仍保留 local-first：后端 Repository 放在本地词之后（本地 50 词保持秒回）。
-3. **（仅做了 3.2 时）改 `frontend/src/data/wordbookStore.ts`**：persist 适配器换成 API write-through，Zustand 保留作客户端缓存。
+1. **`frontend/src/data/backendWordRepository.ts`**：实现 `WordRepository`，安全拼接 `${VITE_API_BASE}/api/words/${encodeURIComponent(word)}`；404 → null；稳定错误码映射为中文 `LookupError`；200 响应经过运行时 DTO 校验。
+2. **`frontend/src/data/createRepositories.ts`**：始终保留 local-first；有 `VITE_API_BASE` 时使用「本地 52 词 → 后端」，未配置时使用「本地 52 词 → dictionaryapi.dev」。
+3. **`frontend/.env.example` / `vite-env.d.ts`**：提供并声明 `VITE_API_BASE`。本地复制为 `.env.local`，该文件不提交。
 
 前端环境变量：`frontend/.env.local` 加 `VITE_API_BASE=http://localhost:3000`。
 
-**不变量**：页面/组件只 import `domain/types.ts` 与 store/repository 接口——上述切换不触碰任何 `.tsx`。
+**不变量**：页面/组件只 import `domain/types.ts` 与 store/repository 接口；第二阶段单词本云同步尚未实施，当前仍是 localStorage。
 
 ---
 
 ## 5. 测试
 
-### 5.1 前端现状（已验证 / 待验证）
+### 5.1 前端验证结果
 
-自动化：`npm run typecheck` ✅、`npm run build` ✅。
+自动化：`npm test`（21 项）✅、`npm run typecheck` ✅、`npm run build` ✅。
 
 浏览器手动走查（dev server）：
 
 | 流程 | 状态 |
 |---|---|
-| 查 `resilient`（本地命中）→ 词条卡 → 收入单词本 → 按钮变「已收入」→ localStorage 持久化 | ✅ 已验证 |
-| 查 `serendipity`（在线词典）→ 来源标签「在线词典」+ 义项 | ✅ 已验证 |
+| 查 `resilient`（本地命中）→ 来源「IELTS 精选」→ 不请求后端 | ✅ Chrome/CDP 已验证 |
+| 查 `serendipity`（后端）→ 来源「词库」+ noun 义项 + 发音 | ✅ Chrome/CDP + 真实 WiktApi 已验证 |
 | 非法输入（多词）→ 校验文案 | ✅ 已验证 |
-| 单词本列表渲染 + 计数 | ✅ 已验证 |
-| 单词本筛选 / 移除（最后一击未走完，浏览器预览超时中断） | ⚠️ 待复验 |
-| 闪卡：翻面 → F/J 判定 → 不熟回队尾 → 完成小结 → 再来一轮 | ⚠️ 待验证 |
-| 听写：自动播音 → 提交判分 → 对错反馈 → 小结 → 再写一遍错词 | ⚠️ 待验证 |
-| 空单词本进闪卡/听写 → 空态 CTA | ⚠️ 待验证 |
-| 断网查非本地词 → 错误态 + 重试 | ⚠️ 待验证 |
-| 键盘：空格翻面、`/` 无关、输入框内快捷键抑制；focus-visible | ⚠️ 待验证 |
-| `prefers-reduced-motion`：翻面退化为 crossfade | ⚠️ 待验证 |
-| 375px 宽度单柱可用 | ⚠️ 待验证 |
+| 收入 `serendipity` → 导航到单词本 → 整页刷新仍恢复 | ✅ Chrome/CDP 已验证 |
+| 单词本筛选 / 移除 / 持久化 | ✅ Chrome/CDP 已验证 |
+| 闪卡：翻面 → F/J 判定 → 不熟回队尾 → 完成小结 → 再来一轮 | ✅ Chrome/CDP 已验证 |
+| 听写：自动播音 → 提交判分 → 对错反馈 → 小结 → 再写一遍错词 | ✅ Chrome/CDP 已验证 |
+| 空单词本进闪卡/听写 → 空态 CTA | ✅ Chrome/CDP 已验证 |
+| 停掉后端查非本地词 → 错误态 + 重试；本地词仍可查 | ✅ Chrome/CDP 已验证 |
+| 键盘：空格翻面、`/` 无关、未翻面禁判、输入框内快捷键抑制；focus-visible | ✅ Chrome/CDP 已验证 |
+| `prefers-reduced-motion`：取消 3D 翻面并近乎瞬时切换 | ✅ Chrome/CDP 已验证 |
+| 四条主路由可进入；375px 无横向溢出 | ✅ Chrome/CDP 已验证 |
 
-> 前端目前没有单元测试框架（v1 决定）。`domain/score.ts`、`domain/normalize.ts`、`dictionaryApiRepository` 的 mapper 是纯函数，如要补测试，从这三个开始性价比最高。
+> 已引入 Vitest。现有测试覆盖 storage 迁移、normalize、score、后端 Repository DTO/错误映射、fetch 宿主绑定和组合根选择。
 
-### 5.2 后端必写测试（沿用现有 node:test 模式）
+### 5.2 后端自动化测试（已实现，沿用 node:test 模式）
 
-参考 `backend/test/app.test.ts` 的既有风格（起随机端口、无额外 HTTP 依赖）。
+共 44 项测试通过；测试起随机端口，不增加额外 HTTP 测试依赖。
 
 **契约测试（`GET /api/words/:word`）**
 
@@ -254,20 +247,20 @@ DELETE /api/wordbook/:id       → 204（id 即规范化词形）
 **Provider mapper 单测**
 
 - 多词性多义项扁平化、空释义过滤、8 条截断、en-gb 音频优先、无音频缺省、映射为空 → null。
-- 可直接拿 `dictionaryapi.dev` 的真实 JSON 样本当 fixture（前端 mapper 处理的就是这个结构，行为应对齐）。
+- WiktApi `/definitions` 是义项与词性的权威来源；完整词条用于 IPA/HTTPS MP3，并允许发音数据失败时降级。
 
 **回归**
 
 - `GET /api/health`、404/400/500 统一错误格式（现有测试）不得被破坏。
 
-### 5.3 前后端联调验收（后端完成后按序走）
+### 5.3 前后端联调验收
 
 1. `backend` 起 3000；`frontend/.env.local` 写 `VITE_API_BASE=http://localhost:3000`；重启 dev server。
-2. 查一个本地词（如 `mitigate`）→ 应命中本地（秒回，`source` 显示「IELTS 精选」）。
-3. 查一个非本地词（如 `serendipity`）→ 走后端，词条卡来源显示「词库」；后端日志确认只转发了一次。
+2. 查一个本地词（如 `resilient`）→ 命中本地，`source` 显示「IELTS 精选」，浏览器网络记录确认后端请求为 0。✅
+3. 查一个非本地词（如 `serendipity`）→ 走后端，词条卡来源显示「词库」；浏览器网络记录确认请求一次。✅
 4. 停掉后端再查非本地词 → 前端 error 态 + 重试按钮；本地词不受影响。
-5. 收入单词本 → 刷新仍在（localStorage 未受切换影响）。
-6. 四条路由手动走一遍（§5.1 待验证清单同样适用于联调后回归）。
+5. 收入单词本 → 刷新仍在（localStorage 未受切换影响）。✅
+6. 四条主路由、空态、单词本、闪卡、听写、键盘、reduced-motion 与 375px 布局均已自动化浏览器走查。✅
 
 ---
 

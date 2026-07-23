@@ -2,7 +2,8 @@ import { create } from 'zustand'
 import { createJSONStorage, persist } from 'zustand/middleware'
 import { wordbookId } from '../domain/normalize'
 import type { WordEntry, WordbookItem } from '../domain/types'
-import { readStorage, storageKey, writeStorage } from '../lib/storage'
+import { storageKey } from '../lib/storage'
+import { createWordbookStorage } from './wordbookStorage'
 
 type WordbookState = {
   items: WordbookItem[]
@@ -17,46 +18,7 @@ type WordbookState = {
   list: () => WordbookItem[]
 }
 
-type PersistedWordbook = { items: WordbookItem[] }
-
 const KEY = storageKey('wordbook', 1)
-
-function isValidItem(value: unknown): value is WordbookItem {
-  if (typeof value !== 'object' || value === null) return false
-  const item = value as WordbookItem
-  return (
-    typeof item.id === 'string' &&
-    typeof item.word === 'string' &&
-    typeof item.addedAt === 'string' &&
-    Array.isArray(item.meanings)
-  )
-}
-
-/** Safe storage adapter: corrupted payloads reset to empty instead of crashing. */
-const safeStorage = {
-  getItem: (name: string) => {
-    const parsed = readStorage<{ state?: PersistedWordbook }>(name)
-    if (parsed?.state && Array.isArray(parsed.state.items)) {
-      return JSON.stringify({
-        state: { items: parsed.state.items.filter(isValidItem) },
-        version: 1,
-      })
-    }
-    if (parsed !== null) {
-      // Present but unreadable shape → drop it.
-      return null
-    }
-    return null
-  },
-  setItem: (name: string, value: string) => writeStorage(name, value),
-  removeItem: (name: string) => {
-    try {
-      window.localStorage.removeItem(name)
-    } catch {
-      // ignore
-    }
-  },
-}
 
 export const useWordbook = create<WordbookState>()(
   persist(
@@ -96,7 +58,7 @@ export const useWordbook = create<WordbookState>()(
     {
       name: KEY,
       version: 1,
-      storage: createJSONStorage(() => safeStorage),
+      storage: createJSONStorage(() => createWordbookStorage(window.localStorage)),
       partialize: (state) => ({ items: state.items }) as WordbookState,
     },
   ),

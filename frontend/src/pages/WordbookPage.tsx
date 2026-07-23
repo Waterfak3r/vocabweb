@@ -1,7 +1,6 @@
 import { useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
 import { PageHeader } from '../components/layout/PageHeader'
-import { Button } from '../components/ui/Button'
+import { Button, ButtonLink } from '../components/ui/Button'
 import { EmptyState } from '../components/ui/EmptyState'
 import { TextField } from '../components/ui/TextField'
 import { WordbookList } from '../components/word/WordbookList'
@@ -44,9 +43,7 @@ export function WordbookPage() {
           title="单词本还是空的"
           body="查到生词后点「收入单词本」，它会出现在这里。"
           action={
-            <Link to="/">
-              <Button>去查词</Button>
-            </Link>
+            <ButtonLink to="/">去查词</ButtonLink>
           }
         />
       ) : (
@@ -61,12 +58,12 @@ export function WordbookPage() {
               spellCheck={false}
             />
             <div className="wordbook-toolbar-actions">
-              <Link to="/flashcards">
-                <Button variant="secondary">单词卡</Button>
-              </Link>
-              <Link to="/dictation">
-                <Button variant="secondary">听写</Button>
-              </Link>
+              <ButtonLink to="/flashcards" variant="secondary">
+                单词卡
+              </ButtonLink>
+              <ButtonLink to="/dictation" variant="secondary">
+                听写
+              </ButtonLink>
             </div>
           </div>
 

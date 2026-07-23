@@ -1,40 +1,285 @@
 import assert from "node:assert/strict";
-import { after, before, test } from "node:test";
-import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
-import { createApp } from "../src/app.js";
+import type { AddressInfo } from "node:net";
+import { test } from "node:test";
+import { createApp, type CreateAppOptions } from "../src/app.js";
+import { FixedWindowRateLimiter } from "../src/http/rate-limit.js";
+import { WordProviderError, type WordEntry } from "../src/words/types.js";
 
-let server: Server;
-let baseUrl: string;
+interface TestServer {
+  baseUrl: string;
+  close(): Promise<void>;
+}
 
-before(async () => {
-  server = createApp().listen(0);
+async function startServer(options: CreateAppOptions = {}): Promise<TestServer> {
+  const server: Server = createApp(options).listen(0);
   await new Promise<void>((resolve) => server.once("listening", resolve));
   const address = server.address() as AddressInfo;
-  baseUrl = `http://127.0.0.1:${address.port}`;
-});
 
-after(async () => {
-  await new Promise<void>((resolve, reject) => {
-    server.close((error) => (error ? reject(error) : resolve()));
-  });
-});
+  return {
+    baseUrl: `http://127.0.0.1:${address.port}`,
+    close: async () =>
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      }),
+  };
+}
+
+function resilientEntry(): WordEntry {
+  return {
+    word: "resilient",
+    phonetic: "/rɪˈzɪliənt/",
+    audioUrl: "https://audio.example/en-gb/resilient.mp3",
+    meanings: [
+      {
+        pos: "adjective",
+        definition: "Able to recover quickly.",
+        example: "A resilient community rebuilt.",
+      },
+    ],
+    source: "backend",
+  };
+}
 
 test("GET /api/health returns service status", async () => {
-  const response = await fetch(`${baseUrl}/api/health`);
+  const server = await startServer();
+  try {
+    const response = await fetch(`${server.baseUrl}/api/health`);
 
-  assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), {
-    status: "ok",
-    service: "vacabweb-backend",
-  });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      status: "ok",
+      service: "vacabweb-backend",
+    });
+  } finally {
+    await server.close();
+  }
 });
 
 test("unknown routes return the shared 404 response", async () => {
-  const response = await fetch(`${baseUrl}/api/unknown`);
+  const server = await startServer();
+  try {
+    const response = await fetch(`${server.baseUrl}/api/unknown`);
 
-  assert.equal(response.status, 404);
-  assert.deepEqual(await response.json(), {
-    error: { code: "NOT_FOUND", message: "Route not found" },
+    assert.equal(response.status, 404);
+    assert.deepEqual(await response.json(), {
+      error: { code: "NOT_FOUND", message: "Route not found" },
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+test("invalid JSON retains the shared 400 response", async () => {
+  const server = await startServer();
+  try {
+    const response = await fetch(`${server.baseUrl}/api/unknown`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{",
+    });
+
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), {
+      error: {
+        code: "INVALID_JSON",
+        message: "Request body contains invalid JSON",
+      },
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /api/words/:word returns the exact normalized DTO", async () => {
+  const lookedUp: string[] = [];
+  const server = await startServer({
+    wordLookup: {
+      async lookup(word) {
+        lookedUp.push(word);
+        return resilientEntry();
+      },
+    },
+    frontendOrigins: ["https://frontend.example"],
   });
+
+  try {
+    const response = await fetch(`${server.baseUrl}/api/words/RESILIENT`, {
+      headers: { origin: "https://frontend.example" },
+    });
+
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("access-control-allow-origin"), "https://frontend.example");
+    assert.deepEqual(await response.json(), resilientEntry());
+    assert.deepEqual(lookedUp, ["resilient"]);
+  } finally {
+    await server.close();
+  }
+});
+
+test("CORS rejects origins outside the configured allowlist", async () => {
+  const server = await startServer({
+    frontendOrigins: ["https://frontend.example"],
+  });
+
+  try {
+    const response = await fetch(`${server.baseUrl}/api/health`, {
+      headers: { origin: "https://untrusted.example" },
+    });
+
+    assert.equal(response.status, 403);
+    assert.equal(response.headers.get("access-control-allow-origin"), null);
+    assert.deepEqual(await response.json(), {
+      error: {
+        code: "CORS_ORIGIN_DENIED",
+        message: "Origin is not allowed",
+      },
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+test("invalid and empty word queries return 400 without calling the lookup", async (context) => {
+  let calls = 0;
+  const server = await startServer({
+    wordLookup: {
+      async lookup() {
+        calls += 1;
+        return resilientEntry();
+      },
+    },
+  });
+
+  try {
+    for (const path of [
+      "/api/words",
+      "/api/words/",
+      "/api/words/hello%20world",
+      "/api/words/test123",
+      "/api/words/hello%2Fworld",
+    ]) {
+      await context.test(path, async () => {
+        const response = await fetch(`${server.baseUrl}${path}`);
+        assert.equal(response.status, 400);
+        assert.deepEqual(await response.json(), {
+          error: { code: "INVALID_WORD", message: "Word query is invalid" },
+        });
+      });
+    }
+
+    await context.test("malformed URL encoding", async () => {
+      const response = await fetch(`${server.baseUrl}/api/words/%E0%A4%A`);
+      assert.equal(response.status, 400);
+      assert.deepEqual(await response.json(), {
+        error: { code: "INVALID_WORD", message: "Word query is invalid" },
+      });
+    });
+
+    assert.equal(calls, 0);
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /api/words/:word maps a miss to WORD_NOT_FOUND", async () => {
+  const server = await startServer({
+    wordLookup: { async lookup() { return null; } },
+  });
+  try {
+    const response = await fetch(`${server.baseUrl}/api/words/unknown`);
+    assert.equal(response.status, 404);
+    assert.deepEqual(await response.json(), {
+      error: { code: "WORD_NOT_FOUND", message: "Word was not found" },
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /api/words/:word maps provider failures to stable API errors", async (context) => {
+  for (const expectation of [
+    { code: "UPSTREAM_ERROR" as const, status: 502 },
+    { code: "UPSTREAM_PARSE_ERROR" as const, status: 502 },
+    { code: "UPSTREAM_TIMEOUT" as const, status: 504 },
+  ]) {
+    await context.test(expectation.code, async () => {
+      const server = await startServer({
+        wordLookup: {
+          async lookup() {
+            throw new WordProviderError(expectation.code, "private provider detail");
+          },
+        },
+      });
+
+      try {
+        const response = await fetch(`${server.baseUrl}/api/words/test`);
+        assert.equal(response.status, expectation.status);
+        assert.deepEqual(await response.json(), {
+          error: {
+            code: expectation.code,
+            message: "Dictionary provider is unavailable",
+          },
+        });
+      } finally {
+        await server.close();
+      }
+    });
+  }
+});
+
+test("unexpected lookup errors retain the shared 500 response", async () => {
+  const originalConsoleError = console.error;
+  console.error = () => undefined;
+  const server = await startServer({
+    wordLookup: {
+      async lookup() {
+        throw new Error("unexpected");
+      },
+    },
+  });
+
+  try {
+    const response = await fetch(`${server.baseUrl}/api/words/test`);
+    assert.equal(response.status, 500);
+    assert.deepEqual(await response.json(), {
+      error: {
+        code: "INTERNAL_ERROR",
+        message: "An unexpected error occurred",
+      },
+    });
+  } finally {
+    console.error = originalConsoleError;
+    await server.close();
+  }
+});
+
+test("word lookup rate limiting is scoped to the word route", async () => {
+  const server = await startServer({
+    wordLookup: { async lookup() { return resilientEntry(); } },
+    wordRateLimiter: new FixedWindowRateLimiter({
+      windowMs: 60_000,
+      maxRequests: 1,
+    }),
+  });
+
+  try {
+    const first = await fetch(`${server.baseUrl}/api/words/resilient`);
+    assert.equal(first.status, 200);
+
+    const health = await fetch(`${server.baseUrl}/api/health`);
+    assert.equal(health.status, 200);
+
+    const limited = await fetch(`${server.baseUrl}/api/words/resilient`);
+    assert.equal(limited.status, 429);
+    assert.equal(limited.headers.get("retry-after"), "60");
+    assert.deepEqual(await limited.json(), {
+      error: {
+        code: "RATE_LIMITED",
+        message: "Too many word lookup requests",
+      },
+    });
+  } finally {
+    await server.close();
+  }
 });

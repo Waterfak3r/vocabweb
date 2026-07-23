@@ -1,7 +1,6 @@
 import { useMemo } from 'react'
-import { Link } from 'react-router-dom'
 import { PageHeader } from '../components/layout/PageHeader'
-import { Button } from '../components/ui/Button'
+import { Button, ButtonLink } from '../components/ui/Button'
 import { EmptyState } from '../components/ui/EmptyState'
 import { ProgressBar } from '../components/ui/ProgressBar'
 import { Flashcard } from '../components/word/Flashcard'
@@ -36,9 +35,7 @@ export function FlashcardsPage() {
           title="还没有可复习的词"
           body="先收入几个词再来。"
           action={
-            <Link to="/wordbook">
-              <Button>去单词本</Button>
-            </Link>
+            <ButtonLink to="/wordbook">去单词本</ButtonLink>
           }
         />
       </section>
@@ -55,14 +52,14 @@ export function FlashcardsPage() {
           </p>
           {session.unknownCount > 0 && (
             <p className="page-description">
-              {session.unknownCount} 个不熟的词会在下一轮继续出现。
+              本轮有 {session.unknownCount} 个词曾标记为不熟。
             </p>
           )}
           <div className="dictation-summary-actions">
             <Button onClick={session.restart}>再来一轮</Button>
-            <Link to="/wordbook">
-              <Button variant="secondary">回单词本</Button>
-            </Link>
+            <ButtonLink to="/wordbook" variant="secondary">
+              回单词本
+            </ButtonLink>
           </div>
         </div>
       </section>
