@@ -1,0 +1,354 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "schema_version": "1.0.0",
+  "generated_at": "2026-07-26",
+  "purpose": "英语学习网站词典原始资源选型与导入追踪；不包含完整上游数据。",
+  "default_import_order": [
+    "open_english_wordnet",
+    "cmudict",
+    "wikidata_lexemes",
+    "ecdict"
+  ],
+  "sources": [
+    {
+      "id": "open_english_wordnet",
+      "name": "Open English WordNet",
+      "maintainer_or_rightsholder": "Open English Wordnet Community",
+      "status": "recommended_primary",
+      "scope": [
+        "English definitions",
+        "synsets",
+        "lexical semantic relations",
+        "part of speech"
+      ],
+      "official_urls": [
+        "https://en-word.net/downloads",
+        "https://en-word.net/",
+        "https://github.com/globalwordnet/english-wordnet"
+      ],
+      "license": {
+        "spdx": "CC-BY-4.0",
+        "name": "Creative Commons Attribution 4.0 International",
+        "url": "https://creativecommons.org/licenses/by/4.0/",
+        "evidence_url": "https://github.com/globalwordnet/english-wordnet"
+      },
+      "distribution_requirements": [
+        "署名 Open English Wordnet Community / 记录使用版本",
+        "链接项目页与 CC BY 4.0",
+        "说明清洗、转换、删改等修改",
+        "不得暗示原项目背书"
+      ],
+      "download": {
+        "method": "从官方下载页选择固定年份的 JSON、WN-LMF XML、RDF/Turtle 或 WNDB；下载前记录发布日期和文件校验值。",
+        "known_release": "2025 edition",
+        "known_artifacts": [
+          "JSON zip (~9.5 MB)",
+          "WN-LMF XML gz (~10.8 MB)",
+          "RDF/Turtle gz (~16.9 MB)",
+          "WNDB zip (~9.2 MB)"
+        ],
+        "api_documentation": "https://en-word.net/api/docs"
+      },
+      "field_mapping": {
+        "lemma": "members[]",
+        "definition": "definition[]",
+        "part_of_speech": "partOfSpeech",
+        "relations": "synset relation keys",
+        "external_entity": "wikidata"
+      },
+      "suitability": "首选英文释义与词义网络的离线源。",
+      "risks": [
+        "不提供中文翻译",
+        "版本会随年度发布变化，必须 pin release，不能长期指向 latest",
+        "专有名词覆盖与普通词版本不同"
+      ],
+      "sample_files": [
+        "samples/oewn-bank.sample.json"
+      ]
+    },
+    {
+      "id": "ecdict",
+      "name": "ECDICT: Free English to Chinese Dictionary Database",
+      "maintainer_or_rightsholder": "skywind3000 repository maintainer; dataset contains historical multi-source material per README",
+      "status": "conditional_supplement",
+      "scope": [
+        "Chinese translations",
+        "English definitions",
+        "phonetic strings",
+        "word forms",
+        "frequency and study tags"
+      ],
+      "official_urls": [
+        "https://github.com/skywind3000/ECDICT",
+        "https://raw.githubusercontent.com/skywind3000/ECDICT/master/ecdict.csv",
+        "https://raw.githubusercontent.com/skywind3000/ECDICT/master/ecdict.mini.csv"
+      ],
+      "license": {
+        "spdx": "MIT",
+        "name": "MIT License (repository declaration)",
+        "url": "https://github.com/skywind3000/ECDICT/blob/master/LICENSE",
+        "evidence_url": "https://github.com/skywind3000/ECDICT"
+      },
+      "distribution_requirements": [
+        "保留上游 MIT 版权与许可文本",
+        "公开再分发前核验多源词义、抓取信息及标签的上游权利",
+        "不得将 collins/oxford 等标签表述为取得商标或官方名单授权"
+      ],
+      "download": {
+        "method": "优先下载 ecdict.csv 或较小的 ecdict.mini.csv；锁定 commit SHA 后保存 hash。",
+        "format": "UTF-8 CSV",
+        "warning": "完整文件较大；不得纳入本仓库。"
+      },
+      "field_mapping": {
+        "lemma": "word",
+        "pronunciation": "phonetic",
+        "definition": "definition",
+        "translation_zh": "translation",
+        "part_of_speech": "pos",
+        "frequency": "bnc, frq",
+        "inflection": "exchange",
+        "study_tags": "tag, collins, oxford"
+      },
+      "suitability": "中文学习功能的高实用补充；适合先以可替换的 adapter 导入 staging。",
+      "risks": [
+        "README 明示多年聚合和抓取背景，缺少字段级来源证明",
+        "考试、词频、品牌标签可能陈旧或不适于权威声明",
+        "词义和音标需要抽样质量检查"
+      ],
+      "sample_files": [
+        "samples/ecdict-mini.sample.csv"
+      ]
+    },
+    {
+      "id": "cmudict",
+      "name": "CMU Pronouncing Dictionary",
+      "maintainer_or_rightsholder": "Carnegie Mellon University Speech Group",
+      "status": "recommended_supplement",
+      "scope": [
+        "US English ARPAbet pronunciations",
+        "pronunciation variants"
+      ],
+      "official_urls": [
+        "https://github.com/cmusphinx/cmudict",
+        "https://raw.githubusercontent.com/cmusphinx/cmudict/master/cmudict.dict"
+      ],
+      "license": {
+        "spdx": "BSD-2-Clause",
+        "name": "CMUdict repository license / BSD-style terms",
+        "url": "https://github.com/cmusphinx/cmudict/blob/master/LICENSE",
+        "evidence_url": "https://github.com/cmusphinx/cmudict"
+      },
+      "distribution_requirements": [
+        "保留许可证/版权说明",
+        "在使用或再分发说明中确认 Carnegie Mellon University / CMUdict 来源（项目 README 的请求）"
+      ],
+      "download": {
+        "method": "下载 cmudict.dict；按词头解析 ARPAbet 音素串，词头中的变体序号须保留。",
+        "format": "one word and ARPAbet sequence per line"
+      },
+      "field_mapping": {
+        "lemma": "word column before pronunciation",
+        "pronunciation.notation": "ARPAbet",
+        "pronunciation.value": "remaining phoneme tokens",
+        "pronunciation.locale": "en-US"
+      },
+      "suitability": "适合听辨、拼读和 TTS/ASR 辅助；无需把 ARPAbet 误标为 IPA。",
+      "risks": [
+        "仅主要覆盖北美英语",
+        "不包含音频授权",
+        "项目自己提示仍可能有错误、遗漏和不一致"
+      ],
+      "sample_files": [
+        "samples/cmudict.sample.txt"
+      ]
+    },
+    {
+      "id": "wikidata_lexemes",
+      "name": "Wikidata Lexemes",
+      "maintainer_or_rightsholder": "Wikidata contributors / Wikimedia",
+      "status": "recommended_metadata",
+      "scope": [
+        "lemmas",
+        "forms",
+        "grammatical features",
+        "sense to entity links",
+        "multilingual glosses when present"
+      ],
+      "official_urls": [
+        "https://www.wikidata.org/wiki/Wikidata:Lexicographical_data",
+        "https://www.wikidata.org/wiki/Wikidata:Database_download",
+        "https://dumps.wikimedia.org/wikidatawiki/entities/"
+      ],
+      "license": {
+        "spdx": "CC0-1.0",
+        "name": "Creative Commons Zero v1.0 Universal",
+        "url": "https://creativecommons.org/publicdomain/zero/1.0/",
+        "evidence_url": "https://www.wikidata.org/wiki/Wikidata:Licensing"
+      },
+      "distribution_requirements": [
+        "Lexeme/Property/Main namespace 结构化数据为 CC0，法律上无需署名",
+        "建议仍保留 Wikidata source_id 与 entity URL",
+        "Commons 图片和音频不随实体结构化数据自动成为 CC0，必须逐文件审查"
+      ],
+      "download": {
+        "method": "单条/小批量使用 Wikibase API；增量或批量使用 official JSON/RDF dumps。",
+        "api_example": "https://www.wikidata.org/w/api.php?action=wbgetentities&ids=L3354&format=json",
+        "warning": "完整 Wikidata dump 极大；本项目不得直接下载全量。"
+      },
+      "field_mapping": {
+        "lemma": "lemmas",
+        "part_of_speech": "lexicalCategory",
+        "language": "language",
+        "inflection": "forms[].representations and grammaticalFeatures",
+        "definition": "senses[].glosses",
+        "external_entity": "sense claims / item links"
+      },
+      "suitability": "用于词形、语法和跨语言实体连接，不应单独承担完整释义。",
+      "risks": [
+        "词条覆盖与 gloss 完整度不均",
+        "语法特征是 Q-id，需要本地映射表",
+        "媒体字段需要单独许可审查"
+      ],
+      "sample_files": [
+        "samples/wikidata-lexeme-L3354.sample.json"
+      ]
+    },
+    {
+      "id": "english_wiktionary",
+      "name": "English Wiktionary dumps",
+      "maintainer_or_rightsholder": "Wiktionary contributors",
+      "status": "conditional_long_tail",
+      "scope": [
+        "definitions",
+        "etymologies",
+        "translations",
+        "usage examples",
+        "IPA and lexical metadata"
+      ],
+      "official_urls": [
+        "https://dumps.wikimedia.org/enwiktionary/latest/",
+        "https://en.wiktionary.org/wiki/Wiktionary:Copyrights",
+        "https://dumps.wikimedia.org/legal.html",
+        "https://foundation.wikimedia.org/wiki/Legal:Wikimedia_Developer_App_Guidelines/en"
+      ],
+      "license": {
+        "spdx": "CC-BY-SA-4.0 AND GFDL-1.3-or-later",
+        "name": "Wiktionary entries are dual-licensed CC BY-SA 4.0 and GFDL",
+        "url": "https://en.wiktionary.org/wiki/Wiktionary:Copyrights",
+        "evidence_url": "https://en.wiktionary.org/wiki/Wiktionary:Copyrights"
+      },
+      "distribution_requirements": [
+        "显著归属 Wiktionary contributors",
+        "提供条目或修订/透明文本的可访问链接和许可证链接",
+        "发布改编内容时遵守 CC BY-SA ShareAlike 与 GFDL 的适用义务",
+        "图片、音频、引文和其他外部内容逐条处理其额外条件"
+      ],
+      "download": {
+        "method": "从 official dump 取得特定日期的 pages/articles dump，并使用可重复的解析器；先做受控子集。",
+        "warning": "全量非常大且来源/版本持续变化；禁止把 latest 当作无版本永久源。"
+      },
+      "field_mapping": {
+        "lemma": "page title / language section",
+        "definition": "parsed senses",
+        "translation": "translation blocks",
+        "pronunciation": "pronunciation section",
+        "etymology": "etymology section",
+        "provenance": "page title + revision or dump date"
+      },
+      "suitability": "最丰富的长尾补充，但需要独立的授权、归因和可追溯架构后才能发布。",
+      "risks": [
+        "CC BY-SA/GFDL 不能被无来源地混入 MIT/CC BY/专有内容",
+        "条目可能含外部引文或媒体，条件不同",
+        "解析维护成本高"
+      ],
+      "sample_files": []
+    },
+    {
+      "id": "kaikki_wiktextract",
+      "name": "Kaikki.org raw Wiktextract data",
+      "maintainer_or_rightsholder": "Kaikki.org / Wiktextract; underlying content from Wiktionary contributors",
+      "status": "conditional_distribution_channel",
+      "scope": [
+        "pre-parsed Wiktionary JSONL",
+        "definitions",
+        "forms",
+        "translations",
+        "pronunciation and relation metadata"
+      ],
+      "official_urls": [
+        "https://kaikki.org/dictionary/rawdata.html",
+        "https://github.com/tatuylonen/wiktextract",
+        "https://en.wiktionary.org/wiki/Wiktionary:Copyrights"
+      ],
+      "license": {
+        "spdx": "CC-BY-SA-4.0 AND GFDL-1.3-or-later",
+        "name": "Underlying Wiktionary content retains Wiktionary dual license; extractor software does not relicense content",
+        "url": "https://en.wiktionary.org/wiki/Wiktionary:Copyrights",
+        "evidence_url": "https://kaikki.org/dictionary/rawdata.html"
+      },
+      "distribution_requirements": [
+        "与 english_wiktionary 相同的署名、透明副本、许可证与 ShareAlike/GFDL 义务",
+        "将 Kaikki/Wiktextract 作为抽取通道记录，不得错误宣称输出是 MIT 数据"
+      ],
+      "download": {
+        "method": "按 rawdata 页面所列固定 dump 日期下载 JSONL.gz，并保留上游 dump 日期。",
+        "known_size_note": "2026-07 页面列示英文 JSONL.gz 约 2.6 GB；只能在仓库外做筛选导入。"
+      },
+      "field_mapping": {
+        "lemma": "word",
+        "part_of_speech": "pos",
+        "definition": "senses[].glosses",
+        "translation": "translations",
+        "pronunciation": "sounds",
+        "provenance": "original_title + dump date"
+      },
+      "suitability": "可显著降低 Wiki markup 解析难度，但不降低版权和归因复杂度。",
+      "risks": [
+        "数据包大",
+        "内容许可与 Wiktionary 一致",
+        "需要自己的抽样、版本 pin 与解析验证"
+      ],
+      "sample_files": []
+    },
+    {
+      "id": "princeton_wordnet_3_0",
+      "name": "Princeton WordNet 3.0",
+      "maintainer_or_rightsholder": "Princeton University",
+      "status": "legacy_compatibility_only",
+      "scope": [
+        "English lexical database",
+        "legacy WNDB compatibility"
+      ],
+      "official_urls": [
+        "https://wordnet.princeton.edu/",
+        "https://wordnet.princeton.edu/license-and-commercial-use"
+      ],
+      "license": {
+        "spdx": "LicenseRef-Princeton-WordNet-3.0",
+        "name": "Princeton WordNet 3.0 License",
+        "url": "https://wordnet.princeton.edu/license-and-commercial-use",
+        "evidence_url": "https://wordnet.princeton.edu/license-and-commercial-use"
+      },
+      "distribution_requirements": [
+        "在全部副本、数据库和修改中保留版权、声明和免责声明",
+        "不得将 Princeton University / Princeton 名称用于与分发有关的广告或宣传"
+      ],
+      "download": {
+        "method": "仅在需与旧 WNDB 应用兼容时，从官方项目页获取指定发行版。",
+        "warning": "避免同时将其与 OEWN 作为同一主定义源。"
+      },
+      "field_mapping": {
+        "lemma": "index/data files",
+        "definition": "glosses",
+        "relations": "WordNet pointers"
+      },
+      "suitability": "旧格式兼容备选；新功能优先 OEWN。",
+      "risks": [
+        "较旧",
+        "与 OEWN 的词义/关系可能冲突",
+        "许可不是 SPDX 标准短名，必须带上官方文本"
+      ],
+      "sample_files": []
+    }
+  ]
+}

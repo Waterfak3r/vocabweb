@@ -1,0 +1,72 @@
+{
+  "sample_kind": "filtered API response",
+  "retrieved_at": "2026-07-26",
+  "provenance": {
+    "source_id": "wikidata_lexemes",
+    "source_record_id": "L3354",
+    "source_version": "lastrevid 2507034969; entity modified 2026-06-17T14:32:03Z",
+    "license": "CC0-1.0",
+    "attribution_text": "Wikidata Lexemes (CC0)",
+    "source_url": "https://www.wikidata.org/w/api.php?action=wbgetentities&ids=L3354&format=json",
+    "imported_at": "2026-07-26T00:00:00+08:00",
+    "modified": true,
+    "modification_note": "删除媒体、外部 ID 与大部分 claims，仅保留可测试的 lexical fields；原实体可能已更新。"
+  },
+  "entity": {
+    "id": "L3354",
+    "type": "lexeme",
+    "lemmas": {
+      "en": "bank"
+    },
+    "lexicalCategory": "Q1084",
+    "language": "Q1860",
+    "forms": [
+      {
+        "id": "L3354-F1",
+        "representations": {
+          "en": "bank"
+        },
+        "grammaticalFeatures": [
+          "Q110786"
+        ],
+        "ipa_from_P898": "[bæŋk]"
+      },
+      {
+        "id": "L3354-F2",
+        "representations": {
+          "en": "banks"
+        },
+        "grammaticalFeatures": [
+          "Q146786"
+        ]
+      }
+    ],
+    "senses": [
+      {
+        "id": "L3354-S1",
+        "glosses": {
+          "en": "financial institution",
+          "de": "Geldinstitut für Finanzdienstleistungen",
+          "fr": "institution financière",
+          "ca": "institució financera",
+          "id": "institusi finansial",
+          "ms": "bank"
+        },
+        "wikidata_item": "Q22687"
+      },
+      {
+        "id": "L3354-S2",
+        "glosses": {
+          "en": "dry ground next to a river"
+        }
+      },
+      {
+        "id": "L3354-S3",
+        "glosses": {
+          "en": "shallow ocean area"
+        },
+        "wikidata_item": "Q1377943"
+      }
+    ]
+  }
+}

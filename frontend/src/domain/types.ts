@@ -17,14 +17,18 @@ export type WordEntry = {
   phonetic: string
   /** https mp3 from dictionaryapi.dev when present */
   audioUrl?: string
-  /** At least one after a successful map; empty = invalid entry */
+  /** May be empty for a learner-kept word that no dictionary source matched. */
   meanings: WordMeaning[]
+  /** Chinese learner meaning, kept separate from English dictionary glosses. */
+  zhMeaning?: string
+  /** User meanings take precedence over dictionary-provided Chinese text. */
+  zhMeaningSource?: 'user' | 'dictionary'
   source: WordSource
 }
 
 /** Wordbook row = entry + local metadata */
 export type WordbookItem = WordEntry & {
-  /** Stable id: normalized word (unique in v1) */
+  /** Stable UUID; changing the headword must not change this id. */
   id: string
   /** ISO-8601 */
   addedAt: string

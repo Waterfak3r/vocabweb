@@ -64,6 +64,47 @@ export type LearningEvent =
   | { kind: 'flashcard'; wordbookId: string; word: string; verdict: 'know' | 'unknown' }
   | { kind: 'dictation'; wordbookId: string; word: string; correct: boolean }
 
+export type ImportDraftLine = {
+  line: number
+  word: string
+  zhMeaning?: string
+}
+
+export type ImportDraftStatus = 'processing' | 'ready' | 'invalid' | 'duplicate' | 'unmatched' | 'conflict'
+export type ImportConflictResolution = 'keep' | 'replace' | 'merge' | 'discard'
+
+export type ImportDraftEntry = ImportDraftLine & {
+  id?: string
+  status: ImportDraftStatus
+  reason?: string
+  conflictWith?: string
+  resolution?: ImportConflictResolution
+}
+
+export type ImportDraft = {
+  id: string
+  groupId?: string
+  title: string
+  description: string
+  entries: ImportDraftEntry[]
+  batchIndex: number
+  totalBatches: number
+  targetWordbookId?: string
+  status: 'processing' | 'pending' | 'committed'
+  createdAt?: string
+  updatedAt?: string
+}
+
+export type UpdateWordInput = {
+  word?: string
+  zhMeaning?: string | null
+  phonetic?: string
+  audioUrl?: string
+  meanings?: WordMeaning[]
+  /** Requests a fresh lookup only for the word being edited. */
+  refresh?: boolean
+}
+
 type WorkspaceApiOptions = { fetch?: FetchLike; timeoutMs?: number; clientId?: () => string }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -104,13 +145,28 @@ function parseMeaning(value: unknown): WordMeaning | null {
 
 function parseWord(value: unknown): (WordbookItem & { status?: WordStatus }) | null {
   if (!isRecord(value) || !isText(value.id) || !isText(value.word) || !isText(value.phonetic) || !isText(value.addedAt) || !isText(value.source) || !Array.isArray(value.meanings) || (value.audioUrl !== undefined && !isText(value.audioUrl))) return null
+  if (
+    (value.zhMeaning !== undefined && !isText(value.zhMeaning))
+    || (value.zhMeaningSource !== undefined && value.zhMeaningSource !== 'user' && value.zhMeaningSource !== 'dictionary')
+  ) return null
   const source: WordSource = value.source as WordSource
   if (!['backend', 'dictionary-api', 'local-ielts', 'user'].includes(source)) return null
   const meanings = value.meanings.map(parseMeaning)
-  if (meanings.some((meaning) => meaning === null) || meanings.length === 0) return null
+  if (meanings.some((meaning) => meaning === null)) return null
   const status = value.status
   if (status !== undefined && status !== 'new' && status !== 'learning' && status !== 'review' && status !== 'mastered') return null
-  return { id: value.id, word: value.word, phonetic: value.phonetic, source, audioUrl: value.audioUrl, addedAt: value.addedAt, meanings: meanings as WordMeaning[], status }
+  return {
+    id: value.id,
+    word: value.word,
+    phonetic: value.phonetic,
+    source,
+    audioUrl: value.audioUrl,
+    addedAt: value.addedAt,
+    meanings: meanings as WordMeaning[],
+    zhMeaning: value.zhMeaning,
+    zhMeaningSource: value.zhMeaningSource,
+    status,
+  }
 }
 
 function parsePlan(value: unknown) {
@@ -134,6 +190,61 @@ function parseDashboard(value: unknown): StudyDashboard | null {
   const calendar = value.calendar.map((entry) => isRecord(entry) && isText(entry.date) && isCount(entry.count) && typeof entry.active === 'boolean' ? { date: entry.date, count: entry.count, active: entry.active } : null)
   if (recentActivity.some((entry) => entry === null) || calendar.some((entry) => entry === null)) return null
   return { wordbook, todayPlan, recentActivity: recentActivity as StudyDashboard['recentActivity'], calendar: calendar as StudyDashboard['calendar'], week: { newCount: value.week.newCount, reviewCount: value.week.reviewCount, dictationCount: value.week.dictationCount, total: value.week.total }, streakDays: value.streakDays, updatedAt: value.updatedAt }
+}
+
+function parseImportStatus(value: unknown): ImportDraftStatus | null {
+  return value === 'processing' || value === 'ready' || value === 'invalid' || value === 'duplicate' || value === 'unmatched' || value === 'conflict' ? value : null
+}
+
+function parseImportDraftEntry(value: unknown): ImportDraftEntry | null {
+  if (!isRecord(value) || !isCount(value.line) || !isText(value.word)) return null
+  const status = parseImportStatus(value.status) ?? 'ready'
+  if (
+    (value.id !== undefined && !isText(value.id)) ||
+    (value.zhMeaning !== undefined && !isText(value.zhMeaning)) ||
+    (value.reason !== undefined && !isText(value.reason)) ||
+    (value.conflictWith !== undefined && !isText(value.conflictWith)) ||
+    (value.resolution !== undefined && value.resolution !== 'keep' && value.resolution !== 'replace' && value.resolution !== 'merge' && value.resolution !== 'discard')
+  ) return null
+  return {
+    line: value.line,
+    word: value.word,
+    zhMeaning: value.zhMeaning,
+    id: value.id,
+    status,
+    reason: value.reason,
+    conflictWith: value.conflictWith,
+    resolution: value.resolution,
+  }
+}
+
+function parseImportDraft(value: unknown): ImportDraft | null {
+  if (!isRecord(value) || !isText(value.id) || !isText(value.title) || !isText(value.description) || !Array.isArray(value.entries)) return null
+  const entries = value.entries.map(parseImportDraftEntry)
+  if (entries.some((entry) => entry === null)) return null
+  const batchIndex = isCount(value.batchIndex) ? value.batchIndex : 0
+  const totalBatches = isCount(value.totalBatches) ? value.totalBatches : 1
+  if (
+    (value.groupId !== undefined && !isText(value.groupId))
+    || (value.targetWordbookId !== undefined && !isText(value.targetWordbookId))
+    || (value.status !== undefined && value.status !== 'processing' && value.status !== 'pending' && value.status !== 'committed')
+    || (value.createdAt !== undefined && !isText(value.createdAt))
+    || (value.updatedAt !== undefined && !isText(value.updatedAt))
+  ) return null
+  return {
+    id: value.id,
+    groupId: value.groupId,
+    title: value.title,
+    description: value.description,
+    entries: entries as ImportDraftEntry[],
+    batchIndex,
+    totalBatches,
+    targetWordbookId: value.targetWordbookId,
+    // Existing local drafts predating background processing are ready to commit.
+    status: value.status ?? 'pending',
+    createdAt: value.createdAt,
+    updatedAt: value.updatedAt,
+  }
 }
 
 function buildApiBase(baseUrl: string): URL {
@@ -171,12 +282,23 @@ export class WorkspaceApi {
   async toggleFavorite(id: string) { return this.json<{ favorited: boolean }>(`api/catalog/wordbooks/${encodeURIComponent(id)}/favorite`, { method: 'POST' }) }
   async addCatalog(id: string) { return this.json<{ wordbook: MyWordbook; created: boolean }>(`api/catalog/wordbooks/${encodeURIComponent(id)}/add`, { method: 'POST' }, (value) => isRecord(value) && typeof value.created === 'boolean' && parseMyWordbook(value.wordbook) ? { wordbook: parseMyWordbook(value.wordbook)!, created: value.created } : null) }
   async upload(input: { title: string; description?: string; exams?: string[]; goals?: string[]; words: WordEntry[] }) { return this.json('api/catalog/uploads', { method: 'POST', body: JSON.stringify(input) }, parseCatalog) }
+  uploadWordbook(input: { sourceWordbookId: string; title?: string; description?: string; exams?: string[]; goals?: string[] }) { return this.json('api/catalog/uploads', { method: 'POST', body: JSON.stringify(input) }, parseCatalog) }
+  updateCatalogSnapshot(catalogId: string, input: { sourceWordbookId?: string; title?: string; description?: string; exams?: string[]; goals?: string[] }) { return this.json(`api/catalog/wordbooks/${encodeURIComponent(catalogId)}`, { method: 'PATCH', body: JSON.stringify(input) }, parseCatalog) }
   async importShareCode(shareCode: string) { return this.json<{ wordbook: MyWordbook; created: boolean }>('api/catalog/imports', { method: 'POST', body: JSON.stringify({ shareCode }) }, (value) => isRecord(value) && typeof value.created === 'boolean' && parseMyWordbook(value.wordbook) ? { wordbook: parseMyWordbook(value.wordbook)!, created: value.created } : null) }
   listMyWordbooks(trash = false) { const url = new URL('api/my/wordbooks', this.baseUrl); if (trash) url.searchParams.set('view', 'trash'); return this.list(url, parseMyWordbook, 'wordbook list') }
   createMyWordbook(input: { title: string; description?: string; words?: WordEntry[] }) { return this.json('api/my/wordbooks', { method: 'POST', body: JSON.stringify(input) }, parseMyWordbook) }
+  createImportDraft(input: { title: string; description?: string; lines: ImportDraftLine[] }) {
+    return this.json('api/my/import-drafts', { method: 'POST', body: JSON.stringify(input) }, parseImportDraft)
+  }
+  listImportDrafts() { return this.list(new URL('api/my/import-drafts', this.baseUrl), parseImportDraft, 'import drafts') }
+  getImportDraft(id: string) { return this.json(`api/my/import-drafts/${encodeURIComponent(id)}`, {}, parseImportDraft) }
+  processImportDraft(id: string) { return this.json(`api/my/import-drafts/${encodeURIComponent(id)}/process`, { method: 'POST' }, parseImportDraft) }
+  deleteImportDraft(id: string) { return this.empty(`api/my/import-drafts/${encodeURIComponent(id)}`, { method: 'DELETE' }) }
+  commitImportDraft(id: string, resolutions: Record<string, ImportConflictResolution> = {}) { return this.json(`api/my/import-drafts/${encodeURIComponent(id)}/commit`, { method: 'POST', body: JSON.stringify({ resolutions }) }, parseMyWordbook) }
   deleteMyWordbook(id: string) { return this.empty(`api/my/wordbooks/${encodeURIComponent(id)}`, { method: 'DELETE' }) }
   restoreMyWordbook(id: string) { return this.json(`api/my/wordbooks/${encodeURIComponent(id)}/restore`, { method: 'POST' }, parseMyWordbook) }
   listWords(id: string, status?: WordStatus) { const url = new URL(`api/my/wordbooks/${encodeURIComponent(id)}/words`, this.baseUrl); if (status) url.searchParams.set('status', status); return this.list(url, parseWord, 'word list') }
+  updateWord(wordbookId: string, wordId: string, input: UpdateWordInput) { return this.json(`api/my/wordbooks/${encodeURIComponent(wordbookId)}/words/${encodeURIComponent(wordId)}`, { method: 'PATCH', body: JSON.stringify(input) }, parseWord) }
   getDashboard(id: string) { return this.json(`api/study/dashboard/${encodeURIComponent(id)}`, {}, parseDashboard) }
   recordStudyEvent(event: LearningEvent) { return this.json('api/study/events', { method: 'POST', body: JSON.stringify(event) }, (value) => value) }
 
@@ -187,8 +309,13 @@ export class WorkspaceApi {
     if (items.some((item) => item === null)) throw new Error(`${label} response is invalid.`)
     return items as T[]
   }
-  private async json<T = unknown>(path: string, init: RequestInit, parser: (value: unknown) => T | null = (value) => value as T): Promise<T> {
-    const payload = await this.request(new URL(path, this.baseUrl), init)
+  private async json<T = unknown>(
+    path: string,
+    init: RequestInit,
+    parser: (value: unknown) => T | null = (value) => value as T,
+    timeoutMs = this.timeoutMs,
+  ): Promise<T> {
+    const payload = await this.request(new URL(path, this.baseUrl), init, timeoutMs)
     const parsed = parser(payload)
     if (parsed === null) throw new Error('Backend response is invalid.')
     return parsed
@@ -197,13 +324,13 @@ export class WorkspaceApi {
     const response = await this.fetch(new URL(path, this.baseUrl), this.requestInit(init))
     if (!response.ok) throw new Error(`Backend request failed (${response.status}).`)
   }
-  private async request(url: URL, init: RequestInit = {}): Promise<unknown> {
-    const response = await this.fetch(url, this.requestInit(init))
+  private async request(url: URL, init: RequestInit = {}, timeoutMs = this.timeoutMs): Promise<unknown> {
+    const response = await this.fetch(url, this.requestInit(init, timeoutMs))
     if (!response.ok) throw new Error(`Backend request failed (${response.status}).`)
     try { return await response.json() } catch { throw new Error('Backend response is not valid JSON.') }
   }
-  private requestInit(init: RequestInit) {
-    return { ...init, headers: { 'X-Vocab-Client-Id': this.clientId(), 'Content-Type': 'application/json', ...init.headers }, signal: AbortSignal.timeout(this.timeoutMs) }
+  private requestInit(init: RequestInit, timeoutMs = this.timeoutMs) {
+    return { ...init, headers: { 'X-Vocab-Client-Id': this.clientId(), 'Content-Type': 'application/json', ...init.headers }, signal: AbortSignal.timeout(timeoutMs) }
   }
 }
 

@@ -1,7 +1,10 @@
 import type { FormEvent } from 'react'
+import type { StudyDisplayPreferences } from '../../data/studyPreferences'
 import type { DictationGrade, WordbookItem } from '../../domain/types'
 import { Button } from '../ui/Button'
 import { TextField } from '../ui/TextField'
+import { preferredMeanings } from './Flashcard'
+import { MeaningList } from './MeaningList'
 import { PronounceButton } from './PronounceButton'
 
 export type DictationPromptProps = {
@@ -15,6 +18,16 @@ export type DictationPromptProps = {
   grade: DictationGrade | null
   error?: string
   isLast: boolean
+  preferences?: StudyDisplayPreferences & {
+    underlineMistakes?: boolean
+  }
+}
+
+export function spellingCharacters(given: string, expected: string) {
+  return Array.from(given).map((character, index) => ({
+    character,
+    incorrect: character.toLocaleLowerCase() !== Array.from(expected)[index]?.toLocaleLowerCase(),
+  }))
 }
 
 export function DictationPrompt({
@@ -28,6 +41,12 @@ export function DictationPrompt({
   grade,
   error,
   isLast,
+  preferences = {
+    meaningPreference: 'zh',
+    showExamples: true,
+    showPhonetic: true,
+    underlineMistakes: true,
+  },
 }: DictationPromptProps) {
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -78,13 +97,29 @@ export function DictationPrompt({
             <>
               <p className="dictation-verdict">拼写不对</p>
               <p className="dictation-given">
-                你写了 <span className="dictation-given-word">{answer}</span>
+                你写了{' '}
+                <span className={`dictation-given-word${preferences.underlineMistakes ? ' show-mistakes' : ''}`}>
+                  {preferences.underlineMistakes
+                    ? spellingCharacters(answer, item.word).map(({ character, incorrect }, index) => (
+                        <span className={incorrect ? 'incorrect-letter' : ''} key={`${character}-${index}`}>
+                          {character}
+                        </span>
+                      ))
+                    : answer}
+                </span>
               </p>
               <p className="dictation-correct">
                 正确拼写 <span className="dictation-correct-word">{item.word}</span>
               </p>
             </>
           )}
+          <div className="dictation-answer-details">
+            {preferences.showPhonetic && item.phonetic && <p className="dictation-answer-phonetic">{item.phonetic}</p>}
+            <MeaningList
+              meanings={preferredMeanings(item, preferences.meaningPreference)}
+              showExamples={preferences.showExamples}
+            />
+          </div>
           <div className="dictation-actions">
             <Button type="submit">{isLast ? '看结果' : '下一题'}</Button>
           </div>

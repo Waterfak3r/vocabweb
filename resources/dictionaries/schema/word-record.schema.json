@@ -1,0 +1,297 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wecreate-vocab.local/schemas/dictionary-word-record-1.0.0.json",
+  "title": "DictionaryWordRecord",
+  "description": "带记录级来源与许可证信息的规范化词典词条。生产数据应将每个可展示片段分别持久化 provenance。",
+  "type": "object",
+  "required": [
+    "id",
+    "language",
+    "lemma",
+    "provenance"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "本站稳定 UUID 或 source_id:source_record_id。"
+    },
+    "language": {
+      "type": "string",
+      "pattern": "^[a-z]{2,3}(-[A-Za-z0-9]+)*$",
+      "description": "BCP 47 language tag, e.g. en or zh-Hans."
+    },
+    "lemma": {
+      "type": "string",
+      "minLength": 1
+    },
+    "search_key": {
+      "type": "string",
+      "description": "Unicode NFC + case-folded lookup key; never replaces lemma."
+    },
+    "part_of_speech": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "noun",
+          "verb",
+          "adjective",
+          "adverb",
+          "pronoun",
+          "determiner",
+          "preposition",
+          "conjunction",
+          "interjection",
+          "phrase",
+          "other"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "forms": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/form"
+      }
+    },
+    "senses": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/sense"
+      }
+    },
+    "pronunciations": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/pronunciation"
+      }
+    },
+    "relations": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/relation"
+      }
+    },
+    "external_ids": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "Examples: wikidata_item, oewn_synset, wikidata_lexeme."
+    },
+    "provenance": {
+      "$ref": "#/$defs/provenance"
+    }
+  },
+  "$defs": {
+    "provenance": {
+      "type": "object",
+      "required": [
+        "source_id",
+        "source_record_id",
+        "license",
+        "source_url",
+        "imported_at"
+      ],
+      "properties": {
+        "source_id": {
+          "type": "string",
+          "description": "Must match an id in ../sources.json."
+        },
+        "source_record_id": {
+          "type": "string",
+          "description": "Original synset, lexeme, page revision, CSV row/word or pronunciation line id."
+        },
+        "source_version": {
+          "type": "string",
+          "description": "Release, commit SHA, dump date or API revision."
+        },
+        "license": {
+          "type": "string",
+          "description": "SPDX identifier or exact license reference."
+        },
+        "attribution_text": {
+          "type": "string",
+          "description": "Text ready for a source page or word-detail credit UI."
+        },
+        "source_url": {
+          "type": "string",
+          "format": "uri"
+        },
+        "imported_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "content_hash": {
+          "type": "string",
+          "pattern": "^[a-fA-F0-9]{64}$",
+          "description": "SHA-256 of raw or canonical normalized payload; document which in importer."
+        },
+        "modified": {
+          "type": "boolean",
+          "default": false
+        },
+        "modification_note": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "form": {
+      "type": "object",
+      "required": [
+        "written_representation",
+        "provenance"
+      ],
+      "properties": {
+        "written_representation": {
+          "type": "string"
+        },
+        "grammatical_features": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "provenance": {
+          "$ref": "#/$defs/provenance"
+        }
+      },
+      "additionalProperties": false
+    },
+    "sense": {
+      "type": "object",
+      "required": [
+        "definition",
+        "definition_language",
+        "provenance"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "definition": {
+          "type": "string"
+        },
+        "definition_language": {
+          "type": "string"
+        },
+        "translations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "language",
+              "text",
+              "provenance"
+            ],
+            "properties": {
+              "language": {
+                "type": "string"
+              },
+              "text": {
+                "type": "string"
+              },
+              "provenance": {
+                "$ref": "#/$defs/provenance"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "examples": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "text",
+              "language",
+              "provenance"
+            ],
+            "properties": {
+              "text": {
+                "type": "string"
+              },
+              "language": {
+                "type": "string"
+              },
+              "provenance": {
+                "$ref": "#/$defs/provenance"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "provenance": {
+          "$ref": "#/$defs/provenance"
+        }
+      },
+      "additionalProperties": false
+    },
+    "pronunciation": {
+      "type": "object",
+      "required": [
+        "notation",
+        "value",
+        "provenance"
+      ],
+      "properties": {
+        "notation": {
+          "type": "string",
+          "enum": [
+            "IPA",
+            "ARPAbet",
+            "source-specific"
+          ]
+        },
+        "value": {
+          "type": "string"
+        },
+        "locale": {
+          "type": "string"
+        },
+        "audio_url": {
+          "type": "string",
+          "format": "uri",
+          "description": "Only populate after a separate media-license check."
+        },
+        "provenance": {
+          "$ref": "#/$defs/provenance"
+        }
+      },
+      "additionalProperties": false
+    },
+    "relation": {
+      "type": "object",
+      "required": [
+        "type",
+        "target_source_record_id",
+        "provenance"
+      ],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "synonym",
+            "antonym",
+            "hypernym",
+            "hyponym",
+            "meronym",
+            "holonym",
+            "derived_from",
+            "related",
+            "other"
+          ]
+        },
+        "target_source_record_id": {
+          "type": "string"
+        },
+        "provenance": {
+          "$ref": "#/$defs/provenance"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

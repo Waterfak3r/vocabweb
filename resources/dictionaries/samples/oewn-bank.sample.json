@@ -1,0 +1,56 @@
+{
+  "sample_kind": "minimal derived parser fixture",
+  "retrieved_at": "2026-07-26",
+  "provenance": {
+    "source_id": "open_english_wordnet",
+    "source_record_id": "08437235-n,08479077-n",
+    "source_version": "repository main branch retrieved 2026-07-26; pin a release or commit for production",
+    "license": "CC-BY-4.0",
+    "attribution_text": "Open English Wordnet Community, CC BY 4.0",
+    "source_url": "https://raw.githubusercontent.com/globalwordnet/english-wordnet/main/src/yaml/noun.group.yaml",
+    "imported_at": "2026-07-26T00:00:00+08:00",
+    "modified": true,
+    "modification_note": "仅保留两个 bank synset 的字段以测试 YAML-to-JSON mapping。"
+  },
+  "synsets": [
+    {
+      "id": "08437235-n",
+      "definition": [
+        "a financial institution that accepts deposits and channels the money into lending activities"
+      ],
+      "example": [
+        "he cashed a check at the bank",
+        "that bank holds the mortgage on my home"
+      ],
+      "hypernym": [
+        "08071473-n"
+      ],
+      "ili": "i81364",
+      "members": [
+        "depository financial institution",
+        "bank",
+        "banking concern",
+        "banking company"
+      ],
+      "partOfSpeech": "n",
+      "wikidata": "Q22687"
+    },
+    {
+      "id": "08479077-n",
+      "definition": [
+        "an arrangement of similar objects in a row or in tiers"
+      ],
+      "example": [
+        "he operated a bank of switches"
+      ],
+      "hypernym": [
+        "07955622-n"
+      ],
+      "ili": "i81523",
+      "members": [
+        "bank"
+      ],
+      "partOfSpeech": "n"
+    }
+  ]
+}

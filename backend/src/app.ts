@@ -2,9 +2,10 @@ import cors from "cors";
 import express, { type ErrorRequestHandler, type RequestHandler } from "express";
 import { FixedWindowRateLimiter, type RateLimiter } from "./http/rate-limit.js";
 import { WiktApiProvider } from "./providers/wiktapi.js";
+import { CsvLocalChineseDictionary, type LocalChineseLookup } from "./study/local-dictionary.js";
 import { JsonFileStudyStore } from "./study/store.js";
-import { parseCatalogQuery, parseClientId, parseCreateMyWordbook, parseLearningEvent, parseResourceId, parseShareCode, parseStatus, parseUploadCatalog } from "./study/validation.js";
-import type { StudyStore } from "./study/types.js";
+import { parseCatalogQuery, parseClientId, parseCommitImportDraft, parseCreateImportDraft, parseCreateMyWordbook, parseLearningEvent, parseResourceId, parseShareCode, parseStatus, parseUpdateCatalog, parseUpdateWord, parseUploadCatalog, parseWordId } from "./study/validation.js";
+import type { ImportLineInput, PreparedImportLine, ResolvedImportDraftEntry, StudyStore, StudyWordEntry } from "./study/types.js";
 import { isValidWordQuery, normalizeWord } from "./words/normalize.js";
 import { WordService, type WordLookup } from "./words/word-service.js";
 import { WordProviderError } from "./words/types.js";
@@ -14,6 +15,7 @@ export interface CreateAppOptions {
   wordLookup?: WordLookup;
   wordRateLimiter?: RateLimiter;
   studyStore?: StudyStore;
+  localChineseLookup?: LocalChineseLookup;
 }
 
 interface ApiErrorBody {
@@ -54,6 +56,19 @@ export function createApp(options: CreateAppOptions = {}) {
     options.wordRateLimiter ??
     new FixedWindowRateLimiter({ windowMs: 60_000, maxRequests: 60 });
   const studyStore = options.studyStore ?? new JsonFileStudyStore("./data/study-state.json");
+  const localChineseLookup = options.localChineseLookup ?? new CsvLocalChineseDictionary();
+  const lookupJobs: Array<{ word: string; resolve: (value: Awaited<ReturnType<WordLookup["lookup"]>>) => void; reject: (reason: unknown) => void }> = [];
+  let activeLookups = 0;
+  const drainLookupQueue = () => {
+    while (activeLookups < 6 && lookupJobs.length) {
+      const job = lookupJobs.shift()!; activeLookups += 1;
+      void wordLookup.lookup(job.word).then(job.resolve, job.reject).finally(() => { activeLookups -= 1; drainLookupQueue(); });
+    }
+  };
+  const limitedLookup = (word: string) => new Promise<Awaited<ReturnType<WordLookup["lookup"]>>>((resolveLookup, rejectLookup) => {
+    lookupJobs.push({ word, resolve: resolveLookup, reject: rejectLookup }); drainLookupQueue();
+  });
+  const backgroundDraftTasks = new Map<string, Promise<void>>();
 
   const enforceWordRateLimit: RequestHandler = (request, response, next) => {
     const clientKey = request.ip || request.socket.remoteAddress || "unknown";
@@ -66,6 +81,43 @@ export function createApp(options: CreateAppOptions = {}) {
     }
 
     next();
+  };
+
+  const resolveOneImportLine = async (line: ImportLineInput): Promise<PreparedImportLine> => {
+    const normalized = normalizeWord(line.word);
+    if (!isValidWordQuery(normalized)) {
+      return { ...line, status: "invalid", reason: "英文单词格式无效" };
+    }
+    let matched: Awaited<ReturnType<WordLookup["lookup"]>> | null = null;
+    let lookupFailed = false;
+    try { matched = await limitedLookup(normalized); } catch { lookupFailed = true; }
+    let zhMeaning = line.zhMeaning;
+    if (!zhMeaning) {
+      try { zhMeaning = await localChineseLookup.lookup(normalized); } catch { /* Local dictionaries are optional. */ }
+    }
+    const entry: StudyWordEntry = matched
+      ? { ...matched, ...(line.zhMeaning ? { zhMeaning: line.zhMeaning, zhMeaningSource: "user" as const } : zhMeaning ? { zhMeaning, zhMeaningSource: "dictionary" as const } : {}) }
+      : { word: normalized, phonetic: "", meanings: [], source: "user", ...(line.zhMeaning ? { zhMeaning: line.zhMeaning, zhMeaningSource: "user" as const } : zhMeaning ? { zhMeaning, zhMeaningSource: "dictionary" as const } : {}) };
+    return { line: line.line, word: normalized, ...(line.zhMeaning ? { zhMeaning: line.zhMeaning } : {}), status: matched ? "ready" : lookupFailed ? "processing" : "unmatched", ...(matched ? {} : { reason: lookupFailed ? "词典服务暂不可用，可稍后继续匹配" : "未找到词典释义" }), entry };
+  };
+  const processImportDraft = (clientId: string, id: string): Promise<void> => {
+    const key = `${clientId}:${id}`; const existing = backgroundDraftTasks.get(key); if (existing) return existing;
+    const task = (async () => {
+      const draft = await studyStore.getImportDraft(clientId, id);
+      if (!draft || draft.status === "committed") return;
+      const processable = draft.entries.filter((entry) => entry.word && (entry.status === "processing" || (entry.status === "conflict" && !entry.entry)));
+      if (!processable.length) return;
+      for (let offset = 0; offset < processable.length; offset += 6) {
+        const batch = processable.slice(offset, offset + 6);
+        const resolved: ResolvedImportDraftEntry[] = await Promise.all(batch.map(async (entry): Promise<ResolvedImportDraftEntry> => {
+          const result = await resolveOneImportLine({ line: entry.line, word: entry.word!, ...(entry.zhMeaning ? { zhMeaning: entry.zhMeaning } : {}) });
+          const status: ResolvedImportDraftEntry["status"] = result.status === "ready" || result.status === "unmatched" ? result.status : "processing";
+          return { id: entry.id, status, ...(result.reason ? { reason: result.reason } : {}), ...(result.entry ? { entry: result.entry } : {}) };
+        }));
+        await studyStore.resolveImportDraftEntries(clientId, id, resolved);
+      }
+    })().catch((error) => { console.error("Import draft processing failed", error); }).finally(() => { backgroundDraftTasks.delete(key); });
+    backgroundDraftTasks.set(key, task); return task;
   };
 
   app.disable("x-powered-by");
@@ -81,7 +133,7 @@ export function createApp(options: CreateAppOptions = {}) {
       },
     }),
   );
-  app.use(express.json({ limit: "100kb" }));
+  app.use(express.json({ limit: "2mb" }));
 
   app.get("/api/health", (_request, response) => {
     response.status(200).json({ status: "ok", service: "vacabweb-backend" });
@@ -164,8 +216,17 @@ export function createApp(options: CreateAppOptions = {}) {
     const clientId = readClientId(request, response); const input = parseUploadCatalog(request.body);
     if (!clientId) return;
     if (!input) { response.status(400).json(apiError("INVALID_CATALOG_UPLOAD", "Catalog upload is invalid")); return; }
-    try { response.status(201).json(await studyStore.uploadCatalog(clientId, input)); } catch (error) { next(error); }
+    try { const catalog = await studyStore.uploadCatalog(clientId, input); if (!catalog) response.status(404).json(apiError("WORDBOOK_NOT_FOUND", "Source wordbook was not found")); else response.status(201).json(catalog); } catch (error) { next(error); }
   });
+  const updateCatalogSnapshot: RequestHandler = async (request, response, next) => {
+    const clientId = readClientId(request, response); const id = parseResourceId(request.params.id); const input = parseUpdateCatalog(request.body);
+    if (!clientId) return;
+    if (!id) { response.status(400).json(apiError("INVALID_RESOURCE_ID", "Resource id is invalid")); return; }
+    if (!input) { response.status(400).json(apiError("INVALID_CATALOG_UPLOAD", "Catalog update is invalid")); return; }
+    try { const catalog = await studyStore.updateCatalog(clientId, id, input); if (!catalog) response.status(404).json(apiError("CATALOG_NOT_FOUND", "Catalog wordbook or source wordbook was not found")); else response.status(200).json(catalog); } catch (error) { next(error); }
+  };
+  app.patch("/api/catalog/wordbooks/:id", updateCatalogSnapshot);
+  app.put("/api/catalog/wordbooks/:id", updateCatalogSnapshot);
   app.post("/api/catalog/imports", async (request, response, next) => {
     const clientId = readClientId(request, response); const shareCode = parseShareCode(request.body && typeof request.body === "object" ? (request.body as { shareCode?: unknown }).shareCode : undefined);
     if (!clientId) return;
@@ -205,6 +266,68 @@ export function createApp(options: CreateAppOptions = {}) {
     if (!clientId) return;
     if (!id || status === null) { response.status(400).json(apiError("INVALID_QUEUE_QUERY", "Queue query is invalid")); return; }
     try { const words = await studyStore.listWords(clientId, id, status); if (!words) response.status(404).json(apiError("WORDBOOK_NOT_FOUND", "Wordbook was not found")); else response.status(200).json(words); } catch (error) { next(error); }
+  });
+  app.patch("/api/my/wordbooks/:id/words/:wordId", async (request, response, next) => {
+    const clientId = readClientId(request, response); const wordbookId = parseResourceId(request.params.id); const wordId = parseWordId(request.params.wordId); const input = parseUpdateWord(request.body);
+    if (!clientId) return;
+    if (!wordbookId || !wordId || !input) { response.status(400).json(apiError("INVALID_WORD_UPDATE", "Word update is invalid")); return; }
+    try {
+      const rematched = input.word ? (await resolveOneImportLine({ line: 1, word: input.word, ...(typeof input.zhMeaning === "string" ? { zhMeaning: input.zhMeaning } : {}) })).entry : undefined;
+      const result = await studyStore.updateWord(clientId, wordbookId, wordId, input, rematched);
+      if (result.kind === "not-found") response.status(404).json(apiError("WORD_NOT_FOUND", "Wordbook or word was not found"));
+      else if (result.kind === "duplicate") response.status(409).json(apiError("DUPLICATE_WORD", "The word already exists in this wordbook"));
+      else response.status(200).json(result.word);
+    } catch (error) { next(error); }
+  });
+  app.get("/api/my/import-drafts", async (request, response, next) => {
+    const clientId = readClientId(request, response); if (!clientId) return;
+    try { response.status(200).json(await studyStore.listImportDrafts(clientId)); } catch (error) { next(error); }
+  });
+  app.post("/api/my/import-drafts", async (request, response, next) => {
+    const clientId = readClientId(request, response); const input = parseCreateImportDraft(request.body);
+    if (!clientId) return;
+    if (!input) { response.status(400).json(apiError("INVALID_IMPORT_DRAFT", "Import draft is invalid or exceeds the file limit")); return; }
+    try {
+      const drafts = await studyStore.createImportDrafts(clientId, input);
+      if (!drafts[0]) response.status(404).json(apiError("WORDBOOK_NOT_FOUND", "Target wordbook was not found"));
+      else {
+        for (const draft of drafts) void processImportDraft(clientId, draft.id);
+        response.status(201).json(drafts[0]);
+      }
+    } catch (error) { next(error); }
+  });
+  app.get("/api/my/import-drafts/:id", async (request, response, next) => {
+    const clientId = readClientId(request, response); const id = parseResourceId(request.params.id); if (!clientId) return;
+    if (!id) { response.status(400).json(apiError("INVALID_RESOURCE_ID", "Resource id is invalid")); return; }
+    try { const draft = await studyStore.getImportDraft(clientId, id); if (!draft) response.status(404).json(apiError("IMPORT_DRAFT_NOT_FOUND", "Import draft was not found")); else response.status(200).json(draft); } catch (error) { next(error); }
+  });
+  app.delete("/api/my/import-drafts/:id", async (request, response, next) => {
+    const clientId = readClientId(request, response); const id = parseResourceId(request.params.id); if (!clientId) return;
+    if (!id) { response.status(400).json(apiError("INVALID_RESOURCE_ID", "Resource id is invalid")); return; }
+    try { if (!await studyStore.deleteImportDraft(clientId, id)) response.status(404).json(apiError("IMPORT_DRAFT_NOT_FOUND", "Import draft was not found or is already committed")); else response.status(204).end(); } catch (error) { next(error); }
+  });
+  app.post("/api/my/import-drafts/:id/commit", async (request, response, next) => {
+    const clientId = readClientId(request, response); const id = parseResourceId(request.params.id); const input = parseCommitImportDraft(request.body);
+    if (!clientId) return;
+    if (!id || !input) { response.status(400).json(apiError("INVALID_IMPORT_COMMIT", "Import draft commit is invalid")); return; }
+    try {
+      const draft = await studyStore.getImportDraft(clientId, id);
+      if (!draft) { response.status(404).json(apiError("IMPORT_DRAFT_NOT_FOUND", "Import draft or target wordbook was not found")); return; }
+      if (draft.status === "processing") { response.status(409).json(apiError("IMPORT_DRAFT_PROCESSING", "Import draft is still matching dictionary data")); return; }
+      const wordbook = await studyStore.commitImportDraft(clientId, id, input);
+      if (!wordbook) response.status(404).json(apiError("IMPORT_DRAFT_NOT_FOUND", "Import draft or target wordbook was not found")); else response.status(200).json(wordbook);
+    } catch (error) { next(error); }
+  });
+  app.post("/api/my/import-drafts/:id/process", async (request, response, next) => {
+    const clientId = readClientId(request, response); const id = parseResourceId(request.params.id); if (!clientId) return;
+    if (!id) { response.status(400).json(apiError("INVALID_RESOURCE_ID", "Resource id is invalid")); return; }
+    try {
+      const draft = await studyStore.getImportDraft(clientId, id);
+      if (!draft) { response.status(404).json(apiError("IMPORT_DRAFT_NOT_FOUND", "Import draft was not found")); return; }
+      if (draft.status === "committed") { response.status(409).json(apiError("IMPORT_DRAFT_COMMITTED", "Committed drafts cannot be processed")); return; }
+      void processImportDraft(clientId, id);
+      response.status(202).json(draft);
+    } catch (error) { next(error); }
   });
   app.post("/api/study/events", async (request, response, next) => {
     const clientId = readClientId(request, response); const input = parseLearningEvent(request.body);

@@ -1,0 +1,13 @@
+# Minimal fixture extracted from CMUdict on 2026-07-26.
+# Source: https://raw.githubusercontent.com/cmusphinx/cmudict/master/cmudict.dict
+# Attribution: Carnegie Mellon University / CMUdict. See ../LICENSES.md.
+bank B AE1 NG K
+bank's B AE1 NG K S
+banks B AE1 NG K S
+banks' B AE1 NG K S
+banks's B AE1 NG K S IH0 Z
+contribute K AH0 N T R IH1 B Y UW0 T
+empirical EH2 M P IH1 R IH0 K AH0 L
+inevitable IH2 N EH1 V AH0 T AH0 B AH0 L
+prioritize P R AY0 AO1 R AH0 T AY2 Z
+resilient R IH0 Z IH1 L Y AH0 N T
