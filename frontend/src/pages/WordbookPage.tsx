@@ -484,7 +484,7 @@ export function WordbookPage() {
       </main>
 
       <aside className="workspace-rail" aria-label="快捷功能和学习数据">
-        <section className="quick-actions"><h2>快捷功能</h2><QuickAction icon="book" title="单词学习" detail="认识新词，理解含义" onClick={() => openStudy('new')} /><QuickAction icon="repeat" title="复习巩固" detail="复习旧词，加深记忆" onClick={() => openStudy('review')} /><QuickAction icon="headphones" title="听写训练" detail="听音拼写，强化记忆" onClick={() => openStudy('dictation')} /><QuickAction icon="card" title="单词卡片" detail="浏览卡片，快速记忆" onClick={() => openStudy('new')} /></section>
+        <section className="quick-actions"><h2>快捷功能</h2><QuickAction icon="book" title="单词学习" detail="认识新词，理解含义" onClick={() => openStudy('new')} /><QuickAction icon="repeat" title="复习巩固" detail="复习旧词，加深记忆" onClick={() => openStudy('review')} /><QuickAction icon="headphones" title="听写训练" detail="听音拼写，强化记忆" onClick={() => openStudy('dictation')} /></section>
         <WeeklyStudyData week={dashboard?.week} loading={dashboardLoading} />
         <StudyStreak days={dashboard?.streakDays} loading={dashboardLoading} />
       </aside>
