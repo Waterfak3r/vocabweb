@@ -32,7 +32,7 @@ interface WordLadderState { level: WordLevel; levelReachedAt?: string; lastStudi
  * last CHANGED the level; a "mark" always counts as a change, even to the same rung — so it also
  * doubles as "when L3 was reached" for the 7-day final-check window.
  */
-function replayLadder(events: LearningEvent[]): WordLadderState {
+function replayLadder(events: LearningEvent[], onEvent?: (event: LearningEvent, level: WordLevel) => void): WordLadderState {
   let level: WordLevel = 0;
   let levelReachedAt: string | undefined;
   for (const event of events) {
@@ -53,6 +53,7 @@ function replayLadder(events: LearningEvent[]): WordLadderState {
         level = event.level; break;
     }
     if (level !== previous || event.kind === "mark") levelReachedAt = event.occurredAt;
+    onEvent?.(event, level);
   }
   // Events arrive oldest-first, so the tail is the most recent touch of ANY kind (mark included) —
   // the spaced-review clock's "last studied" stamp.
@@ -60,22 +61,29 @@ function replayLadder(events: LearningEvent[]): WordLadderState {
   return { level, ...(levelReachedAt !== undefined ? { levelReachedAt } : {}), ...(lastStudiedAt !== undefined ? { lastStudiedAt } : {}) };
 }
 /**
- * Bucket a wordbook's events by wordId in one pass, then replay each word's ladder. Each bucket is
- * stable-sorted by occurredAt so an injected/rewound clock or migrated data still replays strictly
- * chronologically (Array.sort is stable, so equal timestamps keep their insertion order).
+ * Bucket a wordbook's events by wordId in one pass. Each bucket is stable-sorted by occurredAt so
+ * an injected/rewound clock or migrated data still replays strictly chronologically (Array.sort is
+ * stable, so equal timestamps keep their insertion order).
  */
-function ladderStates(events: LearningEvent[]): Map<string, WordLadderState> {
+function bucketByWord(events: LearningEvent[]): Map<string, LearningEvent[]> {
   const buckets = new Map<string, LearningEvent[]>();
   for (const event of events) {
     const bucket = buckets.get(event.wordId);
     if (bucket) bucket.push(event); else buckets.set(event.wordId, [event]);
   }
+  for (const bucket of buckets.values()) bucket.sort((a, b) => Date.parse(a.occurredAt) - Date.parse(b.occurredAt));
+  return buckets;
+}
+function ladderStates(events: LearningEvent[]): Map<string, WordLadderState> {
   const states = new Map<string, WordLadderState>();
-  for (const [wordId, bucket] of buckets) {
-    bucket.sort((a, b) => Date.parse(a.occurredAt) - Date.parse(b.occurredAt));
-    states.set(wordId, replayLadder(bucket));
-  }
+  for (const [wordId, bucket] of bucketByWord(events)) states.set(wordId, replayLadder(bucket));
   return states;
+}
+/** Level each word held right AFTER each event, keyed by event id — feeds recentActivity honesty. */
+function ladderEventLevels(events: LearningEvent[]): Map<string, WordLevel> {
+  const after = new Map<string, WordLevel>();
+  for (const bucket of bucketByWord(events).values()) replayLadder(bucket, (event, level) => after.set(event.id, level));
+  return after;
 }
 function ladderOf(states: Map<string, WordLadderState>, wordId: string): WordLadderState { return states.get(wordId) ?? { level: 0 }; }
 // Legacy 4-status compat kept for the ?status= filter: L0 new / L1 learning / L2 review / L3-L4 mastered.
@@ -400,7 +408,9 @@ abstract class BaseStore implements StudyStore {
     const weekDays = new Set(calendar.map((item) => item.date));
     const weekEvents = studyEvents.filter((event) => weekDays.has(day(new Date(event.occurredAt))));
     const weekNew = count(weekEvents, "new"); const weekReview = count(weekEvents, "flashcard"); const weekDictation = count(weekEvents, "dictation");
-    return { wordbook: card(book, events), todayPlan: { new: { target: Math.min(20, Math.max(completedNew, newAvailable)), completed: completedNew }, review: { target: Math.min(30, Math.max(completedReview, reviewAvailable)), completed: completedReview }, dictation: { target: Math.min(15, Math.max(completedDictation, dictationAvailable)), completed: completedDictation } }, recentActivity: clone([...events].sort((a, b) => b.occurredAt.localeCompare(a.occurredAt)).slice(0, 5)), calendar, week: { newCount: weekNew, reviewCount: weekReview, dictationCount: weekDictation, total: weekNew + weekReview + weekDictation }, streakDays: streak, finalCheckDue, updatedAt: book.updatedAt };
+    // The 结果 column shows the proficiency a word held right after each study action.
+    const afterById = ladderEventLevels(events);
+    return { wordbook: card(book, events), todayPlan: { new: { target: Math.min(20, Math.max(completedNew, newAvailable)), completed: completedNew }, review: { target: Math.min(30, Math.max(completedReview, reviewAvailable)), completed: completedReview }, dictation: { target: Math.min(15, Math.max(completedDictation, dictationAvailable)), completed: completedDictation } }, recentActivity: clone([...events].sort((a, b) => b.occurredAt.localeCompare(a.occurredAt)).slice(0, 5)).map((event) => ({ ...event, levelAfter: afterById.get(event.id) ?? 0 as WordLevel })), calendar, week: { newCount: weekNew, reviewCount: weekReview, dictationCount: weekDictation, total: weekNew + weekReview + weekDictation }, streakDays: streak, finalCheckDue, updatedAt: book.updatedAt };
   }); }
   private catalogCard(book: CatalogWordbook, client?: ClientData, clientId?: string): CatalogCard {
     const { words: _words, ownerClientId: _owner, sourceWordbookId: _source, ...rest } = book;

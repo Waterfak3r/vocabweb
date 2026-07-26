@@ -618,6 +618,17 @@ test("word level follows the proficiency ladder over HTTP", async () => {
     const dictationOnly = await make("未学直接听写");
     await record(dictationOnly.id, { kind: "dictation", wordId: dictationOnly.wordId, correct: true });
     assert.deepEqual(await wordOf(dictationOnly.id), { status: "new", level: 0 });
+
+    // recentActivity reports the level the word held right AFTER each event (newest first),
+    // so the dashboard's 结果 column can speak the ladder's vocabulary honestly.
+    const traced = await make("结果档位");
+    await record(traced.id, { kind: "new", wordId: traced.wordId, verdict: "know" });
+    await record(traced.id, { kind: "flashcard", wordId: traced.wordId, verdict: "know" });
+    const dashboard = await (await fetch(`${app.baseUrl}/api/study/dashboard/${traced.id}`, { headers })).json() as { recentActivity: Array<{ kind: string; levelAfter: number }> };
+    assert.deepEqual(
+      dashboard.recentActivity.map((entry) => ({ kind: entry.kind, levelAfter: entry.levelAfter })),
+      [{ kind: "flashcard", levelAfter: 2 }, { kind: "new", levelAfter: 1 }],
+    );
   } finally { await app.close(); }
 });
 

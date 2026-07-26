@@ -71,19 +71,29 @@ function formatActivityTime(value: string) {
   return Number.isNaN(date.getTime()) ? '—' : date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
 }
 
+// 结果 column speaks the ladder's vocabulary: successful study shows the proficiency
+// the word held right after that action (levelAfter), failures echo the miss itself.
+const LEVEL_RESULT: Partial<Record<number, { result: string; resultTone: 'done' | 'pending' | 'active' }>> = {
+  1: { result: '初识', resultTone: 'active' },
+  2: { result: '熟悉', resultTone: 'active' },
+  3: { result: '掌握', resultTone: 'done' },
+  4: { result: '精通', resultTone: 'done' },
+}
+
 function activityResult(activity: StudyDashboard['recentActivity'][number]) {
-  if (activity.kind === 'new') return activity.verdict === 'unknown'
-    ? { result: '不熟', resultTone: 'pending' as const }
-    : { result: '已学习', resultTone: 'active' as const }
-  if (activity.kind === 'flashcard') return activity.verdict === 'know'
-    ? { result: '已掌握', resultTone: 'done' as const }
-    : { result: '待复习', resultTone: 'pending' as const }
   if (activity.kind === 'mark') return (activity.level ?? 0) >= 3
     ? { result: '已标熟', resultTone: 'done' as const }
     : { result: '已重置', resultTone: 'pending' as const }
-  return activity.correct === false
-    ? { result: '待复习', resultTone: 'pending' as const }
-    : { result: '听写正确', resultTone: 'done' as const }
+  const failed = activity.kind === 'dictation' ? activity.correct === false : activity.verdict === 'unknown'
+  if (failed) return activity.kind === 'dictation'
+    ? { result: '听写错误', resultTone: 'pending' as const }
+    : { result: '不熟', resultTone: 'pending' as const }
+  const after = activity.levelAfter !== undefined ? LEVEL_RESULT[activity.levelAfter] : undefined
+  if (after) return after
+  // Payloads predating levelAfter fall back to an action echo.
+  if (activity.kind === 'new') return { result: '已学习', resultTone: 'active' as const }
+  if (activity.kind === 'flashcard') return { result: '认识', resultTone: 'active' as const }
+  return { result: '听写正确', resultTone: 'done' as const }
 }
 
 function toRecentStudyRows(activities: StudyDashboard['recentActivity'], entries: WordbookItem[]): RecentStudyRow[] {

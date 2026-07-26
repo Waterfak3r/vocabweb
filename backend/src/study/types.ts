@@ -67,7 +67,8 @@ export interface StudyDashboard {
     review: { target: number; completed: number };
     dictation: { target: number; completed: number };
   };
-  recentActivity: LearningEvent[];
+  /** Each entry carries the proficiency level the word held right after that event. */
+  recentActivity: Array<LearningEvent & { levelAfter: WordLevel }>;
   calendar: Array<{ date: string; count: number; active: boolean }>;
   week: { newCount: number; reviewCount: number; dictationCount: number; total: number };
   streakDays: number;

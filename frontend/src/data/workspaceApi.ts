@@ -58,7 +58,7 @@ export type StudyDashboard = {
     review: { target: number; completed: number }
     dictation: { target: number; completed: number }
   }
-  recentActivity: Array<{ id: string; kind: 'new' | 'flashcard' | 'dictation' | 'mark'; wordbookId: string; word: string; occurredAt: string; verdict?: 'know' | 'unknown'; correct?: boolean; level?: WordLevel }>
+  recentActivity: Array<{ id: string; kind: 'new' | 'flashcard' | 'dictation' | 'mark'; wordbookId: string; word: string; occurredAt: string; verdict?: 'know' | 'unknown'; correct?: boolean; level?: WordLevel; levelAfter?: WordLevel }>
   calendar: Array<{ date: string; count: number; active: boolean }>
   week: { newCount: number; reviewCount: number; dictationCount: number; total: number }
   streakDays: number
@@ -214,7 +214,8 @@ function parseDashboard(value: unknown): StudyDashboard | null {
     if (entry.verdict !== undefined && entry.verdict !== 'know' && entry.verdict !== 'unknown') return null
     if (entry.correct !== undefined && typeof entry.correct !== 'boolean') return null
     if (entry.level !== undefined && !isWordLevel(entry.level)) return null
-    return { id: entry.id, kind: entry.kind, wordbookId: entry.wordbookId, word: entry.word, occurredAt: entry.occurredAt, verdict: entry.verdict, correct: entry.correct, level: entry.level }
+    if (entry.levelAfter !== undefined && !isWordLevel(entry.levelAfter)) return null
+    return { id: entry.id, kind: entry.kind, wordbookId: entry.wordbookId, word: entry.word, occurredAt: entry.occurredAt, verdict: entry.verdict, correct: entry.correct, level: entry.level, levelAfter: entry.levelAfter }
   })
   const calendar = value.calendar.map((entry) => isRecord(entry) && isText(entry.date) && isCount(entry.count) && typeof entry.active === 'boolean' ? { date: entry.date, count: entry.count, active: entry.active } : null)
   if (recentActivity.some((entry) => entry === null) || calendar.some((entry) => entry === null)) return null
