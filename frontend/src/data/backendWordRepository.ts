@@ -1,5 +1,6 @@
 import { isValidWordQuery, normalizeWord } from '../domain/normalize'
 import type { WordEntry, WordMeaning } from '../domain/types'
+import { resolveApiBase } from './resolveApiBase'
 import { getStudyClientId } from './studyApi'
 import { LookupError, type WordRepository } from './wordRepository'
 
@@ -109,21 +110,6 @@ function parseBackendWordEntry(
   }
 }
 
-function buildApiBase(baseUrl: string): URL {
-  const trimmed = baseUrl.trim()
-  if (!trimmed) throw new TypeError('Backend API base URL must not be empty.')
-
-  const url = new URL(trimmed)
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-    throw new TypeError('Backend API base URL must use HTTP or HTTPS.')
-  }
-
-  url.search = ''
-  url.hash = ''
-  if (!url.pathname.endsWith('/')) url.pathname += '/'
-  return url
-}
-
 /** Backend dictionary client for GET /api/words/:word. */
 export class BackendWordRepository implements WordRepository {
   private readonly baseUrl: URL
@@ -134,7 +120,7 @@ export class BackendWordRepository implements WordRepository {
     baseUrl: string,
     options: BackendWordRepositoryOptions = {},
   ) {
-    this.baseUrl = buildApiBase(baseUrl)
+    this.baseUrl = resolveApiBase(baseUrl)
     this.timeoutMs = options.timeoutMs ?? 8000
     this.fetch =
       options.fetch ??

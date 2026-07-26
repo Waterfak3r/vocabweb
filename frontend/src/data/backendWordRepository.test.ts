@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { BackendWordRepository } from './backendWordRepository'
+import { resolveApiBase } from './resolveApiBase'
 import { LookupError } from './wordRepository'
 
 type FetchLike = (
@@ -57,6 +58,22 @@ describe('BackendWordRepository', () => {
     expect(url.toString()).toBe(
       'https://example.test/root/api/words/serendipity',
     )
+  })
+
+  it('resolves a relative "/" base against the page origin', async () => {
+    // The default vitest environment is Node (vite.config.ts sets no
+    // test.environment), so `window` is undefined and resolveApiBase falls back
+    // to http://localhost — the production build uses the real page origin.
+    const fetch = vi.fn<FetchLike>(async () => jsonResponse(backendEntry()))
+    const repository = new BackendWordRepository('/', { fetch })
+
+    await expect(repository.lookup('serendipity')).resolves.toMatchObject({
+      word: 'serendipity',
+      source: 'backend',
+    })
+
+    const [url] = fetch.mock.calls[0]
+    expect(url.toString()).toBe('http://localhost/api/words/serendipity')
   })
 
   it('folds curly apostrophes before building the request URL', async () => {
@@ -173,5 +190,39 @@ describe('BackendWordRepository', () => {
       name: 'LookupError',
       code: 'parse',
     })
+  })
+})
+
+describe('resolveApiBase', () => {
+  it('keeps an absolute base byte-for-byte and strips query/hash', () => {
+    expect(
+      resolveApiBase('http://127.0.0.1:3000').toString(),
+    ).toBe('http://127.0.0.1:3000/')
+    expect(
+      resolveApiBase('https://example.test/root?discard=yes#fragment').toString(),
+    ).toBe('https://example.test/root/')
+  })
+
+  it('resolves a relative "/" base against the Node fallback origin', () => {
+    // No DOM in the Node vitest environment → falls back to http://localhost.
+    const base = resolveApiBase('/')
+    expect(base.toString()).toBe('http://localhost/')
+    expect(new URL('api/health', base).toString()).toBe(
+      'http://localhost/api/health',
+    )
+  })
+
+  it('normalizes a bare origin so joins append instead of replacing', () => {
+    // Without the trailing-slash normalization a base of ".../foo" would drop
+    // its last segment when a relative path is joined.
+    expect(new URL('api/health', resolveApiBase('http://h:3000/foo')).toString()).toBe(
+      'http://h:3000/foo/api/health',
+    )
+  })
+
+  it('rejects empty and non-HTTP bases', () => {
+    expect(() => resolveApiBase('')).toThrow(TypeError)
+    expect(() => resolveApiBase('   ')).toThrow(TypeError)
+    expect(() => resolveApiBase('ftp://example.test')).toThrow(TypeError)
   })
 })

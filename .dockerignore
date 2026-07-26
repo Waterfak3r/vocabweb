@@ -1,0 +1,31 @@
+# Dependencies and build outputs are regenerated inside the image.
+node_modules
+**/node_modules
+**/dist
+
+# VCS and CI metadata are not needed at build time.
+.git
+.gitignore
+.github
+
+# Runtime/persistent state must never be baked into the image.
+backend/data
+
+# Local secrets and dev-only env overrides.
+# frontend/.env.local points at 127.0.0.1:3000; keep it out so the committed
+# frontend/.env.production (VITE_API_BASE=/) is the only base the build sees.
+frontend/.env.local
+**/.env.local
+**/.env
+
+# Docs, screenshots, and the Node-direct launcher (container uses CMD directly).
+*.md
+*.png
+scripts
+
+# Docker/compose files themselves add nothing to the build context.
+Dockerfile
+.dockerignore
+docker-compose.yml
+
+# NOTE: resources/ and frontend/.env.production are intentionally NOT ignored.

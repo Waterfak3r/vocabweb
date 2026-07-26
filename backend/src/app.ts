@@ -1,3 +1,4 @@
+import path from "node:path";
 import cors from "cors";
 import express, { type ErrorRequestHandler, type RequestHandler } from "express";
 import { FixedWindowRateLimiter, type RateLimiter } from "./http/rate-limit.js";
@@ -19,6 +20,8 @@ export interface CreateAppOptions {
   localChineseLookup?: LocalChineseLookup;
   /** Express "trust proxy" hop count; set to the number of reverse proxies in front of the app. */
   trustProxy?: number;
+  /** Absolute or cwd-relative path to a built frontend to serve (static assets + SPA fallback). */
+  staticDir?: string;
 }
 
 interface ApiErrorBody {
@@ -146,15 +149,20 @@ export function createApp(options: CreateAppOptions = {}) {
   app.disable("x-powered-by");
   if (options.trustProxy) app.set("trust proxy", options.trustProxy);
   app.use(
-    cors({
-      origin(origin, callback) {
-        if (!origin || allowedOrigins.includes(origin)) {
-          callback(null, true);
-          return;
-        }
+    cors((request, callback) => {
+      const expressRequest = request as express.Request;
+      const origin = expressRequest.headers.origin;
+      // Same-origin browser requests still send an Origin header on
+      // POST/PATCH/DELETE, and in production the app is served same-origin, so
+      // accept requests whose Origin matches the host that served them.
+      // expressRequest.protocol honors the "trust proxy" setting (X-Forwarded-Proto).
+      const sameOrigin = `${expressRequest.protocol}://${expressRequest.headers.host}`;
+      if (!origin || allowedOrigins.includes(origin) || origin === sameOrigin) {
+        callback(null, { origin: true });
+        return;
+      }
 
-        callback(new CorsOriginError());
-      },
+      callback(new CorsOriginError());
     }),
   );
   app.use("/api", enforceMutationRateLimit);
@@ -372,6 +380,48 @@ export function createApp(options: CreateAppOptions = {}) {
     if (!id) { response.status(400).json(apiError("INVALID_RESOURCE_ID", "Resource id is invalid")); return; }
     try { const dashboard = await studyStore.getDashboard(clientId, id); if (!dashboard) response.status(404).json(apiError("WORDBOOK_NOT_FOUND", "Wordbook was not found")); else response.status(200).json(dashboard); } catch (error) { next(error); }
   });
+
+  // Serve the built frontend (static assets + SPA fallback) when a static dir is
+  // configured. API routes live under /api and are registered above, so static
+  // files (index:false disables directory index resolution) cannot shadow them.
+  if (options.staticDir) {
+    const staticDir = options.staticDir;
+    // express res.sendFile requires an absolute path; resolve against cwd if relative.
+    const staticRoot = path.resolve(staticDir);
+    const indexHtmlPath = path.resolve(staticRoot, "index.html");
+
+    app.use(
+      express.static(staticDir, {
+        index: false,
+        setHeaders(response, filePath) {
+          // Vite emits hashed filenames under an "assets" directory; those are safe
+          // to cache forever. Everything else must be revalidated each request.
+          // Match "assets" only within the served tree, not in the root's own path.
+          const relative = path.relative(staticRoot, filePath);
+          if (relative.split(/[\\/]/).includes("assets")) {
+            response.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+          } else {
+            response.setHeader("Cache-Control", "no-cache");
+          }
+        },
+      }),
+    );
+
+    // SPA deep-link fallback. Registered as a plain middleware (Express 5 /
+    // path-to-regexp v8 rejects bare "*" string wildcards). GET/HEAD requests for
+    // non-/api paths that matched no static file get index.html so client-side
+    // routing can take over; every other request falls through to the JSON 404.
+    app.use((request, response, next) => {
+      if ((request.method === "GET" || request.method === "HEAD") && !request.path.startsWith("/api")) {
+        response.setHeader("Cache-Control", "no-cache");
+        response.sendFile(indexHtmlPath, (error) => {
+          if (error) next(error);
+        });
+        return;
+      }
+      next();
+    });
+  }
 
   app.use((_request, response) => {
     response.status(404).json(apiError("NOT_FOUND", "Route not found"));

@@ -25,6 +25,7 @@ const app = createApp({
   wordRateLimiter,
   studyStore,
   ...(config.trustProxy ? { trustProxy: config.trustProxy } : {}),
+  ...(config.staticDir ? { staticDir: config.staticDir } : {}),
 });
 
 app.listen(config.port, () => {

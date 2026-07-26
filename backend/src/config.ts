@@ -11,6 +11,7 @@ export interface AppConfig {
   wordRateLimitMaxRequests: number;
   trustProxy: number;
   dataFile: string;
+  staticDir: string;
 }
 
 function parseInteger(
@@ -94,6 +95,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       const value = env.DATA_FILE?.trim() || "./data/study-state.json";
       if (value.length > 1_000) {
         throw new Error("DATA_FILE must be at most 1000 characters");
+      }
+      return value;
+    })(),
+    staticDir: (() => {
+      const value = env.STATIC_DIR?.trim() ?? "";
+      if (value.length > 1_000) {
+        throw new Error("STATIC_DIR must be at most 1000 characters");
       }
       return value;
     })(),

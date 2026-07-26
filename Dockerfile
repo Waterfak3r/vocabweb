@@ -1,0 +1,66 @@
+# syntax=docker/dockerfile:1
+
+# ---------------------------------------------------------------------------
+# Stage 1: build the frontend (Vite -> frontend/dist)
+# ---------------------------------------------------------------------------
+FROM node:22-alpine AS frontend-build
+WORKDIR /app/frontend
+
+# Install deps first for better layer caching.
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+
+# Copy the rest of the frontend source. .env.production (VITE_API_BASE=/) must
+# be part of the build context so `vite build` bakes the same-origin API base.
+COPY frontend/ ./
+RUN npm run build
+
+# ---------------------------------------------------------------------------
+# Stage 2: build the backend (tsc -> backend/dist) + prune to runtime deps
+# ---------------------------------------------------------------------------
+FROM node:22-alpine AS backend-build
+WORKDIR /app/backend
+
+COPY backend/package.json backend/package-lock.json ./
+RUN npm ci
+
+COPY backend/ ./
+RUN npm run build \
+    && npm prune --omit=dev
+
+# ---------------------------------------------------------------------------
+# Stage 3: minimal runtime image
+# ---------------------------------------------------------------------------
+FROM node:22-alpine AS runtime
+
+# Repo-relative layout preserved inside the image so the compiled backend can
+# resolve ../../../resources from backend/dist/study and serve the frontend.
+#   /app/backend/{dist,node_modules,package.json}
+#   /app/frontend/dist
+#   /app/resources
+# WORKDIR /app first so the ./ destinations below resolve under /app.
+WORKDIR /app
+COPY --from=backend-build /app/backend/dist ./backend/dist
+COPY --from=backend-build /app/backend/node_modules ./backend/node_modules
+COPY --from=backend-build /app/backend/package.json ./backend/package.json
+COPY --from=frontend-build /app/frontend/dist ./frontend/dist
+COPY resources/ ./resources/
+
+WORKDIR /app/backend
+
+ENV NODE_ENV=production \
+    PORT=3000 \
+    STATIC_DIR=/app/frontend/dist
+
+# Persistent study state lives here (DATA_FILE default ./data/study-state.json,
+# relative to this WORKDIR). Owned by the unprivileged node user.
+RUN mkdir -p /app/backend/data && chown -R node:node /app/backend/data
+VOLUME ["/app/backend/data"]
+
+USER node
+EXPOSE 3000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+
+CMD ["node", "dist/server.js"]

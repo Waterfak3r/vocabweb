@@ -1,0 +1,15 @@
+{
+  "name": "vacabweb",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "install:all": "npm ci --prefix backend && npm ci --prefix frontend",
+    "build": "npm run build --prefix frontend && npm run build --prefix backend",
+    "test": "npm test --prefix backend && npm test --prefix frontend",
+    "start": "node scripts/start-prod.mjs"
+  }
+}

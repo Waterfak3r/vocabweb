@@ -13,6 +13,7 @@ test("loadConfig provides bounded word lookup defaults", () => {
     wordRateLimitWindowMs: 60_000,
     wordRateLimitMaxRequests: 60,
     trustProxy: 0,
+    staticDir: "",
     dataFile: "./data/study-state.json",
   });
 });
@@ -28,6 +29,7 @@ test("loadConfig parses configured word lookup settings", () => {
     WORD_RATE_LIMIT_WINDOW_MS: "30000",
     WORD_RATE_LIMIT_MAX_REQUESTS: "10",
     TRUST_PROXY: "1",
+    STATIC_DIR: " ../frontend/dist ",
     DATA_FILE: "C:/data/vocab.json",
   });
 
@@ -41,6 +43,7 @@ test("loadConfig parses configured word lookup settings", () => {
     wordRateLimitWindowMs: 30_000,
     wordRateLimitMaxRequests: 10,
     trustProxy: 1,
+    staticDir: "../frontend/dist",
     dataFile: "C:/data/vocab.json",
   });
 });

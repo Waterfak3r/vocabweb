@@ -1,0 +1,29 @@
+services:
+  vacabweb:
+    build:
+      context: .
+    image: vacabweb:latest
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+    volumes:
+      # Persist anonymous catalog, wordbooks, and study events across restarts.
+      - vacab-data:/app/backend/data
+    environment:
+      # The image already sets NODE_ENV=production, PORT=3000 and
+      # STATIC_DIR=/app/frontend/dist. Uncomment/adjust as needed:
+      #
+      # Number of reverse proxies in front of the app (0 = none). Required for
+      # correct per-IP rate limiting when running behind nginx / a load balancer.
+      # - TRUST_PROXY=1
+      #
+      # Extra browser origins allowed by CORS, comma-separated. Same-origin
+      # requests (served frontend) need no entry here.
+      # - FRONTEND_ORIGIN=https://vocab.example.com
+      #
+      # Override the persistent state file location (relative to /app/backend).
+      # Keep it inside the mounted volume so data survives container recreation.
+      # - DATA_FILE=./data/study-state.json
+
+volumes:
+  vacab-data:

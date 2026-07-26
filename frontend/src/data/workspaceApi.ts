@@ -1,4 +1,5 @@
 import type { WordbookItem, WordEntry, WordMeaning, WordSource } from '../domain/types'
+import { resolveApiBase } from './resolveApiBase'
 import { getStudyClientId } from './studyApi'
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
@@ -247,14 +248,6 @@ function parseImportDraft(value: unknown): ImportDraft | null {
   }
 }
 
-function buildApiBase(baseUrl: string): URL {
-  const url = new URL(baseUrl.trim())
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new TypeError('Backend API base URL must use HTTP or HTTPS.')
-  url.search = ''; url.hash = ''
-  if (!url.pathname.endsWith('/')) url.pathname += '/'
-  return url
-}
-
 /** Optional remote repository for catalog, personal wordbooks, and study data. */
 export class WorkspaceApi {
   private readonly baseUrl: URL
@@ -263,7 +256,7 @@ export class WorkspaceApi {
   private readonly clientId: () => string
 
   constructor(baseUrl: string, options: WorkspaceApiOptions = {}) {
-    this.baseUrl = buildApiBase(baseUrl)
+    this.baseUrl = resolveApiBase(baseUrl)
     this.fetch = options.fetch ?? ((input, init) => globalThis.fetch(input, init))
     this.timeoutMs = options.timeoutMs ?? 8_000
     this.clientId = options.clientId ?? getStudyClientId
