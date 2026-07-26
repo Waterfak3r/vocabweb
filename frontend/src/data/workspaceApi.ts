@@ -61,7 +61,7 @@ export type StudyDashboard = {
 }
 
 export type LearningEvent =
-  | { kind: 'new'; wordbookId: string; word: string }
+  | { kind: 'new'; wordbookId: string; word: string; verdict?: 'know' | 'unknown' }
   | { kind: 'flashcard'; wordbookId: string; word: string; verdict: 'know' | 'unknown' }
   | { kind: 'dictation'; wordbookId: string; word: string; correct: boolean }
 
@@ -294,6 +294,21 @@ export class WorkspaceApi {
   updateWord(wordbookId: string, wordId: string, input: UpdateWordInput) { return this.json(`api/my/wordbooks/${encodeURIComponent(wordbookId)}/words/${encodeURIComponent(wordId)}`, { method: 'PATCH', body: JSON.stringify(input) }, parseWord) }
   getDashboard(id: string) { return this.json(`api/study/dashboard/${encodeURIComponent(id)}`, {}, parseDashboard) }
   recordStudyEvent(event: LearningEvent) { return this.json('api/study/events', { method: 'POST', body: JSON.stringify(event) }, (value) => value) }
+  /** Adds one word to a wordbook; the backend supplements dictionary data. 200 means it was already there. */
+  async addWordToWordbook(wordbookId: string, input: { word: string; zhMeaning?: string }) {
+    const url = new URL(`api/my/wordbooks/${encodeURIComponent(wordbookId)}/words`, this.baseUrl)
+    const response = await this.fetch(url, this.requestInit({ method: 'POST', body: JSON.stringify(input) }))
+    if (!response.ok) throw new Error(`Backend request failed (${response.status}).`)
+    let payload: unknown
+    try { payload = await response.json() } catch { throw new Error('Backend response is not valid JSON.') }
+    const word = parseWord(isRecord(payload) ? payload.word : undefined)
+    if (!word) throw new Error('Backend response is invalid.')
+    return { word, duplicate: response.status === 200 }
+  }
+  /** Permanently deletes a trashed wordbook and its study events. */
+  purgeMyWordbook(id: string) { return this.empty(`api/my/wordbooks/${encodeURIComponent(id)}/purge`, { method: 'DELETE' }) }
+  /** Removes one of the client's own catalog uploads from the marketplace. */
+  deleteCatalogUpload(id: string) { return this.empty(`api/catalog/wordbooks/${encodeURIComponent(id)}`, { method: 'DELETE' }) }
 
   private async list<T>(url: URL, parser: (value: unknown) => T | null, label: string): Promise<T[]> {
     const payload = await this.request(url)

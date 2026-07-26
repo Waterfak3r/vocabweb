@@ -34,11 +34,11 @@ export interface MyWordbookCard {
 }
 
 export type LearningEventInput =
-  | { kind: "new"; wordbookId: string; word?: string; wordId?: string }
+  | { kind: "new"; wordbookId: string; word?: string; wordId?: string; verdict?: "know" | "unknown" }
   | { kind: "flashcard"; wordbookId: string; word?: string; wordId?: string; verdict: "know" | "unknown" }
   | { kind: "dictation"; wordbookId: string; word?: string; wordId?: string; correct: boolean };
 export type LearningEvent =
-  | ({ kind: "new"; wordbookId: string; word: string; wordId: string; id: string; occurredAt: string })
+  | ({ kind: "new"; wordbookId: string; word: string; wordId: string; verdict?: "know" | "unknown"; id: string; occurredAt: string })
   | ({ kind: "flashcard"; wordbookId: string; word: string; wordId: string; verdict: "know" | "unknown"; id: string; occurredAt: string })
   | ({ kind: "dictation"; wordbookId: string; word: string; wordId: string; correct: boolean; id: string; occurredAt: string });
 export type WordLearningStatus = "new" | "learning" | "review" | "mastered";
@@ -115,6 +115,9 @@ export interface StudyStore {
   deleteMyWordbook(clientId: string, id: string): Promise<boolean>;
   restoreMyWordbook(clientId: string, id: string): Promise<MyWordbookCard | null>;
   listWords(clientId: string, id: string, status?: WordLearningStatus): Promise<LearningQueueItem[] | null>;
+  addWordToMyWordbook(clientId: string, wordbookId: string, entry: StudyWordEntry): Promise<{ word: LearningQueueItem; created: boolean } | null>;
+  purgeMyWordbook(clientId: string, id: string): Promise<boolean>;
+  deleteCatalogUpload(clientId: string, id: string): Promise<boolean>;
   updateWord(clientId: string, wordbookId: string, wordId: string, input: UpdateWordInput, rematched?: StudyWordEntry, options?: { lookupFailed?: boolean }): Promise<UpdateWordResult>;
   createImportDrafts(clientId: string, input: CreateImportDraftInput): Promise<ImportDraft[]>;
   resolveImportDraftEntries(clientId: string, id: string, entries: ResolvedImportDraftEntry[]): Promise<ImportDraft | null>;

@@ -119,7 +119,8 @@ test("a new anonymous client can create a wordbook and starts with no learning a
     };
     assert.deepEqual(pristine.recentActivity, []);
     assert.ok(pristine.calendar.every((date) => !date.active));
-    assert.deepEqual(pristine.todayPlan, { new: { target: 1, completed: 0 }, review: { target: 0, completed: 0 }, dictation: { target: 1, completed: 0 } });
+    // 听写训练 draws only from studied words (status !== "new"); a fresh single-word book has none yet.
+    assert.deepEqual(pristine.todayPlan, { new: { target: 1, completed: 0 }, review: { target: 0, completed: 0 }, dictation: { target: 0, completed: 0 } });
     assert.deepEqual(pristine.week, { newCount: 0, reviewCount: 0, dictationCount: 0, total: 0 });
     assert.equal(pristine.streakDays, 0);
     const queue = await fetch(`${app.baseUrl}/api/my/wordbooks/${primary.id}/words`, { headers });
@@ -421,4 +422,187 @@ test("v2 state migrates word IDs and old learning events without dropping progre
     assert.ok(persisted.clients[CLIENT]!.wordbooks[0]!.words[0]!.id);
     assert.equal(persisted.clients[CLIENT]!.events[0]!.wordId, persisted.clients[CLIENT]!.wordbooks[0]!.words[0]!.id);
   } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("adding a word resolves dictionary data, dedupes, and never blocks on a failed lookup", async () => {
+  const app = await server({
+    wordLookup: {
+      async lookup(word) {
+        if (word === "offline") throw new Error("temporary dictionary outage");
+        if (word === "missingword") return null;
+        return dictionaryEntry(word);
+      },
+    },
+  });
+  try {
+    const create = await fetch(`${app.baseUrl}/api/my/wordbooks`, { method: "POST", headers, body: JSON.stringify({ title: "加词词本" }) });
+    const book = await create.json() as { id: string };
+
+    // A matched lookup supplies English data; the learner's own zhMeaning wins.
+    const added = await fetch(`${app.baseUrl}/api/my/wordbooks/${book.id}/words`, { method: "POST", headers, body: JSON.stringify({ word: "Resilient", zhMeaning: "有韧性" }) });
+    assert.equal(added.status, 201);
+    const addedWord = (await added.json() as { word: { id: string; word: string; phonetic: string; status: string; zhMeaning?: string; zhMeaningSource?: string; meanings: unknown[] } }).word;
+    assert.equal(addedWord.word, "resilient");
+    assert.equal(addedWord.status, "new");
+    assert.equal(addedWord.phonetic, "/resilient/");
+    assert.equal(addedWord.zhMeaning, "有韧性");
+    assert.equal(addedWord.zhMeaningSource, "user");
+    assert.ok(addedWord.meanings.length > 0);
+
+    // A normalized duplicate returns the existing item with a 200, not a second copy.
+    const duplicate = await fetch(`${app.baseUrl}/api/my/wordbooks/${book.id}/words`, { method: "POST", headers, body: JSON.stringify({ word: "RESILIENT" }) });
+    assert.equal(duplicate.status, 200);
+    assert.equal((await duplicate.json() as { word: { id: string } }).word.id, addedWord.id);
+
+    // A transient lookup failure still stores the word with empty dictionary fields.
+    const offline = await fetch(`${app.baseUrl}/api/my/wordbooks/${book.id}/words`, { method: "POST", headers, body: JSON.stringify({ word: "offline" }) });
+    assert.equal(offline.status, 201);
+    const offlineWord = (await offline.json() as { word: { word: string; phonetic: string; meanings: unknown[]; status: string } }).word;
+    assert.equal(offlineWord.word, "offline");
+    assert.equal(offlineWord.phonetic, "");
+    assert.deepEqual(offlineWord.meanings, []);
+    assert.equal(offlineWord.status, "new");
+
+    // A missing wordbook is a 404; an invalid word is a 400.
+    assert.equal((await fetch(`${app.baseUrl}/api/my/wordbooks/my-nope/words`, { method: "POST", headers, body: JSON.stringify({ word: "resilient" }) })).status, 404);
+    assert.equal((await fetch(`${app.baseUrl}/api/my/wordbooks/${book.id}/words`, { method: "POST", headers, body: JSON.stringify({ word: "123" }) })).status, 400);
+
+    const words = await (await fetch(`${app.baseUrl}/api/my/wordbooks/${book.id}/words`, { headers })).json() as unknown[];
+    assert.equal(words.length, 2);
+  } finally { await app.close(); }
+});
+
+test("purging removes only a trashed wordbook and drops its study events", async () => {
+  const app = await server();
+  try {
+    const create = await fetch(`${app.baseUrl}/api/my/wordbooks`, { method: "POST", headers, body: JSON.stringify({ title: "待清空", words: [{ word: "resilient", phonetic: "", source: "user", meanings: [{ pos: "adjective", definition: "Able to recover quickly." }] }] }) });
+    const book = await create.json() as { id: string };
+    const words = await (await fetch(`${app.baseUrl}/api/my/wordbooks/${book.id}/words`, { headers })).json() as Array<{ id: string }>;
+    await fetch(`${app.baseUrl}/api/study/events`, { method: "POST", headers, body: JSON.stringify({ kind: "flashcard", wordbookId: book.id, wordId: words[0]!.id, verdict: "know" }) });
+
+    // An active (non-trashed) wordbook cannot be purged.
+    assert.equal((await fetch(`${app.baseUrl}/api/my/wordbooks/${book.id}/purge`, { method: "DELETE", headers })).status, 404);
+
+    assert.equal((await fetch(`${app.baseUrl}/api/my/wordbooks/${book.id}`, { method: "DELETE", headers })).status, 204);
+    assert.equal((await fetch(`${app.baseUrl}/api/my/wordbooks/${book.id}/purge`, { method: "DELETE", headers })).status, 204);
+
+    assert.deepEqual(await (await fetch(`${app.baseUrl}/api/my/wordbooks?view=trash`, { headers })).json(), []);
+    assert.equal((await fetch(`${app.baseUrl}/api/my/wordbooks/${book.id}`, { headers })).status, 404);
+    // The book's events were dropped, so recording against it now 404s, as does a second purge.
+    assert.equal((await fetch(`${app.baseUrl}/api/study/events`, { method: "POST", headers, body: JSON.stringify({ kind: "flashcard", wordbookId: book.id, word: "resilient", verdict: "know" }) })).status, 404);
+    assert.equal((await fetch(`${app.baseUrl}/api/my/wordbooks/${book.id}/purge`, { method: "DELETE", headers })).status, 404);
+  } finally { await app.close(); }
+});
+
+test("purgeMyWordbook removes the book and its events at the store level", async () => {
+  const store = new InMemoryStudyStore();
+  const book = await store.createMyWordbook(CLIENT, { title: "T", words: [{ word: "resilient", phonetic: "", meanings: [], source: "user" }] });
+  const words = await store.listWords(CLIENT, book.id);
+  const wordId = words![0]!.id;
+  await store.recordEvent(CLIENT, { kind: "flashcard", wordbookId: book.id, wordId, verdict: "know" });
+  // A live wordbook is never purged; only a trashed one is.
+  assert.equal(await store.purgeMyWordbook(CLIENT, book.id), false);
+  await store.deleteMyWordbook(CLIENT, book.id);
+  assert.equal(await store.purgeMyWordbook(CLIENT, book.id), true);
+  assert.deepEqual(await store.listMyWordbooks(CLIENT, true), []);
+  // The word's event was removed alongside the book, so it can no longer be matched.
+  assert.equal(await store.recordEvent(CLIENT, { kind: "flashcard", wordbookId: book.id, wordId, verdict: "know" }), null);
+});
+
+test("deleting a catalog upload is owner-only and clears every client's favorite of it", async () => {
+  const app = await server();
+  try {
+    const otherHeaders = { ...headers, "x-vocab-client-id": OTHER_CLIENT };
+    const upload = await fetch(`${app.baseUrl}/api/catalog/uploads`, { method: "POST", headers, body: JSON.stringify({ title: "可删上传", exams: ["IELTS"], goals: ["写作"], words: [{ word: "coherent", phonetic: "", source: "user", meanings: [{ pos: "adjective", definition: "Logical and consistent." }] }] }) });
+    const catalog = await upload.json() as { id: string };
+    // Another client favorites the listing and makes an independent copy of it.
+    await fetch(`${app.baseUrl}/api/catalog/wordbooks/${catalog.id}/favorite`, { method: "POST", headers: otherHeaders });
+    const copy = await fetch(`${app.baseUrl}/api/catalog/wordbooks/${catalog.id}/add`, { method: "POST", headers: otherHeaders });
+    const copiedBook = (await copy.json() as { wordbook: { id: string } }).wordbook;
+    assert.equal((await (await fetch(`${app.baseUrl}/api/catalog/favorites`, { headers: otherHeaders })).json() as unknown[]).length, 1);
+
+    // A non-owner cannot delete it, and the 404 does not leak that it exists.
+    assert.equal((await fetch(`${app.baseUrl}/api/catalog/wordbooks/${catalog.id}`, { method: "DELETE", headers: otherHeaders })).status, 404);
+
+    // The owner deletes it: gone from the catalog and from the other client's favorites.
+    assert.equal((await fetch(`${app.baseUrl}/api/catalog/wordbooks/${catalog.id}`, { method: "DELETE", headers })).status, 204);
+    assert.equal((await fetch(`${app.baseUrl}/api/catalog/wordbooks/${catalog.id}`, { headers })).status, 404);
+    assert.deepEqual(await (await fetch(`${app.baseUrl}/api/catalog/favorites`, { headers: otherHeaders })).json(), []);
+    // The independent copy the other client added survives; a second delete is a 404.
+    assert.equal((await fetch(`${app.baseUrl}/api/my/wordbooks/${copiedBook.id}`, { headers: otherHeaders })).status, 200);
+    assert.equal((await fetch(`${app.baseUrl}/api/catalog/wordbooks/${catalog.id}`, { method: "DELETE", headers })).status, 404);
+  } finally { await app.close(); }
+});
+
+test("a new-session verdict round-trips into stored events and dashboard recent activity", async () => {
+  const app = await server();
+  try {
+    const create = await fetch(`${app.baseUrl}/api/my/wordbooks`, { method: "POST", headers, body: JSON.stringify({ title: "新学词本", words: [{ word: "resilient", phonetic: "", source: "user", meanings: [{ pos: "adjective", definition: "Able to recover quickly." }] }] }) });
+    const book = await create.json() as { id: string };
+    const words = await (await fetch(`${app.baseUrl}/api/my/wordbooks/${book.id}/words`, { headers })).json() as Array<{ id: string }>;
+    const wordId = words[0]!.id;
+
+    const event = await fetch(`${app.baseUrl}/api/study/events`, { method: "POST", headers, body: JSON.stringify({ kind: "new", wordbookId: book.id, wordId, verdict: "unknown" }) });
+    assert.equal(event.status, 201);
+    assert.equal((await event.json() as { kind: string; verdict?: string }).verdict, "unknown");
+    // An out-of-range verdict is rejected; a verdict-less "new" event stays valid.
+    assert.equal((await fetch(`${app.baseUrl}/api/study/events`, { method: "POST", headers, body: JSON.stringify({ kind: "new", wordbookId: book.id, wordId, verdict: "maybe" }) })).status, 400);
+    assert.equal((await fetch(`${app.baseUrl}/api/study/events`, { method: "POST", headers, body: JSON.stringify({ kind: "new", wordbookId: book.id, wordId }) })).status, 201);
+
+    const dashboard = await (await fetch(`${app.baseUrl}/api/study/dashboard/${book.id}`, { headers })).json() as { recentActivity: Array<{ kind: string; verdict?: string }> };
+    const newActivity = dashboard.recentActivity.filter((entry) => entry.kind === "new");
+    assert.ok(newActivity.some((entry) => entry.verdict === "unknown"), "verdict must survive into recent activity");
+    assert.ok(newActivity.some((entry) => entry.verdict === undefined), "verdict-less new events remain supported");
+  } finally { await app.close(); }
+});
+
+test("word status follows the review-before-mastery lifecycle", async () => {
+  const app = await server();
+  try {
+    const make = async (title: string) => {
+      const created = await fetch(`${app.baseUrl}/api/my/wordbooks`, { method: "POST", headers, body: JSON.stringify({ title, words: [{ word: "resilient", phonetic: "", source: "user", meanings: [{ pos: "adjective", definition: "Able to recover quickly." }] }] }) });
+      const book = await created.json() as { id: string };
+      const words = await (await fetch(`${app.baseUrl}/api/my/wordbooks/${book.id}/words`, { headers })).json() as Array<{ id: string; status: string }>;
+      return { id: book.id, wordId: words[0]!.id, initialStatus: words[0]!.status };
+    };
+    const statusOf = async (bookId: string) => ((await (await fetch(`${app.baseUrl}/api/my/wordbooks/${bookId}/words`, { headers })).json()) as Array<{ status: string }>)[0]!.status;
+    const record = (bookId: string, body: Record<string, unknown>) => fetch(`${app.baseUrl}/api/study/events`, { method: "POST", headers, body: JSON.stringify({ wordbookId: bookId, ...body }) });
+
+    // No events at all: the word is untouched.
+    const fresh = await make("未学习");
+    assert.equal(fresh.initialStatus, "new");
+
+    // A finished "new" session with a "know" self-report leaves the word due for review.
+    const newKnow = await make("新词已会");
+    await record(newKnow.id, { kind: "new", wordId: newKnow.wordId, verdict: "know" });
+    assert.equal(await statusOf(newKnow.id), "review");
+
+    // A "new" session marked "unknown" is still being learned.
+    const newUnknown = await make("新词不会");
+    await record(newUnknown.id, { kind: "new", wordId: newUnknown.wordId, verdict: "unknown" });
+    assert.equal(await statusOf(newUnknown.id), "learning");
+
+    // A verdict-less "new" event (legacy data) counts as "know" -> review.
+    const newLegacy = await make("旧数据无判定");
+    await record(newLegacy.id, { kind: "new", wordId: newLegacy.wordId });
+    assert.equal(await statusOf(newLegacy.id), "review");
+
+    // Only a flashcard "know" reaches "mastered".
+    const cardKnow = await make("复习掌握");
+    await record(cardKnow.id, { kind: "flashcard", wordId: cardKnow.wordId, verdict: "know" });
+    assert.equal(await statusOf(cardKnow.id), "mastered");
+
+    // A flashcard "unknown" and a failed dictation both mean "review".
+    const cardUnknown = await make("复习不会");
+    await record(cardUnknown.id, { kind: "flashcard", wordId: cardUnknown.wordId, verdict: "unknown" });
+    assert.equal(await statusOf(cardUnknown.id), "review");
+
+    const dictationWrong = await make("默写错误");
+    await record(dictationWrong.id, { kind: "dictation", wordId: dictationWrong.wordId, correct: false });
+    assert.equal(await statusOf(dictationWrong.id), "review");
+
+    // A later flashcard "know" overrides an earlier "unknown" new session.
+    await record(newUnknown.id, { kind: "flashcard", wordId: newUnknown.wordId, verdict: "know" });
+    assert.equal(await statusOf(newUnknown.id), "mastered");
+  } finally { await app.close(); }
 });

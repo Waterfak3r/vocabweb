@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { WordResultCard } from '../components/word/WordResultCard'
 import { EmptyState } from '../components/ui/EmptyState'
@@ -56,10 +56,8 @@ export function HomePage() {
   )
   const { state, lookup } = useWordLookup(undefined, reportLookup)
   const savedCount = summary.wordbookTotal
-  const hasDailyGoal = summarySource === 'remote' && summary.dailyGoal.target > 0
-  const goalProgress = hasDailyGoal
-    ? Math.min(100, Math.round((summary.dailyGoal.completed / summary.dailyGoal.target) * 100))
-    : 0
+  const isRemote = summarySource === 'remote'
+  const recent = summary.recent
 
   // Focus the result once it lands, so screen readers announce it.
   useEffect(() => {
@@ -223,21 +221,13 @@ export function HomePage() {
 
         <aside className="study-sidebar" aria-label="学习概览">
           <section className="study-card progress-card">
-            <h2>{hasDailyGoal ? '今日学习进度' : '学习概览'}</h2>
+            <h2>学习概览</h2>
             {isRefreshing && <span className="sr-only" role="status">正在同步学习记录</span>}
             <div className="progress-overview">
-              {hasDailyGoal ? (
-                <div
-                  className="progress-ring"
-                  role="progressbar"
-                  aria-label="今日学习目标"
-                  aria-valuemin={0}
-                  aria-valuemax={summary.dailyGoal.target}
-                  aria-valuenow={summary.dailyGoal.completed}
-                  aria-valuetext={`已完成 ${summary.dailyGoal.completed} / ${summary.dailyGoal.target}`}
-                  style={{ '--progress': `${goalProgress}%` } as CSSProperties}
-                >
-                  <span aria-hidden="true">{goalProgress}%</span>
+              {isRemote ? (
+                <div className="wordbook-orb" aria-label={`共 ${summary.wordbookCount} 个单词本`}>
+                  <strong>{summary.wordbookCount}</strong>
+                  <span aria-hidden="true">词本</span>
                 </div>
               ) : (
                 <div className="wordbook-orb" aria-label={`个人词本共收录 ${savedCount} 个单词`}>
@@ -246,21 +236,26 @@ export function HomePage() {
                 </div>
               )}
               <dl className="study-stats">
-                {summarySource === 'remote' ? (
+                {isRemote && recent ? (
                   <>
-                    <div><dt>查询生词</dt><dd>{summary.lookupCount}</dd></div>
-                    <div><dt>复习完成</dt><dd>{summary.review.completedToday} <small>/ {summary.review.due}</small></dd></div>
-                    <div><dt>听写完成</dt><dd>{summary.dictation.completedToday} <small>/ {summary.dictation.due}</small></dd></div>
+                    <div><dt>待复习</dt><dd>{recent.reviewDue}</dd></div>
+                    <div><dt>已掌握</dt><dd>{recent.mastered}</dd></div>
+                    <div><dt>未学习</dt><dd>{recent.unstudied}</dd></div>
                   </>
                 ) : (
                   <>
                     <div><dt>今日收藏</dt><dd>{summary.addedToday}</dd></div>
-                    <div><dt>可复习词条</dt><dd>{summary.review.due}</dd></div>
-                    <div><dt>可听写词条</dt><dd>{summary.dictation.due}</dd></div>
+                    <div><dt>可复习词条</dt><dd>{summary.reviewDue}</dd></div>
+                    <div><dt>可听写词条</dt><dd>{summary.dictationDue}</dd></div>
                   </>
                 )}
               </dl>
             </div>
+            {isRemote && recent && (
+              <p className="study-recent">
+                最近学习：<strong>「{recent.title}」</strong>
+              </p>
+            )}
           </section>
 
           <section className="study-card steps-card">

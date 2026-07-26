@@ -5,7 +5,7 @@ import { FixedWindowRateLimiter, type RateLimiter } from "./http/rate-limit.js";
 import { WiktApiProvider } from "./providers/wiktapi.js";
 import { CsvLocalChineseDictionary, type LocalChineseLookup } from "./study/local-dictionary.js";
 import { JsonFileStudyStore } from "./study/store.js";
-import { parseCatalogQuery, parseClientId, parseCommitImportDraft, parseCreateImportDraft, parseCreateMyWordbook, parseLearningEvent, parseResourceId, parseShareCode, parseStatus, parseUpdateCatalog, parseUpdateWord, parseUploadCatalog, parseWordId } from "./study/validation.js";
+import { parseAddWord, parseCatalogQuery, parseClientId, parseCommitImportDraft, parseCreateImportDraft, parseCreateMyWordbook, parseLearningEvent, parseResourceId, parseShareCode, parseStatus, parseUpdateCatalog, parseUpdateWord, parseUploadCatalog, parseWordId } from "./study/validation.js";
 import type { ImportLineInput, PreparedImportLine, ResolvedImportDraftEntry, StudyStore, StudyWordEntry } from "./study/types.js";
 import { isValidWordQuery, normalizeWord } from "./words/normalize.js";
 import { WordService, type WordLookup } from "./words/word-service.js";
@@ -261,6 +261,12 @@ export function createApp(options: CreateAppOptions = {}) {
   };
   app.patch("/api/catalog/wordbooks/:id", updateCatalogSnapshot);
   app.put("/api/catalog/wordbooks/:id", updateCatalogSnapshot);
+  app.delete("/api/catalog/wordbooks/:id", async (request, response, next) => {
+    const clientId = readClientId(request, response); const id = parseResourceId(request.params.id);
+    if (!clientId) return;
+    if (!id) { response.status(400).json(apiError("INVALID_RESOURCE_ID", "Resource id is invalid")); return; }
+    try { if (!await studyStore.deleteCatalogUpload(clientId, id)) response.status(404).json(apiError("CATALOG_NOT_FOUND", "Catalog wordbook was not found")); else response.status(204).end(); } catch (error) { next(error); }
+  });
   app.post("/api/catalog/imports", async (request, response, next) => {
     const clientId = readClientId(request, response); const shareCode = parseShareCode(request.body && typeof request.body === "object" ? (request.body as { shareCode?: unknown }).shareCode : undefined);
     if (!clientId) return;
@@ -294,6 +300,26 @@ export function createApp(options: CreateAppOptions = {}) {
     if (!clientId) return;
     if (!id) { response.status(400).json(apiError("INVALID_RESOURCE_ID", "Resource id is invalid")); return; }
     try { const book = await studyStore.restoreMyWordbook(clientId, id); if (!book) response.status(404).json(apiError("WORDBOOK_NOT_FOUND", "Wordbook was not found")); else response.status(200).json(book); } catch (error) { next(error); }
+  });
+  app.delete("/api/my/wordbooks/:id/purge", async (request, response, next) => {
+    const clientId = readClientId(request, response); const id = parseResourceId(request.params.id);
+    if (!clientId) return;
+    if (!id) { response.status(400).json(apiError("INVALID_RESOURCE_ID", "Resource id is invalid")); return; }
+    try { if (!await studyStore.purgeMyWordbook(clientId, id)) response.status(404).json(apiError("WORDBOOK_NOT_FOUND", "Wordbook was not found")); else response.status(204).end(); } catch (error) { next(error); }
+  });
+  app.post("/api/my/wordbooks/:id/words", async (request, response, next) => {
+    const clientId = readClientId(request, response); const wordbookId = parseResourceId(request.params.id); const input = parseAddWord(request.body);
+    if (!clientId) return;
+    if (!wordbookId) { response.status(400).json(apiError("INVALID_RESOURCE_ID", "Resource id is invalid")); return; }
+    if (!input) { response.status(400).json(apiError("INVALID_WORD", "Word is invalid")); return; }
+    try {
+      // Resolve dictionary data the same way import does; a transient lookup failure
+      // still yields an entry (empty phonetic/meanings) so adding never blocks.
+      const prepared = await resolveOneImportLine({ line: 1, word: input.word, ...(input.zhMeaning ? { zhMeaning: input.zhMeaning } : {}) });
+      const result = await studyStore.addWordToMyWordbook(clientId, wordbookId, prepared.entry!);
+      if (!result) response.status(404).json(apiError("WORDBOOK_NOT_FOUND", "Wordbook was not found"));
+      else response.status(result.created ? 201 : 200).json({ word: result.word });
+    } catch (error) { next(error); }
   });
   app.get("/api/my/wordbooks/:id/words", async (request, response, next) => {
     const clientId = readClientId(request, response); const id = parseResourceId(request.params.id); const status = parseStatus(request.query.status);

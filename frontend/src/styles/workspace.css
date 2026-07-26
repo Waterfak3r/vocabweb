@@ -71,6 +71,8 @@
 .plan-card > button:disabled { cursor: not-allowed; background: #8aa0b2; opacity: .72; }
 
 .data-donut {
+  position: relative;
+  display: grid;
   width: 6.6rem;
   min-width: 6.6rem;
   max-width: 6.6rem;
@@ -80,8 +82,31 @@
   aspect-ratio: auto;
   align-self: center;
   justify-self: start;
+  place-items: center;
   border-radius: 50%;
 }
+
+/* The white hole that turns the pie into a donut; the label sits on top of it. */
+.data-donut::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  border-radius: 50%;
+  background: #fffdfa;
+  transform: translate(-50%, -50%);
+}
+
+.data-donut span {
+  position: relative;
+  display: grid;
+  place-items: center;
+  gap: .1rem;
+  color: var(--muted);
+  text-align: center;
+}
+
+.data-donut strong { color: var(--ink); line-height: 1.1; }
 
 .workspace-modal-backdrop {
   position: fixed;
@@ -181,3 +206,19 @@
   .workspace-study-modal .workspace-study-header h1 { grid-row: auto; }
   .meaning-preference { grid-template-columns: 1fr; }
 }
+
+/* 回收站条目：恢复 + 彻底删除并排 */
+.recycle-panel .recycle-item { display: flex; align-items: center; justify-content: space-between; gap: .4rem; padding: 0; }
+.recycle-panel .recycle-item > strong { overflow: hidden; min-width: 0; font-size: .8rem; font-weight: 600; white-space: nowrap; text-overflow: ellipsis; }
+.recycle-panel .recycle-item > span { display: inline-flex; flex-shrink: 0; }
+.recycle-panel .recycle-purge { color: var(--danger); }
+.recycle-panel .recycle-purge:hover { background: var(--danger-soft); }
+
+/* 单词广场：删除我的上传（正文卡片与「我的上传」小列表） */
+.market-upload-actions { display: inline-flex; align-items: center; gap: .6rem; }
+.delete-upload { display: inline-flex; align-items: center; color: var(--danger); font-size: .76rem; font-weight: 700; }
+.delete-upload:hover { text-decoration: underline; }
+.collection-manage { display: inline-flex; align-items: center; gap: .6rem; margin-top: .2rem; }
+.collection-manage .collection-update { margin-top: 0; }
+.collection-delete { color: var(--danger); font-size: .68rem; font-weight: 700; text-align: left; }
+.collection-delete:hover { text-decoration: underline; }

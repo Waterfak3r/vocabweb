@@ -1,23 +1,27 @@
 import type { WordbookItem } from '../domain/types'
+import type { MyWordbook } from './workspaceApi'
 import { storageKey } from '../lib/storage'
 
 export type StudySummary = {
   date: string
+  /** Total saved words. Local: local items. Remote: sum of every wordbook's wordCount. */
   wordbookTotal: number
+  /** New words added today (local mode only; remote leaves 0). */
   addedToday: number
-  lookupCount: number
-  review: {
-    due: number
-    completedToday: number
-  }
-  dictation: {
-    due: number
-    completedToday: number
-  }
-  dailyGoal: {
-    target: number
-    completed: number
-  }
+  /** Review-eligible words. Local: all items. Remote: recent book's learning + review. */
+  reviewDue: number
+  /** Dictation-eligible words. Local: all items. Remote: recent book's studied words. */
+  dictationDue: number
+  /** Remote mode: number of personal wordbooks. Local mode: 0. */
+  wordbookCount: number
+  /** Remote mode: the most-recently-updated wordbook, else null. Local mode: null. */
+  recent: {
+    title: string
+    /** learning + review, the review-eligible words of this book. */
+    reviewDue: number
+    mastered: number
+    unstudied: number
+  } | null
   updatedAt: string
 }
 
@@ -59,7 +63,7 @@ function countItemsAddedToday(items: readonly WordbookItem[]) {
 
 /**
  * Honest offline fallback: only derive values the local wordbook can prove.
- * Completion counters and goals remain zero and are not presented as activity.
+ * The home page renders this whenever the backend is absent, empty, or failed.
  */
 export function deriveLocalStudySummary(items: readonly WordbookItem[]): StudySummary {
   const now = new Date()
@@ -67,10 +71,49 @@ export function deriveLocalStudySummary(items: readonly WordbookItem[]): StudySu
     date: now.toISOString().slice(0, 10),
     wordbookTotal: items.length,
     addedToday: countItemsAddedToday(items),
-    lookupCount: 0,
-    review: { due: items.length, completedToday: 0 },
-    dictation: { due: items.length, completedToday: 0 },
-    dailyGoal: { target: 0, completed: 0 },
+    reviewDue: items.length,
+    dictationDue: items.length,
+    wordbookCount: 0,
+    recent: null,
     updatedAt: now.toISOString(),
+  }
+}
+
+/** The most-recently-updated personal wordbook, or null for an empty list. */
+export function mostRecentWordbook(wordbooks: readonly MyWordbook[]): MyWordbook | null {
+  let recent: MyWordbook | null = null
+  for (const book of wordbooks) {
+    if (!recent || book.updatedAt.localeCompare(recent.updatedAt) > 0) recent = book
+  }
+  return recent
+}
+
+/**
+ * Real study overview from the backend wordbook system. Numbers follow the
+ * word-status lifecycle: review-eligible = learning + review (both need review),
+ * dictation-eligible = every studied word (total minus never-studied).
+ */
+export function summarizeMyWordbooks(wordbooks: readonly MyWordbook[]): StudySummary {
+  const now = new Date()
+  const recent = mostRecentWordbook(wordbooks)
+  const totalWords = wordbooks.reduce((sum, book) => sum + book.wordCount, 0)
+  const reviewDue = recent ? recent.progress.review + recent.progress.learning : 0
+  const dictationDue = recent ? recent.wordCount - recent.progress.unstudied : 0
+  return {
+    date: now.toISOString().slice(0, 10),
+    wordbookTotal: totalWords,
+    addedToday: 0,
+    reviewDue,
+    dictationDue,
+    wordbookCount: wordbooks.length,
+    recent: recent
+      ? {
+          title: recent.title,
+          reviewDue,
+          mastered: recent.progress.mastered,
+          unstudied: recent.progress.unstudied,
+        }
+      : null,
+    updatedAt: recent?.updatedAt ?? now.toISOString(),
   }
 }

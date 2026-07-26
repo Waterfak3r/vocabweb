@@ -22,7 +22,7 @@ function shiftDay(now: Date, offset: number): Date { const result = new Date(now
 function toWordbookWords(words: StudyWordEntry[], at: string): WordbookWord[] { return words.map((word) => ({ ...clone(word), id: randomUUID(), addedAt: at })); }
 function toCatalogWords(words: WordbookWord[]): StudyWordEntry[] { return words.map(({ id: _id, addedAt: _addedAt, ...word }) => clone(word)); }
 function defaultClient(): ClientData { return { favorites: [], wordbooks: [], events: [], drafts: [] }; }
-interface WordEventSummary { lastFlashcard?: Extract<LearningEvent, { kind: "flashcard" }>; lastDictation?: Extract<LearningEvent, { kind: "dictation" }>; }
+interface WordEventSummary { lastFlashcard?: Extract<LearningEvent, { kind: "flashcard" }>; lastDictation?: Extract<LearningEvent, { kind: "dictation" }>; lastNew?: Extract<LearningEvent, { kind: "new" }>; }
 function indexEventsByWord(events: LearningEvent[]): Map<string, WordEventSummary> {
   const index = new Map<string, WordEventSummary>();
   for (const event of events) {
@@ -30,14 +30,20 @@ function indexEventsByWord(events: LearningEvent[]): Map<string, WordEventSummar
     if (!summary) { summary = {}; index.set(event.wordId, summary); }
     if (event.kind === "flashcard" && (summary.lastFlashcard?.occurredAt.localeCompare(event.occurredAt) ?? -1) <= 0) summary.lastFlashcard = event;
     else if (event.kind === "dictation" && (summary.lastDictation?.occurredAt.localeCompare(event.occurredAt) ?? -1) <= 0) summary.lastDictation = event;
+    else if (event.kind === "new" && (summary.lastNew?.occurredAt.localeCompare(event.occurredAt) ?? -1) <= 0) summary.lastNew = event;
   }
   return index;
 }
+// Lifecycle (学完新词进入待复习，复习掌握才算已掌握): a finished flashcard "know" is the
+// only path to "mastered"; a fresh "new" session leaves the word due for review.
 function wordStatusFrom(index: Map<string, WordEventSummary>, wordId: string): WordLearningStatus {
   const summary = index.get(wordId);
   if (!summary) return "new";
   if (summary.lastFlashcard?.verdict === "know") return "mastered";
   if (summary.lastFlashcard?.verdict === "unknown" || (summary.lastDictation && !summary.lastDictation.correct)) return "review";
+  // A "new" session with an "unknown" self-report stays "learning"; otherwise (verdict
+  // "know" or legacy events without a verdict) the word graduates to "review".
+  if (summary.lastNew) return summary.lastNew.verdict === "unknown" ? "learning" : "review";
   return "learning";
 }
 function progress(book: MyWordbook, events: LearningEvent[]): WordbookProgress {
@@ -45,7 +51,7 @@ function progress(book: MyWordbook, events: LearningEvent[]): WordbookProgress {
   const tally: Record<WordLearningStatus, number> = { new: 0, learning: 0, review: 0, mastered: 0 };
   for (const word of book.words) tally[wordStatusFrom(index, word.id)] += 1;
   const total = book.words.length;
-  return { mastered: tally.mastered, learning: tally.learning, review: tally.review, unstudied: tally.new, percent: total ? Math.round(((tally.mastered + tally.learning * 0.5) / total) * 100) : 0 };
+  return { mastered: tally.mastered, learning: tally.learning, review: tally.review, unstudied: tally.new, percent: total ? Math.round(((tally.mastered + (tally.learning + tally.review) * 0.5) / total) * 100) : 0 };
 }
 function card(book: MyWordbook, events: LearningEvent[]): MyWordbookCard {
   const { words: _words, deletedAt: _deletedAt, ...rest } = book;
@@ -178,6 +184,31 @@ abstract class BaseStore implements StudyStore {
     const index = indexEventsByWord(client.events.filter((event) => event.wordbookId === id));
     return book.words.map((word) => ({ ...clone(word), status: wordStatusFrom(index, word.id) })).filter((word) => !status || word.status === status);
   }); }
+  async addWordToMyWordbook(clientId: string, wordbookId: string, entry: StudyWordEntry): Promise<{ word: LearningQueueItem; created: boolean } | null> { return await this.mutate((state) => {
+    const client = this.client(state, clientId); const book = client.wordbooks.find((item) => item.id === wordbookId && !item.deletedAt); if (!book) return null;
+    // Words are stored normalized; dedupe on an exact normalized match.
+    const index = indexEventsByWord(client.events.filter((event) => event.wordbookId === wordbookId));
+    const existing = book.words.find((word) => word.word === entry.word);
+    if (existing) return { word: { ...clone(existing), status: wordStatusFrom(index, existing.id) }, created: false };
+    const at = this.now().toISOString();
+    const added: WordbookWord = { ...clone(entry), id: randomUUID(), addedAt: at };
+    book.words.push(added); book.updatedAt = at;
+    return { word: { ...clone(added), status: wordStatusFrom(index, added.id) }, created: true };
+  }); }
+  async purgeMyWordbook(clientId: string, id: string): Promise<boolean> { return await this.mutate((state) => {
+    const client = this.client(state, clientId); const index = client.wordbooks.findIndex((item) => item.id === id && item.deletedAt);
+    if (index < 0) return false;
+    client.wordbooks.splice(index, 1); client.events = client.events.filter((event) => event.wordbookId !== id); return true;
+  }); }
+  async deleteCatalogUpload(clientId: string, id: string): Promise<boolean> { return await this.mutate((state) => {
+    const index = state.catalog.findIndex((book) => book.id === id && book.ownerClientId === clientId);
+    if (index < 0) return false;
+    state.catalog.splice(index, 1);
+    // Copies other clients made via "add" are independent snapshots and stay; only
+    // the marketplace listing and every client's favorite reference to it are removed.
+    for (const client of Object.values(state.clients)) client.favorites = client.favorites.filter((favorite) => favorite !== id);
+    return true;
+  }); }
   async updateWord(clientId: string, wordbookId: string, wordId: string, input: UpdateWordInput, rematched?: StudyWordEntry, options?: { lookupFailed?: boolean }): Promise<UpdateWordResult> { return await this.mutate((state) => {
     const client = this.client(state, clientId); const book = client.wordbooks.find((item) => item.id === wordbookId && !item.deletedAt); const target = book?.words.find((item) => item.id === wordId);
     if (!book || !target) return { kind: "not-found" };
@@ -288,7 +319,7 @@ abstract class BaseStore implements StudyStore {
     if (!book || !target) return null;
     const now = this.now(); client.events = client.events.filter((event) => Date.parse(event.occurredAt) >= now.getTime() - RETENTION_MS);
     const common = { wordbookId: book.id, word: target.word, wordId: target.id, id: randomUUID(), occurredAt: now.toISOString() };
-    const event: LearningEvent = input.kind === "new" ? { ...common, kind: "new" } : input.kind === "flashcard" ? { ...common, kind: "flashcard", verdict: input.verdict } : { ...common, kind: "dictation", correct: input.correct };
+    const event: LearningEvent = input.kind === "new" ? { ...common, kind: "new", ...(input.verdict ? { verdict: input.verdict } : {}) } : input.kind === "flashcard" ? { ...common, kind: "flashcard", verdict: input.verdict } : { ...common, kind: "dictation", correct: input.correct };
     client.events.push(event); book.updatedAt = event.occurredAt; return event;
   }); }
   async getDashboard(clientId: string, id: string): Promise<StudyDashboard | null> { return await this.read((state) => {
@@ -296,6 +327,8 @@ abstract class BaseStore implements StudyStore {
     const now = this.now(); const today = day(now); const events = client.events.filter((event) => event.wordbookId === id); const todayEvents = events.filter((event) => day(new Date(event.occurredAt)) === today);
     const count = (items: LearningEvent[], kind: LearningEvent["kind"]) => items.filter((event) => event.kind === kind).length;
     const completedNew = count(todayEvents, "new"); const completedReview = count(todayEvents, "flashcard"); const completedDictation = count(todayEvents, "dictation"); const bookProgress = progress(book, events);
+    // 听写训练 draws from every studied word (status !== "new"); a brand-new book has none.
+    const studied = book.words.length - bookProgress.unstudied;
     const perDay = new Map<string, number>(); for (const event of events) { const key = day(new Date(event.occurredAt)); perDay.set(key, (perDay.get(key) ?? 0) + 1); }
     const calendar = Array.from({ length: 7 }, (_, index) => { const date = day(shiftDay(now, index - 6)); const amount = perDay.get(date) ?? 0; return { date, count: amount, active: amount > 0 }; });
     let streak = 0; for (let offset = 0; offset < 365; offset += 1) { if (!perDay.get(day(shiftDay(now, -offset)))) break; streak += 1; }
@@ -303,7 +336,7 @@ abstract class BaseStore implements StudyStore {
     const weekDays = new Set(calendar.map((item) => item.date));
     const weekEvents = events.filter((event) => weekDays.has(day(new Date(event.occurredAt))));
     const weekNew = count(weekEvents, "new"); const weekReview = count(weekEvents, "flashcard"); const weekDictation = count(weekEvents, "dictation");
-    return { wordbook: card(book, events), todayPlan: { new: { target: Math.min(20, Math.max(completedNew, bookProgress.unstudied)), completed: completedNew }, review: { target: Math.min(30, Math.max(completedReview, bookProgress.review + bookProgress.learning)), completed: completedReview }, dictation: { target: Math.min(15, book.words.length), completed: completedDictation } }, recentActivity: clone([...events].sort((a, b) => b.occurredAt.localeCompare(a.occurredAt)).slice(0, 5)), calendar, week: { newCount: weekNew, reviewCount: weekReview, dictationCount: weekDictation, total: weekNew + weekReview + weekDictation }, streakDays: streak, updatedAt: book.updatedAt };
+    return { wordbook: card(book, events), todayPlan: { new: { target: Math.min(20, Math.max(completedNew, bookProgress.unstudied)), completed: completedNew }, review: { target: Math.min(30, Math.max(completedReview, bookProgress.review + bookProgress.learning)), completed: completedReview }, dictation: { target: Math.min(15, Math.max(completedDictation, studied)), completed: completedDictation } }, recentActivity: clone([...events].sort((a, b) => b.occurredAt.localeCompare(a.occurredAt)).slice(0, 5)), calendar, week: { newCount: weekNew, reviewCount: weekReview, dictationCount: weekDictation, total: weekNew + weekReview + weekDictation }, streakDays: streak, updatedAt: book.updatedAt };
   }); }
   private catalogCard(book: CatalogWordbook, client?: ClientData, clientId?: string): CatalogCard {
     const { words: _words, ownerClientId: _owner, sourceWordbookId: _source, ...rest } = book;

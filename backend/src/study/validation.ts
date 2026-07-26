@@ -104,10 +104,21 @@ export function parseLearningEvent(value: unknown): LearningEventInput | null {
   const wordbookId = parseResourceId(value.wordbookId); const parsedWord = value.word === undefined ? undefined : word(value.word); const wordId = value.wordId === undefined ? undefined : parseWordId(value.wordId);
   if (!wordbookId || parsedWord === null || wordId === null || (!parsedWord && !wordId) || typeof value.kind !== "string") return null;
   const target = { wordbookId, ...(parsedWord ? { word: parsedWord } : {}), ...(wordId ? { wordId } : {}) };
-  if (value.kind === "new") return { kind: "new", ...target };
+  if (value.kind === "new") {
+    if (value.verdict !== undefined && value.verdict !== "know" && value.verdict !== "unknown") return null;
+    return { kind: "new", ...target, ...(value.verdict ? { verdict: value.verdict } : {}) };
+  }
   if (value.kind === "flashcard" && (value.verdict === "know" || value.verdict === "unknown")) return { kind: "flashcard", ...target, verdict: value.verdict };
   if (value.kind === "dictation" && typeof value.correct === "boolean") return { kind: "dictation", ...target, correct: value.correct };
   return null;
+}
+export function parseAddWord(value: unknown): { word: string; zhMeaning?: string } | null {
+  if (!isJsonObject(value)) return null;
+  const parsedWord = word(value.word);
+  // zhMeaning is optional and shares the import-line length cap (1000).
+  const zhMeaning = value.zhMeaning === undefined ? undefined : text(value.zhMeaning, 1000, true);
+  if (!parsedWord || zhMeaning === null) return null;
+  return { word: parsedWord, ...(zhMeaning ? { zhMeaning } : {}) };
 }
 export function parseStatus(value: unknown): WordLearningStatus | null | undefined { if (value === undefined) return undefined; return value === "new" || value === "learning" || value === "review" || value === "mastered" ? value : null; }
 export function parseCatalogQuery(query: Record<string, unknown>): CatalogQuery | null {
