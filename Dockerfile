@@ -13,6 +13,9 @@ RUN npm ci
 # Copy the rest of the frontend source. .env.production (VITE_API_BASE=/) must
 # be part of the build context so `vite build` bakes the same-origin API base.
 COPY frontend/ ./
+# `tsc -b` typechecks src/** including the normalize contract test, which imports
+# ../../../resources/normalize-contract.json — mirror it to /app so the path resolves.
+COPY resources/normalize-contract.json /app/resources/normalize-contract.json
 RUN npm run build
 
 # ---------------------------------------------------------------------------
