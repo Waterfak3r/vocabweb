@@ -7,7 +7,7 @@ import { Button } from '../components/ui/Button'
 import { useDocumentTitle } from '../hooks/useDocumentTitle'
 import { useWordLookup } from '../hooks/useWordLookup'
 import { useStudySummary } from '../hooks/useStudySummary'
-import { IELTS_WORDS, wordOfTheDay } from '../data/ieltsWords'
+import { wordOfTheDay } from '../data/ieltsWords'
 import { selectWordbookItems, useWordbook } from '../data/wordbookStore'
 import type { WordEntry } from '../domain/types'
 
@@ -267,11 +267,6 @@ export function HomePage() {
             </ol>
           </section>
         </aside>
-        <div className="library-strip">
-          <span aria-hidden="true">▣</span>
-          <p>系统词库收录 {IELTS_WORDS.length} 词；你的词本已有 {savedCount} 词，可随时复习与听写。</p>
-          <Link to="/wordbook">查看全部词表 →</Link>
-        </div>
       </div>
     </section>
   )
