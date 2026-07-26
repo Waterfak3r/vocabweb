@@ -135,8 +135,9 @@ export function writeStudyPreferences(
     const all = readAll(storage)
     all[wordbookId] = normalizeStudyPreferences(preferences)
     storage.setItem(PREFERENCES_KEY, JSON.stringify(all))
-  } catch {
+  } catch (error) {
     // Storage may be unavailable in privacy mode; the in-memory UI still works.
+    console.warn('学习偏好未能保存到本地存储', error)
   }
 }
 

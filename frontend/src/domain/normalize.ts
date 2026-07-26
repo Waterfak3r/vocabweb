@@ -1,8 +1,10 @@
 /** Word query normalization and validation */
 
-/** Trim, collapse internal whitespace, lowercase. */
+/** Trim, collapse internal whitespace, fold curly apostrophes, lowercase. */
 export function normalizeWord(raw: string): string {
-  return raw.trim().replace(/\s+/g, ' ').toLowerCase()
+  // Word processors auto-convert to curly apostrophes; fold them so
+  // "don’t" and "don't" are the same word for grading and dedupe.
+  return raw.trim().replace(/\s+/g, ' ').replace(/[’ʼ]/g, "'").toLowerCase()
 }
 
 /**

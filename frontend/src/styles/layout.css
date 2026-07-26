@@ -164,6 +164,22 @@
 
 /* ── Main column ────────────────────────── */
 
+.page-loading {
+  margin: 4rem auto;
+  text-align: center;
+  color: var(--muted, #687381);
+}
+
+.storage-warning {
+  width: min(var(--page-width), calc(100% - 2.5rem));
+  margin: 0.9rem auto 0;
+  padding: 0.6rem 0.9rem;
+  border: 1px solid var(--danger, #8b3a2f);
+  border-radius: 0.4rem;
+  color: var(--danger, #8b3a2f);
+  font-size: 0.9rem;
+}
+
 .site-main {
   flex: 1;
   width: min(var(--page-width), calc(100% - 2.5rem));

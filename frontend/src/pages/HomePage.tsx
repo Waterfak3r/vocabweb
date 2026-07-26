@@ -15,26 +15,26 @@ const QUICK_CHIPS = ['ubiquitous', 'exacerbate', 'paradigm', 'viable', 'scrutini
 
 type StudyStepIconName = 'search' | 'bookmark' | 'practice'
 
-function StudyStepIcon({ name }: { name: StudyStepIconName }) {
-  const paths: Record<StudyStepIconName, ReactNode> = {
-    search: (
-      <>
-        <circle cx="10.25" cy="10.25" r="4.75" />
-        <path d="m14 14 4.25 4.25" />
-      </>
-    ),
-    bookmark: <path d="M7.25 4.75h9.5v14.5L12 16l-4.75 3.25z" />,
-    practice: (
-      <>
-        <rect x="5.25" y="5.25" width="13.5" height="13.5" rx="1.5" />
-        <path d="M9 10h6M9 14h6" />
-      </>
-    ),
-  }
+const STUDY_STEP_ICON_PATHS: Record<StudyStepIconName, ReactNode> = {
+  search: (
+    <>
+      <circle cx="10.25" cy="10.25" r="4.75" />
+      <path d="m14 14 4.25 4.25" />
+    </>
+  ),
+  bookmark: <path d="M7.25 4.75h9.5v14.5L12 16l-4.75 3.25z" />,
+  practice: (
+    <>
+      <rect x="5.25" y="5.25" width="13.5" height="13.5" rx="1.5" />
+      <path d="M9 10h6M9 14h6" />
+    </>
+  ),
+}
 
+function StudyStepIcon({ name }: { name: StudyStepIconName }) {
   return (
     <svg viewBox="0 0 24 24" aria-hidden="true">
-      {paths[name]}
+      {STUDY_STEP_ICON_PATHS[name]}
     </svg>
   )
 }

@@ -22,17 +22,28 @@ function shiftDay(now: Date, offset: number): Date { const result = new Date(now
 function toWordbookWords(words: StudyWordEntry[], at: string): WordbookWord[] { return words.map((word) => ({ ...clone(word), id: randomUUID(), addedAt: at })); }
 function toCatalogWords(words: WordbookWord[]): StudyWordEntry[] { return words.map(({ id: _id, addedAt: _addedAt, ...word }) => clone(word)); }
 function defaultClient(): ClientData { return { favorites: [], wordbooks: [], events: [], drafts: [] }; }
-function wordStatus(wordId: string, events: LearningEvent[]): WordLearningStatus {
-  const own = events.filter((event) => event.wordId === wordId).sort((a, b) => a.occurredAt.localeCompare(b.occurredAt));
-  const lastFlashcard = [...own].reverse().find((event) => event.kind === "flashcard");
-  const lastDictation = [...own].reverse().find((event) => event.kind === "dictation");
-  if (lastFlashcard?.kind === "flashcard" && lastFlashcard.verdict === "know") return "mastered";
-  if ((lastFlashcard?.kind === "flashcard" && lastFlashcard.verdict === "unknown") || (lastDictation?.kind === "dictation" && !lastDictation.correct)) return "review";
-  return own.length ? "learning" : "new";
+interface WordEventSummary { lastFlashcard?: Extract<LearningEvent, { kind: "flashcard" }>; lastDictation?: Extract<LearningEvent, { kind: "dictation" }>; }
+function indexEventsByWord(events: LearningEvent[]): Map<string, WordEventSummary> {
+  const index = new Map<string, WordEventSummary>();
+  for (const event of events) {
+    let summary = index.get(event.wordId);
+    if (!summary) { summary = {}; index.set(event.wordId, summary); }
+    if (event.kind === "flashcard" && (summary.lastFlashcard?.occurredAt.localeCompare(event.occurredAt) ?? -1) <= 0) summary.lastFlashcard = event;
+    else if (event.kind === "dictation" && (summary.lastDictation?.occurredAt.localeCompare(event.occurredAt) ?? -1) <= 0) summary.lastDictation = event;
+  }
+  return index;
+}
+function wordStatusFrom(index: Map<string, WordEventSummary>, wordId: string): WordLearningStatus {
+  const summary = index.get(wordId);
+  if (!summary) return "new";
+  if (summary.lastFlashcard?.verdict === "know") return "mastered";
+  if (summary.lastFlashcard?.verdict === "unknown" || (summary.lastDictation && !summary.lastDictation.correct)) return "review";
+  return "learning";
 }
 function progress(book: MyWordbook, events: LearningEvent[]): WordbookProgress {
+  const index = indexEventsByWord(events);
   const tally: Record<WordLearningStatus, number> = { new: 0, learning: 0, review: 0, mastered: 0 };
-  for (const word of book.words) tally[wordStatus(word.id, events)] += 1;
+  for (const word of book.words) tally[wordStatusFrom(index, word.id)] += 1;
   const total = book.words.length;
   return { mastered: tally.mastered, learning: tally.learning, review: tally.review, unstudied: tally.new, percent: total ? Math.round(((tally.mastered + tally.learning * 0.5) / total) * 100) : 0 };
 }
@@ -45,12 +56,18 @@ function sameMeanings(left: StudyWordEntry["meanings"], right: StudyWordEntry["m
   return [...clone(left), ...right.filter((meaning) => !existing.has(`${meaning.pos}\u0000${meaning.definition}`)).map(clone)];
 }
 
+/** Fold curly apostrophes in stored word text so it matches today's normalizeWord output. */
+function foldApostrophes(word: string): string { return word.replace(/[’ʼ]/g, "'"); }
+
 /** Upgrade the old v2 JSON without losing wordbooks, events, or publishing data. */
 function migrate(raw: unknown): State {
   if (!isJsonObject(raw) || !Array.isArray(raw.catalog) || !isJsonObject(raw.clients)) throw new Error("Study data file has an unsupported format");
   if (raw.version !== 2 && raw.version !== 3) throw new Error("Study data file has an unsupported format");
   const state = raw as unknown as State;
   state.version = 3;
+  for (const book of state.catalog) {
+    for (const word of book.words ?? []) word.word = foldApostrophes(word.word);
+  }
   for (const clientValue of Object.values(state.clients)) {
     const client = clientValue as ClientData;
     client.favorites ??= [];
@@ -60,6 +77,7 @@ function migrate(raw: unknown): State {
     for (const book of client.wordbooks) {
       book.words ??= [];
       for (const word of book.words) {
+        word.word = foldApostrophes(word.word);
         if (!word.id || typeof word.id !== "string") word.id = randomUUID();
         if (!word.addedAt || typeof word.addedAt !== "string") word.addedAt = book.createdAt;
         if (word.zhMeaningSource !== "user" && word.zhMeaningSource !== "dictionary") {
@@ -70,14 +88,19 @@ function migrate(raw: unknown): State {
     }
     client.events = client.events.map((event) => {
       const legacy = event as unknown as { wordbookId?: string; word?: string; wordId?: string };
+      const legacyWord = legacy.word === undefined ? undefined : foldApostrophes(legacy.word);
       const book = client.wordbooks.find((item) => item.id === legacy.wordbookId);
-      const matched = book?.words.find((item) => item.id === legacy.wordId || item.word === legacy.word);
-      return { ...event, word: matched?.word ?? legacy.word ?? "", wordId: matched?.id ?? legacy.wordId ?? randomUUID() } as LearningEvent;
+      const matched = book?.words.find((item) => item.id === legacy.wordId || item.word === legacyWord);
+      return { ...event, word: matched?.word ?? legacyWord ?? "", wordId: matched?.id ?? legacy.wordId ?? randomUUID() } as LearningEvent;
     });
     for (const draft of client.drafts) {
       draft.status ??= "pending";
       draft.groupId ??= `group-${randomUUID()}`;
       draft.entries ??= [];
+      for (const entry of draft.entries) {
+        if (entry.word) entry.word = foldApostrophes(entry.word);
+        if (entry.entry) entry.entry.word = foldApostrophes(entry.entry.word);
+      }
     }
   }
   return state;
@@ -90,15 +113,15 @@ abstract class BaseStore implements StudyStore {
   protected abstract load(): Promise<State>;
   protected abstract save(state: State): Promise<void>;
 
-  async listCatalog(clientId: string, query: CatalogQuery): Promise<CatalogCard[]> { return await this.mutate((state) => {
-    const client = this.client(state, clientId); const q = query.q?.toLowerCase();
+  async listCatalog(clientId: string, query: CatalogQuery): Promise<CatalogCard[]> { return await this.read((state) => {
+    const client = this.clientView(state, clientId); const q = query.q?.toLowerCase();
     const books = state.catalog.filter((book) => (!q || `${book.title} ${book.description} ${book.author}`.toLowerCase().includes(q)) && (!query.exam || book.exams.includes(query.exam)) && (!query.goal || book.goals.includes(query.goal)));
     const ordered = [...books].sort((a, b) => query.sort === "hot" ? b.uses - a.uses : query.sort === "newest" ? b.createdAt.localeCompare(a.createdAt) : query.sort === "rating" ? b.rating - a.rating : b.uses - a.uses);
     return ordered.map((book) => this.catalogCard(book, client, clientId));
   }); }
-  async listFavorites(clientId: string): Promise<CatalogCard[]> { return await this.mutate((state) => { const client = this.client(state, clientId); return state.catalog.filter((book) => client.favorites.includes(book.id)).map((book) => this.catalogCard(book, client, clientId)); }); }
-  async listUploads(clientId: string): Promise<CatalogCard[]> { return await this.mutate((state) => { const client = this.client(state, clientId); return state.catalog.filter((book) => book.ownerClientId === clientId).map((book) => this.catalogCard(book, client, clientId)); }); }
-  async getCatalog(clientId: string, id: string): Promise<CatalogCard | null> { return await this.mutate((state) => { const found = state.catalog.find((book) => book.id === id); return found ? this.catalogCard(found, this.client(state, clientId), clientId) : null; }); }
+  async listFavorites(clientId: string): Promise<CatalogCard[]> { return await this.read((state) => { const client = this.clientView(state, clientId); return state.catalog.filter((book) => client.favorites.includes(book.id)).map((book) => this.catalogCard(book, client, clientId)); }); }
+  async listUploads(clientId: string): Promise<CatalogCard[]> { return await this.read((state) => { const client = this.clientView(state, clientId); return state.catalog.filter((book) => book.ownerClientId === clientId).map((book) => this.catalogCard(book, client, clientId)); }); }
+  async getCatalog(clientId: string, id: string): Promise<CatalogCard | null> { return await this.read((state) => { const found = state.catalog.find((book) => book.id === id); return found ? this.catalogCard(found, this.clientView(state, clientId), clientId) : null; }); }
   async toggleFavorite(clientId: string, id: string): Promise<{ favorited: boolean } | null> { return await this.mutate((state) => {
     if (!state.catalog.some((book) => book.id === id)) return null;
     const client = this.client(state, clientId); const index = client.favorites.indexOf(id);
@@ -141,23 +164,26 @@ abstract class BaseStore implements StudyStore {
     return this.catalogCard(catalog, client, clientId);
   }); }
   async importShareCode(clientId: string, shareCode: string): Promise<{ wordbook: MyWordbookCard; created: boolean } | null> { return await this.read((state) => state.catalog.find((book) => book.shareCode === shareCode)?.id ?? null).then((id) => id ? this.addCatalogToMine(clientId, id) : null); }
-  async listMyWordbooks(clientId: string, trash: boolean): Promise<MyWordbookCard[]> { return await this.mutate((state) => { const client = this.client(state, clientId); return client.wordbooks.filter((book) => Boolean(book.deletedAt) === trash).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).map((book) => card(book, client.events)); }); }
+  async listMyWordbooks(clientId: string, trash: boolean): Promise<MyWordbookCard[]> { return await this.read((state) => { const client = this.clientView(state, clientId); return client.wordbooks.filter((book) => Boolean(book.deletedAt) === trash).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).map((book) => card(book, client.events)); }); }
   async createMyWordbook(clientId: string, input: CreateMyWordbookInput): Promise<MyWordbookCard> { return await this.mutate((state) => {
     const at = this.now().toISOString(); const client = this.client(state, clientId);
     const book: MyWordbook = { id: `my-${randomUUID()}`, title: input.title, description: input.description ?? "", createdAt: at, updatedAt: at, words: toWordbookWords(input.words ?? [], at) };
     client.wordbooks.push(book); return card(book, client.events);
   }); }
-  async getMyWordbook(clientId: string, id: string): Promise<MyWordbookCard | null> { return await this.mutate((state) => { const client = this.client(state, clientId); const book = client.wordbooks.find((item) => item.id === id && !item.deletedAt); return book ? card(book, client.events) : null; }); }
+  async getMyWordbook(clientId: string, id: string): Promise<MyWordbookCard | null> { return await this.read((state) => { const client = this.clientView(state, clientId); const book = client.wordbooks.find((item) => item.id === id && !item.deletedAt); return book ? card(book, client.events) : null; }); }
   async deleteMyWordbook(clientId: string, id: string): Promise<boolean> { return await this.mutate((state) => { const client = this.client(state, clientId); const book = client.wordbooks.find((item) => item.id === id && !item.deletedAt); if (!book) return false; const at = this.now().toISOString(); book.deletedAt = at; book.updatedAt = at; return true; }); }
   async restoreMyWordbook(clientId: string, id: string): Promise<MyWordbookCard | null> { return await this.mutate((state) => { const client = this.client(state, clientId); const book = client.wordbooks.find((item) => item.id === id && item.deletedAt); if (!book) return null; book.deletedAt = undefined; book.updatedAt = this.now().toISOString(); return card(book, client.events); }); }
-  async listWords(clientId: string, id: string, status?: WordLearningStatus): Promise<LearningQueueItem[] | null> { return await this.mutate((state) => {
-    const client = this.client(state, clientId); const book = client.wordbooks.find((item) => item.id === id && !item.deletedAt); if (!book) return null;
-    const events = client.events.filter((event) => event.wordbookId === id);
-    return book.words.map((word) => ({ ...clone(word), status: wordStatus(word.id, events) })).filter((word) => !status || word.status === status);
+  async listWords(clientId: string, id: string, status?: WordLearningStatus): Promise<LearningQueueItem[] | null> { return await this.read((state) => {
+    const client = this.clientView(state, clientId); const book = client.wordbooks.find((item) => item.id === id && !item.deletedAt); if (!book) return null;
+    const index = indexEventsByWord(client.events.filter((event) => event.wordbookId === id));
+    return book.words.map((word) => ({ ...clone(word), status: wordStatusFrom(index, word.id) })).filter((word) => !status || word.status === status);
   }); }
-  async updateWord(clientId: string, wordbookId: string, wordId: string, input: UpdateWordInput, rematched?: StudyWordEntry): Promise<UpdateWordResult> { return await this.mutate((state) => {
+  async updateWord(clientId: string, wordbookId: string, wordId: string, input: UpdateWordInput, rematched?: StudyWordEntry, options?: { lookupFailed?: boolean }): Promise<UpdateWordResult> { return await this.mutate((state) => {
     const client = this.client(state, clientId); const book = client.wordbooks.find((item) => item.id === wordbookId && !item.deletedAt); const target = book?.words.find((item) => item.id === wordId);
     if (!book || !target) return { kind: "not-found" };
+    // A true rename must not carry the old word's dictionary data forward; when the
+    // lookup is transiently down we refuse instead of guessing (non-renames proceed).
+    if (input.word && input.word !== target.word && options?.lookupFailed) return { kind: "lookup-failed" };
     if (input.word && input.word !== target.word && book.words.some((item) => item.id !== wordId && item.word === input.word)) return { kind: "duplicate" };
     const oldCustomChinese = target.zhMeaningSource === "user";
     if (input.word && rematched) {
@@ -178,6 +204,8 @@ abstract class BaseStore implements StudyStore {
   }); }
   async createImportDrafts(clientId: string, input: CreateImportDraftInput): Promise<ImportDraft[]> { return await this.mutate((state) => {
     const client = this.client(state, clientId);
+    const cutoff = this.now().getTime() - RETENTION_MS;
+    client.drafts = client.drafts.filter((draft) => draft.status !== "committed" || Date.parse(draft.committedAt ?? draft.updatedAt) >= cutoff);
     if (input.targetWordbookId && !client.wordbooks.some((book) => book.id === input.targetWordbookId && !book.deletedAt)) return [];
     const seen = new Set<string>();
     const target = input.targetWordbookId ? client.wordbooks.find((book) => book.id === input.targetWordbookId && !book.deletedAt) : undefined;
@@ -216,10 +244,10 @@ abstract class BaseStore implements StudyStore {
     draft.status = draft.entries.some((entry) => entry.status === "processing" || (entry.status === "conflict" && !entry.entry)) ? "processing" : "pending";
     draft.updatedAt = this.now().toISOString(); return clone(draft);
   }); }
-  async listImportDrafts(clientId: string): Promise<ImportDraft[]> { return await this.mutate((state) => clone(this.client(state, clientId).drafts.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)))); }
-  async getImportDraft(clientId: string, id: string): Promise<ImportDraft | null> { return await this.mutate((state) => { const draft = this.client(state, clientId).drafts.find((item) => item.id === id); return draft ? clone(draft) : null; }); }
+  async listImportDrafts(clientId: string): Promise<ImportDraft[]> { return await this.read((state) => clone([...this.clientView(state, clientId).drafts].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)))); }
+  async getImportDraft(clientId: string, id: string): Promise<ImportDraft | null> { return await this.read((state) => { const draft = this.clientView(state, clientId).drafts.find((item) => item.id === id); return draft ? clone(draft) : null; }); }
   async deleteImportDraft(clientId: string, id: string): Promise<boolean> { return await this.mutate((state) => {
-    const drafts = this.client(state, clientId).drafts; const index = drafts.findIndex((item) => item.id === id && item.status !== "committed");
+    const drafts = this.client(state, clientId).drafts; const index = drafts.findIndex((item) => item.id === id);
     if (index < 0) return false; drafts.splice(index, 1); return true;
   }); }
   async commitImportDraft(clientId: string, id: string, input: CommitImportDraftInput): Promise<MyWordbookCard | null> { return await this.mutate((state) => {
@@ -263,14 +291,18 @@ abstract class BaseStore implements StudyStore {
     const event: LearningEvent = input.kind === "new" ? { ...common, kind: "new" } : input.kind === "flashcard" ? { ...common, kind: "flashcard", verdict: input.verdict } : { ...common, kind: "dictation", correct: input.correct };
     client.events.push(event); book.updatedAt = event.occurredAt; return event;
   }); }
-  async getDashboard(clientId: string, id: string): Promise<StudyDashboard | null> { return await this.mutate((state) => {
-    const client = this.client(state, clientId); const book = client.wordbooks.find((item) => item.id === id && !item.deletedAt); if (!book) return null;
+  async getDashboard(clientId: string, id: string): Promise<StudyDashboard | null> { return await this.read((state) => {
+    const client = this.clientView(state, clientId); const book = client.wordbooks.find((item) => item.id === id && !item.deletedAt); if (!book) return null;
     const now = this.now(); const today = day(now); const events = client.events.filter((event) => event.wordbookId === id); const todayEvents = events.filter((event) => day(new Date(event.occurredAt)) === today);
     const count = (items: LearningEvent[], kind: LearningEvent["kind"]) => items.filter((event) => event.kind === kind).length;
     const completedNew = count(todayEvents, "new"); const completedReview = count(todayEvents, "flashcard"); const completedDictation = count(todayEvents, "dictation"); const bookProgress = progress(book, events);
-    const calendar = Array.from({ length: 7 }, (_, index) => { const date = day(shiftDay(now, index - 6)); const amount = events.filter((event) => day(new Date(event.occurredAt)) === date).length; return { date, count: amount, active: amount > 0 }; });
-    let streak = 0; for (let offset = 0; offset < 365; offset += 1) { if (!calendar.find((item) => item.date === day(shiftDay(now, -offset)))?.active && !events.some((event) => day(new Date(event.occurredAt)) === day(shiftDay(now, -offset)))) break; streak += 1; }
-    const weekNew = count(events, "new"); const weekReview = count(events, "flashcard"); const weekDictation = count(events, "dictation");
+    const perDay = new Map<string, number>(); for (const event of events) { const key = day(new Date(event.occurredAt)); perDay.set(key, (perDay.get(key) ?? 0) + 1); }
+    const calendar = Array.from({ length: 7 }, (_, index) => { const date = day(shiftDay(now, index - 6)); const amount = perDay.get(date) ?? 0; return { date, count: amount, active: amount > 0 }; });
+    let streak = 0; for (let offset = 0; offset < 365; offset += 1) { if (!perDay.get(day(shiftDay(now, -offset)))) break; streak += 1; }
+    // Same 7 calendar days as the calendar block so both widgets always agree.
+    const weekDays = new Set(calendar.map((item) => item.date));
+    const weekEvents = events.filter((event) => weekDays.has(day(new Date(event.occurredAt))));
+    const weekNew = count(weekEvents, "new"); const weekReview = count(weekEvents, "flashcard"); const weekDictation = count(weekEvents, "dictation");
     return { wordbook: card(book, events), todayPlan: { new: { target: Math.min(20, Math.max(completedNew, bookProgress.unstudied)), completed: completedNew }, review: { target: Math.min(30, Math.max(completedReview, bookProgress.review + bookProgress.learning)), completed: completedReview }, dictation: { target: Math.min(15, book.words.length), completed: completedDictation } }, recentActivity: clone([...events].sort((a, b) => b.occurredAt.localeCompare(a.occurredAt)).slice(0, 5)), calendar, week: { newCount: weekNew, reviewCount: weekReview, dictationCount: weekDictation, total: weekNew + weekReview + weekDictation }, streakDays: streak, updatedAt: book.updatedAt };
   }); }
   private catalogCard(book: CatalogWordbook, client?: ClientData, clientId?: string): CatalogCard {
@@ -278,10 +310,25 @@ abstract class BaseStore implements StudyStore {
     return { ...clone(rest), wordCount: book.words.length, favorited: client?.favorites.includes(book.id) ?? false, added: client?.wordbooks.some((item) => !item.deletedAt && item.sourceCatalogId === book.id) ?? false, uploaded: book.ownerClientId === clientId };
   }
   private client(state: State, id: string): ClientData { return state.clients[id] ??= defaultClient(); }
+  /** Read-only view: never inserts a client record, so GETs cannot grow the persisted state. */
+  private clientView(state: State, id: string): ClientData { return state.clients[id] ?? defaultClient(); }
   private shareCode(state: State): string { let code = ""; do { code = randomUUID().replace(/-/g, "").slice(0, 8).toUpperCase(); } while (state.catalog.some((book) => book.shareCode === code)); return code; }
-  private async read<T>(operation: (state: State) => T): Promise<T> { await this.queue; return operation(await this.state()); }
-  private async mutate<T>(operation: (state: State) => T): Promise<T> { const task = this.queue.then(async () => { const state = await this.state(); const value = operation(state); await this.save(state); return value; }); this.queue = task.then(() => undefined, () => undefined); return await task; }
-  private async state(): Promise<State> { this.statePromise ??= this.load(); return await this.statePromise; }
+  private async read<T>(operation: (state: State) => T): Promise<T> { const task = this.queue.then(async () => operation(await this.state())); this.queue = task.then(() => undefined, () => undefined); return await task; }
+  private async mutate<T>(operation: (state: State) => T): Promise<T> { const task = this.queue.then(async () => {
+    const draft = clone(await this.state());
+    const value = operation(draft);
+    await this.save(draft);
+    this.statePromise = Promise.resolve(draft);
+    return value;
+  }); this.queue = task.then(() => undefined, () => undefined); return await task; }
+  private async state(): Promise<State> {
+    if (!this.statePromise) {
+      const loading = this.load();
+      loading.catch(() => { if (this.statePromise === loading) this.statePromise = undefined; });
+      this.statePromise = loading;
+    }
+    return await this.statePromise;
+  }
 }
 export class InMemoryStudyStore extends BaseStore { constructor(options: { now?: () => Date } = {}) { super(options.now); } protected async load(): Promise<State> { return EMPTY(); } protected async save(_state: State): Promise<void> {} }
 export class JsonFileStudyStore extends BaseStore {

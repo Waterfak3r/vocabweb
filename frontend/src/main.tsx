@@ -18,6 +18,13 @@ import './styles/word.css'
 import './styles/marketplace.css'
 import './styles/workspace.css'
 
+// A redeploy invalidates old hashed chunk names a stale tab still references;
+// reloading once picks up the new manifest instead of a dead lazy route.
+window.addEventListener('vite:preloadError', (event) => {
+  event.preventDefault()
+  window.location.reload()
+})
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <BrowserRouter>

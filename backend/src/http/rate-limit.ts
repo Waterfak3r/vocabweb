@@ -15,16 +15,20 @@ interface WindowState {
 export interface FixedWindowRateLimiterOptions {
   windowMs: number;
   maxRequests: number;
+  /** Cap on tracked keys so an attacker rotating addresses cannot exhaust memory. */
+  maxClients?: number;
   now?: () => number;
 }
 
 export class FixedWindowRateLimiter implements RateLimiter {
   private readonly clients = new Map<string, WindowState>();
   private readonly now: () => number;
+  private readonly maxClients: number;
   private lastCleanupAt = 0;
 
   constructor(private readonly options: FixedWindowRateLimiterOptions) {
     this.now = options.now ?? Date.now;
+    this.maxClients = options.maxClients ?? 10_000;
   }
 
   consume(key: string): RateLimitDecision {
@@ -33,6 +37,14 @@ export class FixedWindowRateLimiter implements RateLimiter {
     const current = this.clients.get(key);
 
     if (!current || current.resetAt <= now) {
+      if (!current && this.clients.size >= this.maxClients) {
+        this.purgeExpired(now);
+        if (this.clients.size >= this.maxClients) {
+          // Fail closed: evicting live windows would let a key-rotation flood
+          // reset legitimate clients' counters and bypass the limiter entirely.
+          return { allowed: false, retryAfterMs: this.options.windowMs };
+        }
+      }
       this.clients.set(key, {
         count: 1,
         resetAt: now + this.options.windowMs,
@@ -59,5 +71,13 @@ export class FixedWindowRateLimiter implements RateLimiter {
       }
     }
     this.lastCleanupAt = now;
+  }
+
+  private purgeExpired(now: number): void {
+    for (const [key, state] of this.clients) {
+      if (state.resetAt <= now) {
+        this.clients.delete(key);
+      }
+    }
   }
 }

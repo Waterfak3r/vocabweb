@@ -1,4 +1,4 @@
-import type { FormEvent } from 'react'
+import { useEffect, useRef, type FormEvent } from 'react'
 import type { StudyDisplayPreferences } from '../../data/studyPreferences'
 import type { DictationGrade, WordbookItem } from '../../domain/types'
 import { Button } from '../ui/Button'
@@ -48,6 +48,14 @@ export function DictationPrompt({
     underlineMistakes: true,
   },
 }: DictationPromptProps) {
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  // The same input is reused across cards, so autoFocus only fires once;
+  // refocus whenever a new card starts answering so Enter keeps working.
+  useEffect(() => {
+    if (phase === 'prompt') inputRef.current?.focus()
+  }, [phase, item.id])
+
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (phase === 'prompt') onSubmit()
@@ -74,6 +82,7 @@ export function DictationPrompt({
       <TextField
         label="你的拼写"
         mono
+        ref={inputRef}
         value={answer}
         onChange={onAnswerChange}
         error={error}
@@ -81,7 +90,7 @@ export function DictationPrompt({
         autoComplete="off"
         autoCapitalize="off"
         spellCheck={false}
-        disabled={phase === 'feedback'}
+        readOnly={phase === 'feedback'}
         autoFocus
       />
 

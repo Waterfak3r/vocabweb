@@ -41,13 +41,33 @@ export function usePronounce(word: string, audioUrl?: string, rate = 0.85) {
     }
 
     if (audioUrl) {
-      cleanupRef.current = playAudioUrl(audioUrl, fallbackToSpeech)
-      // Recorded clips are short; return to idle without a status change.
-      const timer = window.setTimeout(() => setState('idle'), 4000)
-      const previousCleanup = cleanupRef.current
+      let timer = 0
+      const stopAudio = playAudioUrl(
+        audioUrl,
+        () => {
+          window.clearTimeout(timer)
+          stopAudio()
+          fallbackToSpeech()
+          // Speech can be cancelled without a terminal callback (another player
+          // calls the global cancel); keep a watchdog so state cannot stick at
+          // 'playing', and keep the speech cleanup reachable from stop().
+          const speechCleanup = cleanupRef.current
+          timer = window.setTimeout(() => setState('idle'), 8000)
+          cleanupRef.current = () => {
+            window.clearTimeout(timer)
+            speechCleanup?.()
+          }
+        },
+        () => {
+          setState('idle')
+          setStatusText(`${word} 的发音播放完成。`)
+        },
+      )
+      // Fallback for clips that never fire `ended` (stalled streams).
+      timer = window.setTimeout(() => setState('idle'), 4000)
       cleanupRef.current = () => {
         window.clearTimeout(timer)
-        previousCleanup()
+        stopAudio()
       }
     } else {
       fallbackToSpeech()

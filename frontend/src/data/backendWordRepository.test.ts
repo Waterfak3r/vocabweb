@@ -59,9 +59,9 @@ describe('BackendWordRepository', () => {
     )
   })
 
-  it('uses encodeURIComponent for supported punctuation', async () => {
+  it('folds curly apostrophes before building the request URL', async () => {
     const fetch = vi.fn<FetchLike>(async () =>
-      jsonResponse(backendEntry({ word: 'rock’n’roll' })),
+      jsonResponse(backendEntry({ word: "rock'n'roll" })),
     )
     const repository = new BackendWordRepository('https://example.test/', {
       fetch,
@@ -70,7 +70,7 @@ describe('BackendWordRepository', () => {
     await repository.lookup('rock’n’roll')
 
     const [url] = fetch.mock.calls[0]
-    expect(url.toString()).toContain('rock%E2%80%99n%E2%80%99roll')
+    expect(url.toString()).toBe("https://example.test/api/words/rock'n'roll")
   })
 
   it('calls the default global fetch with its required host binding', async () => {

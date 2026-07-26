@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import { PageHeader } from '../components/layout/PageHeader'
 import { Button, ButtonLink } from '../components/ui/Button'
 import { EmptyState } from '../components/ui/EmptyState'
@@ -7,7 +7,6 @@ import { DictationPrompt } from '../components/word/DictationPrompt'
 import { DictationSummary } from '../components/word/DictationSummary'
 import { ShortcutHint } from '../components/word/ShortcutHint'
 import { selectWordbookItems, useWordbook } from '../data/wordbookStore'
-import { recordStudyEvent } from '../data/studyApi'
 import { useDictationSession } from '../features/dictation/useDictationSession'
 import { useDocumentTitle } from '../hooks/useDocumentTitle'
 import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts'
@@ -17,10 +16,9 @@ export function DictationPage() {
   useDocumentTitle('听写')
 
   const items = useWordbook(selectWordbookItems)
-  const reportGrade = useCallback((word: string, correct: boolean) => {
-    void recordStudyEvent({ kind: 'dictation', word, correct }).catch(() => undefined)
-  }, [])
-  const session = useDictationSession(items, reportGrade)
+  // Local-mode sessions are not tied to a backend wordbook, so there is no
+  // valid study event to report; wordbook-scoped study lives in WordbookPage.
+  const session = useDictationSession(items)
   const { pronounce } = usePronounce(
     session.current?.word ?? '',
     session.current?.audioUrl,

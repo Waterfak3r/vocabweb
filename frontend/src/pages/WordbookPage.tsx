@@ -95,8 +95,7 @@ function toRecentStudyRows(activities: StudyDashboard['recentActivity'], entries
   })
 }
 
-function WorkspaceIcon({ name }: { name: WorkspaceIconName }) {
-  const paths: Record<WorkspaceIconName, ReactNode> = {
+const WORKSPACE_ICON_PATHS: Record<WorkspaceIconName, ReactNode> = {
     plus: <path d="M12 5v14M5 12h14" />,
     trash: <><path d="M5.5 7.5h13M9.5 4.5h5M8 7.5l.7 11h5.6l.7-11" /><path d="M10.5 10.5v5M13.5 10.5v5" /></>,
     star: <path d="m12 4 2.2 4.45 4.9.7-3.55 3.45.84 4.88L12 15.2l-4.39 2.3.84-4.88L4.9 9.15l4.9-.7z" />,
@@ -111,8 +110,10 @@ function WorkspaceIcon({ name }: { name: WorkspaceIconName }) {
     calendar: <><rect x="4.5" y="6" width="15" height="13" rx="2" /><path d="M8 4.5v3M16 4.5v3M4.5 10h15" /></>,
     fire: <path d="M13.2 3.8c.6 3-1.7 4.3-1.7 6.2 0 .8.5 1.4 1.3 1.4 1.6 0 2.2-2 1.8-3.6 2.5 1.7 3.6 4 3.1 6.8-.5 3.2-3.3 5.4-6.5 5.4-3.7 0-6.7-2.8-6.7-6.3 0-3.2 1.9-5.5 4.3-7.5.4 1.5 1.4 2.2 2.1 2.2 1.2 0 1.6-1.4 2.3-4.6Z" />,
     dots: <><circle cx="5" cy="12" r="1" fill="currentColor" /><circle cx="12" cy="12" r="1" fill="currentColor" /><circle cx="19" cy="12" r="1" fill="currentColor" /></>,
-  }
-  return <svg className="workspace-icon" viewBox="0 0 24 24" aria-hidden="true">{paths[name]}</svg>
+}
+
+function WorkspaceIcon({ name }: { name: WorkspaceIconName }) {
+  return <svg className="workspace-icon" viewBox="0 0 24 24" aria-hidden="true">{WORKSPACE_ICON_PATHS[name]}</svg>
 }
 
 function WorkspaceCover({ tone, label, small = false }: { tone: CoverTone; label: string; small?: boolean }) {

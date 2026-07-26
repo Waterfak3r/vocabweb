@@ -96,7 +96,7 @@ export interface CommitImportDraftInput { resolutions?: Record<string, ImportRes
 export interface UpdateWordInput {
   word?: string; zhMeaning?: string | null; phonetic?: string; audioUrl?: string | null; meanings?: StudyMeaning[];
 }
-export type UpdateWordResult = { kind: "updated"; word: WordbookWord } | { kind: "not-found" } | { kind: "duplicate" };
+export type UpdateWordResult = { kind: "updated"; word: WordbookWord } | { kind: "not-found" } | { kind: "duplicate" } | { kind: "lookup-failed" };
 
 /** Persistence seam: production JSON is durable; tests inject the memory store. */
 export interface StudyStore {
@@ -115,7 +115,7 @@ export interface StudyStore {
   deleteMyWordbook(clientId: string, id: string): Promise<boolean>;
   restoreMyWordbook(clientId: string, id: string): Promise<MyWordbookCard | null>;
   listWords(clientId: string, id: string, status?: WordLearningStatus): Promise<LearningQueueItem[] | null>;
-  updateWord(clientId: string, wordbookId: string, wordId: string, input: UpdateWordInput, rematched?: StudyWordEntry): Promise<UpdateWordResult>;
+  updateWord(clientId: string, wordbookId: string, wordId: string, input: UpdateWordInput, rematched?: StudyWordEntry, options?: { lookupFailed?: boolean }): Promise<UpdateWordResult>;
   createImportDrafts(clientId: string, input: CreateImportDraftInput): Promise<ImportDraft[]>;
   resolveImportDraftEntries(clientId: string, id: string, entries: ResolvedImportDraftEntry[]): Promise<ImportDraft | null>;
   listImportDrafts(clientId: string): Promise<ImportDraft[]>;

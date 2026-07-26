@@ -226,11 +226,31 @@ test("JSON store preserves a deliberately empty persisted state without restorin
     const store = new JsonFileStudyStore(file);
     assert.deepEqual(await store.listCatalog(CLIENT, {}), []);
     assert.deepEqual(await store.listMyWordbooks(CLIENT, false), []);
-    assert.deepEqual(JSON.parse(await readFile(file, "utf8")), {
+    // Read-only requests neither rewrite the file nor mint client records.
+    assert.deepEqual(JSON.parse(await readFile(file, "utf8")), { version: 2, catalog: [], clients: {} });
+    await store.createMyWordbook(CLIENT, { title: "First", words: [] });
+    const persisted = JSON.parse(await readFile(file, "utf8")) as { version: number; catalog: unknown[]; clients: Record<string, { wordbooks: unknown[] }> };
+    assert.equal(persisted.version, 3);
+    assert.deepEqual(persisted.catalog, []);
+    assert.equal(persisted.clients[CLIENT]?.wordbooks.length, 1);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("stored curly-apostrophe words fold on load so matching keeps working", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "vacab-study-fold-"));
+  const file = join(directory, "state.json");
+  try {
+    const at = "2026-01-01T00:00:00.000Z";
+    await writeFile(file, JSON.stringify({
       version: 3,
       catalog: [],
-      clients: { [CLIENT]: { favorites: [], wordbooks: [], events: [], drafts: [] } },
-    });
+      clients: { [CLIENT]: { favorites: [], wordbooks: [{ id: "my-legacy", title: "Legacy", description: "", createdAt: at, updatedAt: at, words: [{ word: "don’t", phonetic: "", meanings: [], source: "user" }] }], events: [], drafts: [] } },
+    }), "utf8");
+    const store = new JsonFileStudyStore(file);
+    const words = await store.listWords(CLIENT, "my-legacy");
+    assert.equal(words?.[0]?.word, "don't");
+    const event = await store.recordEvent(CLIENT, { kind: "dictation", wordbookId: "my-legacy", word: "don't", correct: true });
+    assert.ok(event, "folded stored word must be matchable by today's normalized form");
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
@@ -394,7 +414,8 @@ test("v2 state migrates word IDs and old learning events without dropping progre
     const words = await store.listWords(CLIENT, "my-legacy");
     assert.ok(words?.[0]?.id);
     assert.equal(words?.[0]?.status, "mastered");
-    await store.listMyWordbooks(CLIENT, false);
+    // Reads keep the migrated state in memory only; the first mutation persists it.
+    await store.createMyWordbook(CLIENT, { title: "Trigger", words: [] });
     const persisted = JSON.parse(await readFile(file, "utf8")) as { version: number; clients: Record<string, { wordbooks: Array<{ words: Array<{ id?: string }> }>; events: Array<{ wordId?: string }> }> };
     assert.equal(persisted.version, 3);
     assert.ok(persisted.clients[CLIENT]!.wordbooks[0]!.words[0]!.id);

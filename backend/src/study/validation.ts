@@ -128,6 +128,7 @@ export function parseCreateImportDraft(value: unknown): CreateImportDraftInput |
   let lines: ImportLineInput[];
   if (typeof value.content === "string") {
     if (value.content.length > 1_000_000) return null; lines = parseRawContent(value.content);
+    if (lines.length > 10_000) return null;
   } else if (Array.isArray(value.lines) && value.lines.length <= 10_000) {
     let total = 0;
     const parsed = value.lines.map((item): ImportLineInput | null => {

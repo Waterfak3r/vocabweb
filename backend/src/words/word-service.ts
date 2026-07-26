@@ -2,7 +2,8 @@ import { normalizeWord } from "./normalize.js";
 import type { WordEntry, WordProvider } from "./types.js";
 
 interface CacheEntry {
-  value: WordEntry;
+  /** null means a cached "not found" so repeat misses skip the upstream round-trip. */
+  value: WordEntry | null;
   expiresAt: number;
 }
 
@@ -12,6 +13,7 @@ export interface WordLookup {
 
 export interface WordServiceOptions {
   cacheTtlMs?: number;
+  negativeCacheTtlMs?: number;
   cacheMaxEntries?: number;
   now?: () => number;
 }
@@ -20,6 +22,7 @@ export class WordService implements WordLookup {
   private readonly cache = new Map<string, CacheEntry>();
   private readonly inFlight = new Map<string, Promise<WordEntry | null>>();
   private readonly cacheTtlMs: number;
+  private readonly negativeCacheTtlMs: number;
   private readonly cacheMaxEntries: number;
   private readonly now: () => number;
 
@@ -28,6 +31,7 @@ export class WordService implements WordLookup {
     options: WordServiceOptions = {},
   ) {
     this.cacheTtlMs = options.cacheTtlMs ?? 60 * 60 * 1_000;
+    this.negativeCacheTtlMs = options.negativeCacheTtlMs ?? 5 * 60 * 1_000;
     this.cacheMaxEntries = options.cacheMaxEntries ?? 1_000;
     this.now = options.now ?? Date.now;
   }
@@ -35,7 +39,7 @@ export class WordService implements WordLookup {
   lookup(word: string): Promise<WordEntry | null> {
     const query = normalizeWord(word);
     const cached = this.readCache(query);
-    if (cached) {
+    if (cached !== undefined) {
       return Promise.resolve(cached);
     }
 
@@ -47,9 +51,7 @@ export class WordService implements WordLookup {
     const request = this.provider
       .lookup(query)
       .then((entry) => {
-        if (entry) {
-          this.writeCache(query, entry);
-        }
+        this.writeCache(query, entry);
         return entry;
       })
       .finally(() => {
@@ -60,7 +62,7 @@ export class WordService implements WordLookup {
     return request;
   }
 
-  private readCache(key: string): WordEntry | undefined {
+  private readCache(key: string): WordEntry | null | undefined {
     const cached = this.cache.get(key);
     if (!cached) {
       return undefined;
@@ -76,7 +78,7 @@ export class WordService implements WordLookup {
     return cached.value;
   }
 
-  private writeCache(key: string, value: WordEntry): void {
+  private writeCache(key: string, value: WordEntry | null): void {
     const now = this.now();
     for (const [cachedKey, cached] of this.cache) {
       if (cached.expiresAt <= now) {
@@ -93,6 +95,6 @@ export class WordService implements WordLookup {
       this.cache.delete(oldestKey);
     }
 
-    this.cache.set(key, { value, expiresAt: now + this.cacheTtlMs });
+    this.cache.set(key, { value, expiresAt: now + (value ? this.cacheTtlMs : this.negativeCacheTtlMs) });
   }
 }

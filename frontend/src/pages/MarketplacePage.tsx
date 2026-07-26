@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type Dispatch, type ReactNode, type SetStateAction } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from 'react'
 import { Link } from 'react-router-dom'
 import {
   getWorkspaceApi,
@@ -49,22 +49,23 @@ const PUBLISH_EXAMS = ['IELTS', 'TOEFL', 'GRE', '高考', '四六级', '考研']
 const PUBLISH_GOALS = ['写作', '阅读', '听力', '口语']
 const EMPTY_PUBLISH_FORM: PublishForm = { sourceWordbookId: '', title: '', description: '', exam: '', goal: '' }
 
+const MARKETPLACE_ICON_PATHS: Record<IconName, ReactNode> = {
+  search: <><circle cx="10.5" cy="10.5" r="5.75" /><path d="m15 15 4.25 4.25" /></>,
+  filter: <path d="M4 5h16l-6.2 7.1v5l-3.6 1.8v-6.8z" />,
+  plus: <path d="M12 5v14M5 12h14" />,
+  share: <><path d="M8 12a4 4 0 0 1 4-4h3" /><path d="m13 5 3 3-3 3" /><path d="M16 12a4 4 0 0 1-4 4H9" /><path d="m11 15-3-3 3-3" /></>,
+  grid: <><rect x="4" y="4" width="6" height="6" rx="1" /><rect x="14" y="4" width="6" height="6" rx="1" /><rect x="4" y="14" width="6" height="6" rx="1" /><rect x="14" y="14" width="6" height="6" rx="1" /></>,
+  list: <><path d="M8 6h11M8 12h11M8 18h11" /><circle cx="4.5" cy="6" r=".75" fill="currentColor" /><circle cx="4.5" cy="12" r=".75" fill="currentColor" /><circle cx="4.5" cy="18" r=".75" fill="currentColor" /></>,
+  book: <><path d="M4.5 5.5c3.2-1.2 5.8-.6 7.5 1.5v12c-1.7-2.1-4.3-2.7-7.5-1.5z" /><path d="M19.5 5.5C16.3 4.3 13.7 4.9 12 7v12c1.7-2.1 4.3-2.7 7.5-1.5z" /></>,
+  star: <path d="m12 4 2.2 4.45 4.9.7-3.55 3.45.84 4.88L12 15.2l-4.39 2.3.84-4.88L4.9 9.15l4.9-.7z" />,
+  people: <><circle cx="9" cy="9" r="3" /><path d="M3.75 19a5.25 5.25 0 0 1 10.5 0M15.5 7.25a2.7 2.7 0 0 1 0 5.25M16.5 14a4.2 4.2 0 0 1 3.75 5" /></>,
+  heart: <path d="M12 19s-7-4.2-7-9.1A3.9 3.9 0 0 1 12 7.5a3.9 3.9 0 0 1 7 2.4C19 14.8 12 19 12 19Z" />,
+  cloud: <><path d="M7.5 18.5h9.25a3.75 3.75 0 0 0 .35-7.48 5.5 5.5 0 0 0-10.65 1.46A3.2 3.2 0 0 0 7.5 18.5Z" /><path d="M12 10v6M9.75 13.75 12 16l2.25-2.25" /></>,
+  refresh: <><path d="M18.5 8.5A7 7 0 0 0 6.1 7L4.5 9" /><path d="M4.5 5.5V9H8" /><path d="M5.5 15.5A7 7 0 0 0 17.9 17l1.6-2" /><path d="M19.5 18.5V15H16" /></>,
+}
+
 function MarketplaceIcon({ name }: { name: IconName }) {
-  const paths: Record<IconName, ReactNode> = {
-    search: <><circle cx="10.5" cy="10.5" r="5.75" /><path d="m15 15 4.25 4.25" /></>,
-    filter: <path d="M4 5h16l-6.2 7.1v5l-3.6 1.8v-6.8z" />,
-    plus: <path d="M12 5v14M5 12h14" />,
-    share: <><path d="M8 12a4 4 0 0 1 4-4h3" /><path d="m13 5 3 3-3 3" /><path d="M16 12a4 4 0 0 1-4 4H9" /><path d="m11 15-3-3 3-3" /></>,
-    grid: <><rect x="4" y="4" width="6" height="6" rx="1" /><rect x="14" y="4" width="6" height="6" rx="1" /><rect x="4" y="14" width="6" height="6" rx="1" /><rect x="14" y="14" width="6" height="6" rx="1" /></>,
-    list: <><path d="M8 6h11M8 12h11M8 18h11" /><circle cx="4.5" cy="6" r=".75" fill="currentColor" /><circle cx="4.5" cy="12" r=".75" fill="currentColor" /><circle cx="4.5" cy="18" r=".75" fill="currentColor" /></>,
-    book: <><path d="M4.5 5.5c3.2-1.2 5.8-.6 7.5 1.5v12c-1.7-2.1-4.3-2.7-7.5-1.5z" /><path d="M19.5 5.5C16.3 4.3 13.7 4.9 12 7v12c1.7-2.1 4.3-2.7 7.5-1.5z" /></>,
-    star: <path d="m12 4 2.2 4.45 4.9.7-3.55 3.45.84 4.88L12 15.2l-4.39 2.3.84-4.88L4.9 9.15l4.9-.7z" />,
-    people: <><circle cx="9" cy="9" r="3" /><path d="M3.75 19a5.25 5.25 0 0 1 10.5 0M15.5 7.25a2.7 2.7 0 0 1 0 5.25M16.5 14a4.2 4.2 0 0 1 3.75 5" /></>,
-    heart: <path d="M12 19s-7-4.2-7-9.1A3.9 3.9 0 0 1 12 7.5a3.9 3.9 0 0 1 7 2.4C19 14.8 12 19 12 19Z" />,
-    cloud: <><path d="M7.5 18.5h9.25a3.75 3.75 0 0 0 .35-7.48 5.5 5.5 0 0 0-10.65 1.46A3.2 3.2 0 0 0 7.5 18.5Z" /><path d="M12 10v6M9.75 13.75 12 16l2.25-2.25" /></>,
-    refresh: <><path d="M18.5 8.5A7 7 0 0 0 6.1 7L4.5 9" /><path d="M4.5 5.5V9H8" /><path d="M5.5 15.5A7 7 0 0 0 17.9 17l1.6-2" /><path d="M19.5 18.5V15H16" /></>,
-  }
-  return <svg className="market-icon" viewBox="0 0 24 24" aria-hidden="true">{paths[name]}</svg>
+  return <svg className="market-icon" viewBox="0 0 24 24" aria-hidden="true">{MARKETPLACE_ICON_PATHS[name]}</svg>
 }
 
 function BookCover({ tone, label }: { tone: CoverTone; label: string }) {
@@ -114,26 +115,32 @@ export function MarketplacePage() {
   const [syncMessage, setSyncMessage] = useState('')
   const [loadError, setLoadError] = useState('')
 
+  // Sequence counter drops out-of-order responses when filters change quickly.
+  const refreshSeq = useRef(0)
+  // The text query filters client-side (see `filtered`), so it is deliberately
+  // not part of the server request — no per-keystroke network traffic.
   const refreshRemote = useCallback(async () => {
     if (!api) {
       setRemoteCatalog([])
       setLoadError('未配置后端地址，无法读取单词广场。')
       return
     }
+    const seq = ++refreshSeq.current
     try {
       const catalog = await api.listCatalog({
-        q: query.trim() || undefined,
         exam: examFilters[0] as CatalogExam | undefined,
         goal: goalFilters[0] as LearningGoal | undefined,
         sort: sort === 'popular' ? 'hot' : sort === 'latest' ? 'newest' : 'rating',
       })
+      if (seq !== refreshSeq.current) return
       setRemoteCatalog(catalog)
       setLoadError('')
     } catch {
+      if (seq !== refreshSeq.current) return
       setRemoteCatalog([])
       setLoadError('单词广场加载失败，请确认后端服务可用后重试。')
     }
-  }, [api, examFilters, goalFilters, query, sort])
+  }, [api, examFilters, goalFilters, sort])
 
   useEffect(() => { void refreshRemote() }, [refreshRemote])
 

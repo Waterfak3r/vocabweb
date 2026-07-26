@@ -80,6 +80,10 @@ export function WordManagerDialog({ title, entries, saving = false, onClose, onS
     }
   }, [onClose])
 
+  // Key on the entry's content, not just its id: after a save the parent
+  // refreshes entries (same id, rematched dictionary fields) and the form must
+  // follow — but a refresh returning identical data must not clobber typing.
+  const selectedFingerprint = selected ? JSON.stringify(selected) : ''
   useEffect(() => {
     if (!selected) return
     setWord(selected.word)
@@ -88,7 +92,8 @@ export function WordManagerDialog({ title, entries, saving = false, onClose, onS
     setZhMeaning(selected.zhMeaning ?? '')
     setMeaningsText(meaningsToText(selected))
     setError('')
-  }, [selected?.id])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedFingerprint])
 
   async function submit(event: FormEvent) {
     event.preventDefault()

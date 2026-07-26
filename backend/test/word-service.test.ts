@@ -36,8 +36,9 @@ test("WordService caches successful lookups until TTL expiry", async () => {
   assert.equal(calls, 2);
 });
 
-test("WordService does not cache misses", async () => {
+test("WordService caches misses for the shorter negative TTL", async () => {
   let calls = 0;
+  let now = 0;
   const service = new WordService(
     {
       async lookup() {
@@ -45,11 +46,15 @@ test("WordService does not cache misses", async () => {
         return null;
       },
     },
-    { cacheMaxEntries: 1 },
+    { cacheMaxEntries: 1, negativeCacheTtlMs: 100, now: () => now },
   );
 
-  await service.lookup("missing");
-  await service.lookup("missing");
+  assert.equal(await service.lookup("missing"), null);
+  assert.equal(await service.lookup("missing"), null);
+  assert.equal(calls, 1);
+
+  now += 101;
+  assert.equal(await service.lookup("missing"), null);
   assert.equal(calls, 2);
 });
 

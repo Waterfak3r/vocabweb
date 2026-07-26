@@ -7,6 +7,8 @@ import { createWordbookStorage } from './wordbookStorage'
 
 type WordbookState = {
   items: WordbookItem[]
+  /** True once a localStorage write has been lost (quota / privacy mode). */
+  persistFailed: boolean
 
   /** Add an entry; returns false when the word is already saved. */
   add: (entry: WordEntry) => boolean
@@ -20,10 +22,18 @@ type WordbookState = {
 
 const KEY = storageKey('wordbook', 1)
 
+// Guarded so a failing persistence write of this very flag cannot loop.
+function markPersistFailed() {
+  if (!useWordbook.getState().persistFailed) {
+    useWordbook.setState({ persistFailed: true })
+  }
+}
+
 export const useWordbook = create<WordbookState>()(
   persist(
     (set, get) => ({
       items: [],
+      persistFailed: false,
 
       add: (entry) => {
         const id = wordbookId(entry.word)
@@ -58,7 +68,7 @@ export const useWordbook = create<WordbookState>()(
     {
       name: KEY,
       version: 1,
-      storage: createJSONStorage(() => createWordbookStorage(window.localStorage)),
+      storage: createJSONStorage(() => createWordbookStorage(window.localStorage, markPersistFailed)),
       partialize: (state) => ({ items: state.items }) as WordbookState,
     },
   ),
@@ -67,5 +77,6 @@ export const useWordbook = create<WordbookState>()(
 /** Selectors */
 export const selectWordbookItems = (state: WordbookState) => state.items
 export const selectWordbookCount = (state: WordbookState) => state.items.length
+export const selectPersistFailed = (state: WordbookState) => state.persistFailed
 export const selectHasWord = (word: string) => (state: WordbookState) =>
   state.items.some((item) => item.id === wordbookId(word))

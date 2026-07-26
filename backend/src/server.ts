@@ -24,6 +24,7 @@ const app = createApp({
   wordLookup,
   wordRateLimiter,
   studyStore,
+  ...(config.trustProxy ? { trustProxy: config.trustProxy } : {}),
 });
 
 app.listen(config.port, () => {

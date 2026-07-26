@@ -9,6 +9,7 @@ export interface AppConfig {
   wordCacheMaxEntries: number;
   wordRateLimitWindowMs: number;
   wordRateLimitMaxRequests: number;
+  trustProxy: number;
   dataFile: string;
 }
 
@@ -88,6 +89,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       1,
       100_000,
     ),
+    trustProxy: parseInteger("TRUST_PROXY", env.TRUST_PROXY, 0, 0, 10),
     dataFile: (() => {
       const value = env.DATA_FILE?.trim() || "./data/study-state.json";
       if (value.length > 1_000) {

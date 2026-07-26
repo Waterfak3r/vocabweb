@@ -1,4 +1,4 @@
-import { useId, type InputHTMLAttributes } from 'react'
+import { useId, type InputHTMLAttributes, type Ref } from 'react'
 import { cn } from '../../lib/cn'
 
 export type TextFieldProps = {
@@ -9,6 +9,7 @@ export type TextFieldProps = {
   onChange: (value: string) => void
   /** Visually quieter underline-only style (dictation answer) */
   mono?: boolean
+  ref?: Ref<HTMLInputElement>
 } & Omit<InputHTMLAttributes<HTMLInputElement>, 'className' | 'id' | 'value' | 'onChange'>
 
 export function TextField({
@@ -18,6 +19,7 @@ export function TextField({
   value,
   onChange,
   mono = false,
+  ref,
   ...rest
 }: TextFieldProps) {
   const id = useId()
@@ -31,6 +33,7 @@ export function TextField({
       </label>
       <input
         id={id}
+        ref={ref}
         className={cn('field-input', mono && 'field-input-mono')}
         value={value}
         onChange={(event) => onChange(event.target.value)}

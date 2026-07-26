@@ -37,28 +37,38 @@ export function readStorage<T>(
   }
 }
 
+/** Returns false when the value could not be persisted (quota, privacy mode). */
 export function writeStorage(
   key: string,
   value: unknown,
   storage: StorageLike = window.localStorage,
-): void {
+): boolean {
   try {
     storage.setItem(key, JSON.stringify(value))
-  } catch {
-    // Quota or privacy-mode failures are non-fatal: the app keeps working in memory.
+    return true
+  } catch (error) {
+    // Non-fatal: the app keeps working in memory, but callers can warn the user.
+    console.warn(`无法保存 ${key} 到本地存储`, error)
+    return false
   }
 }
 
-/** Store a string that has already been serialized by the caller. */
+/**
+ * Store a string that has already been serialized by the caller.
+ * Returns false when the value could not be persisted (quota, privacy mode).
+ */
 export function writeStorageString(
   key: string,
   value: string,
   storage: StorageLike = window.localStorage,
-): void {
+): boolean {
   try {
     storage.setItem(key, value)
-  } catch {
-    // Quota or privacy-mode failures are non-fatal: the app keeps working in memory.
+    return true
+  } catch (error) {
+    // Non-fatal: the app keeps working in memory, but callers can warn the user.
+    console.warn(`无法保存 ${key} 到本地存储`, error)
+    return false
   }
 }
 

@@ -72,4 +72,16 @@ describe('wordbook storage adapter', () => {
     localStorage.setItem(KEY, persisted([ITEM, { id: 'incomplete' }, null]))
     expect(JSON.parse(storage.getItem(KEY) ?? '').state.items).toEqual([ITEM])
   })
+
+  it('folds legacy curly-apostrophe words and drops fold collisions', () => {
+    const localStorage = new MemoryStorage()
+    const storage = createWordbookStorage(localStorage)
+    const legacy = { ...ITEM, id: 'don’t', word: 'don’t' }
+    const folded = { ...ITEM, id: "don't", word: "don't" }
+
+    localStorage.setItem(KEY, persisted([legacy, folded]))
+
+    const items = JSON.parse(storage.getItem(KEY) ?? '').state.items as WordbookItem[]
+    expect(items).toEqual([folded])
+  })
 })

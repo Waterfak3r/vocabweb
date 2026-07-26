@@ -14,8 +14,11 @@ export interface CreateAppOptions {
   frontendOrigins?: string[];
   wordLookup?: WordLookup;
   wordRateLimiter?: RateLimiter;
+  mutationRateLimiter?: RateLimiter;
   studyStore?: StudyStore;
   localChineseLookup?: LocalChineseLookup;
+  /** Express "trust proxy" hop count; set to the number of reverse proxies in front of the app. */
+  trustProxy?: number;
 }
 
 interface ApiErrorBody {
@@ -55,6 +58,9 @@ export function createApp(options: CreateAppOptions = {}) {
   const wordRateLimiter =
     options.wordRateLimiter ??
     new FixedWindowRateLimiter({ windowMs: 60_000, maxRequests: 60 });
+  const mutationRateLimiter =
+    options.mutationRateLimiter ??
+    new FixedWindowRateLimiter({ windowMs: 60_000, maxRequests: 240 });
   const studyStore = options.studyStore ?? new JsonFileStudyStore("./data/study-state.json");
   const localChineseLookup = options.localChineseLookup ?? new CsvLocalChineseDictionary();
   const lookupJobs: Array<{ word: string; resolve: (value: Awaited<ReturnType<WordLookup["lookup"]>>) => void; reject: (reason: unknown) => void }> = [];
@@ -83,6 +89,23 @@ export function createApp(options: CreateAppOptions = {}) {
     next();
   };
 
+  const enforceMutationRateLimit: RequestHandler = (request, response, next) => {
+    if (request.method === "GET" || request.method === "HEAD" || request.method === "OPTIONS") {
+      next();
+      return;
+    }
+    // Key on the IP, not the client-supplied X-Vocab-Client-Id header — rotating
+    // a self-issued header must not mint fresh rate-limit windows.
+    const clientKey = request.ip || request.socket.remoteAddress || "unknown";
+    const decision = mutationRateLimiter.consume(clientKey);
+    if (!decision.allowed) {
+      response.setHeader("Retry-After", Math.max(1, Math.ceil(decision.retryAfterMs / 1_000)));
+      response.status(429).json(apiError("RATE_LIMITED", "Too many requests"));
+      return;
+    }
+    next();
+  };
+
   const resolveOneImportLine = async (line: ImportLineInput): Promise<PreparedImportLine> => {
     const normalized = normalizeWord(line.word);
     if (!isValidWordQuery(normalized)) {
@@ -107,8 +130,8 @@ export function createApp(options: CreateAppOptions = {}) {
       if (!draft || draft.status === "committed") return;
       const processable = draft.entries.filter((entry) => entry.word && (entry.status === "processing" || (entry.status === "conflict" && !entry.entry)));
       if (!processable.length) return;
-      for (let offset = 0; offset < processable.length; offset += 6) {
-        const batch = processable.slice(offset, offset + 6);
+      for (let offset = 0; offset < processable.length; offset += 100) {
+        const batch = processable.slice(offset, offset + 100);
         const resolved: ResolvedImportDraftEntry[] = await Promise.all(batch.map(async (entry): Promise<ResolvedImportDraftEntry> => {
           const result = await resolveOneImportLine({ line: entry.line, word: entry.word!, ...(entry.zhMeaning ? { zhMeaning: entry.zhMeaning } : {}) });
           const status: ResolvedImportDraftEntry["status"] = result.status === "ready" || result.status === "unmatched" ? result.status : "processing";
@@ -121,6 +144,7 @@ export function createApp(options: CreateAppOptions = {}) {
   };
 
   app.disable("x-powered-by");
+  if (options.trustProxy) app.set("trust proxy", options.trustProxy);
   app.use(
     cors({
       origin(origin, callback) {
@@ -133,6 +157,7 @@ export function createApp(options: CreateAppOptions = {}) {
       },
     }),
   );
+  app.use("/api", enforceMutationRateLimit);
   app.use(express.json({ limit: "2mb" }));
 
   app.get("/api/health", (_request, response) => {
@@ -166,6 +191,7 @@ export function createApp(options: CreateAppOptions = {}) {
           return;
         }
 
+        response.setHeader("Cache-Control", "public, max-age=86400");
         response.status(200).json(entry);
       } catch (error) {
         if (error instanceof WordProviderError) {
@@ -272,10 +298,15 @@ export function createApp(options: CreateAppOptions = {}) {
     if (!clientId) return;
     if (!wordbookId || !wordId || !input) { response.status(400).json(apiError("INVALID_WORD_UPDATE", "Word update is invalid")); return; }
     try {
-      const rematched = input.word ? (await resolveOneImportLine({ line: 1, word: input.word, ...(typeof input.zhMeaning === "string" ? { zhMeaning: input.zhMeaning } : {}) })).entry : undefined;
-      const result = await studyStore.updateWord(clientId, wordbookId, wordId, input, rematched);
+      const prepared = input.word ? await resolveOneImportLine({ line: 1, word: input.word, ...(typeof input.zhMeaning === "string" ? { zhMeaning: input.zhMeaning } : {}) }) : undefined;
+      // "processing" means the dictionary lookup failed transiently — never let the
+      // empty fallback entry wipe the word's existing dictionary fields.
+      const lookupFailed = prepared?.status === "processing";
+      const rematched = prepared && !lookupFailed ? prepared.entry : undefined;
+      const result = await studyStore.updateWord(clientId, wordbookId, wordId, input, rematched, { lookupFailed });
       if (result.kind === "not-found") response.status(404).json(apiError("WORD_NOT_FOUND", "Wordbook or word was not found"));
       else if (result.kind === "duplicate") response.status(409).json(apiError("DUPLICATE_WORD", "The word already exists in this wordbook"));
+      else if (result.kind === "lookup-failed") response.status(503).json(apiError("DICTIONARY_UNAVAILABLE", "Dictionary lookup is temporarily unavailable; retry the rename later"));
       else response.status(200).json(result.word);
     } catch (error) { next(error); }
   });
@@ -304,7 +335,7 @@ export function createApp(options: CreateAppOptions = {}) {
   app.delete("/api/my/import-drafts/:id", async (request, response, next) => {
     const clientId = readClientId(request, response); const id = parseResourceId(request.params.id); if (!clientId) return;
     if (!id) { response.status(400).json(apiError("INVALID_RESOURCE_ID", "Resource id is invalid")); return; }
-    try { if (!await studyStore.deleteImportDraft(clientId, id)) response.status(404).json(apiError("IMPORT_DRAFT_NOT_FOUND", "Import draft was not found or is already committed")); else response.status(204).end(); } catch (error) { next(error); }
+    try { if (!await studyStore.deleteImportDraft(clientId, id)) response.status(404).json(apiError("IMPORT_DRAFT_NOT_FOUND", "Import draft was not found")); else response.status(204).end(); } catch (error) { next(error); }
   });
   app.post("/api/my/import-drafts/:id/commit", async (request, response, next) => {
     const clientId = readClientId(request, response); const id = parseResourceId(request.params.id); const input = parseCommitImportDraft(request.body);
