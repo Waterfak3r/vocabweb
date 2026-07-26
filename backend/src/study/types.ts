@@ -15,7 +15,12 @@ export interface CatalogWordbook {
   exams: CatalogExam[]; goals: LearningGoal[]; rating: number; uses: number;
   createdAt: string; shareCode: string; words: StudyWordEntry[]; ownerClientId?: string;
 }
-export type CatalogCard = Omit<CatalogWordbook, "words" | "ownerClientId"> & { wordCount: number; favorited: boolean; added: boolean };
+export type CatalogCard = Omit<CatalogWordbook, "words" | "ownerClientId"> & {
+  wordCount: number;
+  favorited: boolean;
+  added: boolean;
+  uploaded: boolean;
+};
 export interface MyWordbook {
   id: string; title: string; description: string; sourceCatalogId?: string;
   createdAt: string; updatedAt: string; deletedAt?: string; words: WordbookWord[];
@@ -55,6 +60,8 @@ export interface UploadCatalogWordbookInput extends CreateMyWordbookInput { exam
 /** Persistence seam: production JSON is durable; tests inject the memory store. */
 export interface StudyStore {
   listCatalog(clientId: string, query: CatalogQuery): Promise<CatalogCard[]>;
+  listFavorites(clientId: string): Promise<CatalogCard[]>;
+  listUploads(clientId: string): Promise<CatalogCard[]>;
   getCatalog(clientId: string, id: string): Promise<CatalogCard | null>;
   toggleFavorite(clientId: string, id: string): Promise<{ favorited: boolean } | null>;
   addCatalogToMine(clientId: string, id: string): Promise<{ wordbook: MyWordbookCard; created: boolean } | null>;

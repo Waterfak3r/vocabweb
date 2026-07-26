@@ -9,7 +9,6 @@ import { useWordLookup } from '../hooks/useWordLookup'
 import { useStudySummary } from '../hooks/useStudySummary'
 import { IELTS_WORDS, wordOfTheDay } from '../data/ieltsWords'
 import { selectWordbookItems, useWordbook } from '../data/wordbookStore'
-import { recordStudyEvent } from '../data/studyApi'
 import type { WordEntry } from '../domain/types'
 
 const QUICK_CHIPS = ['ubiquitous', 'exacerbate', 'paradigm', 'viable', 'scrutinise', 'inevitable']
@@ -52,11 +51,7 @@ export function HomePage() {
   const wordbookItems = useWordbook(selectWordbookItems)
   const { summary, source: summarySource, isRefreshing, refresh } = useStudySummary(wordbookItems)
   const reportLookup = useCallback(
-    (entry: WordEntry) => {
-      void recordStudyEvent({ kind: 'lookup', word: entry.word })
-        .then(refresh)
-        .catch(() => undefined)
-    },
+    (_entry: WordEntry) => { void refresh() },
     [refresh],
   )
   const { state, lookup } = useWordLookup(undefined, reportLookup)

@@ -6,3 +6,6 @@ frontend/*.local
 backend/.env
 *.local
 .DS_Store
+**/.codex-*.log
+**/.codex-*.png
+/*-baseline.png

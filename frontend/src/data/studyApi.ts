@@ -27,9 +27,9 @@ export type StudySummary = {
 }
 
 export type StudyEvent =
-  | { kind: 'lookup'; word: string }
-  | { kind: 'flashcard'; word: string; verdict: 'know' | 'unknown' }
-  | { kind: 'dictation'; word: string; correct: boolean }
+  | { kind: 'new' | 'lookup'; word: string; wordbookId?: string }
+  | { kind: 'flashcard'; word: string; verdict: 'know' | 'unknown'; wordbookId?: string }
+  | { kind: 'dictation'; word: string; correct: boolean; wordbookId?: string }
 
 type StudyApiOptions = {
   fetch?: FetchLike

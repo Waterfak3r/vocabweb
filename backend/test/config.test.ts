@@ -5,13 +5,14 @@ import { loadConfig } from "../src/config.js";
 test("loadConfig provides bounded word lookup defaults", () => {
   assert.deepEqual(loadConfig({}), {
     port: 3_000,
-    frontendOrigins: ["http://localhost:5173"],
+    frontendOrigins: ["http://localhost:5173", "http://127.0.0.1:5173"],
     wiktApiBaseUrl: "https://api.wiktapi.dev/v1/en/word",
     wiktApiTimeoutMs: 5_000,
     wordCacheTtlMs: 3_600_000,
     wordCacheMaxEntries: 1_000,
     wordRateLimitWindowMs: 60_000,
     wordRateLimitMaxRequests: 60,
+    dataFile: "./data/study-state.json",
   });
 });
 
@@ -25,6 +26,7 @@ test("loadConfig parses configured word lookup settings", () => {
     WORD_CACHE_MAX_ENTRIES: "25",
     WORD_RATE_LIMIT_WINDOW_MS: "30000",
     WORD_RATE_LIMIT_MAX_REQUESTS: "10",
+    DATA_FILE: "C:/data/vocab.json",
   });
 
   assert.deepEqual(config, {
@@ -36,6 +38,7 @@ test("loadConfig parses configured word lookup settings", () => {
     wordCacheMaxEntries: 25,
     wordRateLimitWindowMs: 30_000,
     wordRateLimitMaxRequests: 10,
+    dataFile: "C:/data/vocab.json",
   });
 });
 

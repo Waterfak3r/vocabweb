@@ -15,6 +15,8 @@ import './styles/layout.css'
 import './styles/utilities.css'
 import './styles/components.css'
 import './styles/word.css'
+import './styles/marketplace.css'
+import './styles/workspace.css'
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

@@ -203,6 +203,11 @@
   background: #aeb4b7;
 }
 
+/* The marketplace and wordbook references end with their content cards. */
+.app-shell:has(.marketplace-page, .workspace-page, .workspace-study) .site-footer {
+  display: none;
+}
+
 @media (max-width: 760px) {
   .site-header {
     align-items: flex-start;

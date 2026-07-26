@@ -2,6 +2,7 @@ import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { FixedWindowRateLimiter } from "./http/rate-limit.js";
 import { WiktApiProvider } from "./providers/wiktapi.js";
+import { JsonFileStudyStore } from "./study/store.js";
 import { WordService } from "./words/word-service.js";
 
 const config = loadConfig();
@@ -17,10 +18,12 @@ const wordRateLimiter = new FixedWindowRateLimiter({
   windowMs: config.wordRateLimitWindowMs,
   maxRequests: config.wordRateLimitMaxRequests,
 });
+const studyStore = new JsonFileStudyStore(config.dataFile);
 const app = createApp({
   frontendOrigins: config.frontendOrigins,
   wordLookup,
   wordRateLimiter,
+  studyStore,
 });
 
 app.listen(config.port, () => {

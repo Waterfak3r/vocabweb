@@ -9,6 +9,7 @@ export interface AppConfig {
   wordCacheMaxEntries: number;
   wordRateLimitWindowMs: number;
   wordRateLimitMaxRequests: number;
+  dataFile: string;
 }
 
 function parseInteger(
@@ -47,7 +48,7 @@ function parseWiktApiBaseUrl(value: string | undefined): string {
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   return {
     port: parseInteger("PORT", env.PORT, 3_000, 1, 65_535),
-    frontendOrigins: (env.FRONTEND_ORIGIN ?? "http://localhost:5173")
+    frontendOrigins: (env.FRONTEND_ORIGIN ?? "http://localhost:5173,http://127.0.0.1:5173")
       .split(",")
       .map((origin) => origin.trim())
       .filter(Boolean),
@@ -87,5 +88,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       1,
       100_000,
     ),
+    dataFile: (() => {
+      const value = env.DATA_FILE?.trim() || "./data/study-state.json";
+      if (value.length > 1_000) {
+        throw new Error("DATA_FILE must be at most 1000 characters");
+      }
+      return value;
+    })(),
   };
 }

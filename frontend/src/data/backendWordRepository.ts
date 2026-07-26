@@ -1,5 +1,6 @@
 import { isValidWordQuery, normalizeWord } from '../domain/normalize'
 import type { WordEntry, WordMeaning } from '../domain/types'
+import { getStudyClientId } from './studyApi'
 import { LookupError, type WordRepository } from './wordRepository'
 
 type FetchLike = (
@@ -150,6 +151,7 @@ export class BackendWordRepository implements WordRepository {
     let response: Response
     try {
       response = await this.fetch(url, {
+        headers: { 'X-Vocab-Client-Id': getStudyClientId() },
         signal: AbortSignal.timeout(this.timeoutMs),
       })
     } catch (cause) {
