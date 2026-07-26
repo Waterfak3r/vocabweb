@@ -14,6 +14,7 @@ import {
   getWorkspaceApi,
   type MyWordbook,
   type StudyDashboard,
+  type WordLevel,
   type WordStatus,
   type WordbookProgress,
 } from '../data/workspaceApi'
@@ -47,7 +48,7 @@ type WorkspaceBook = {
   updatedAt: string
   entries: WorkspaceEntry[]
 }
-type WorkspaceEntry = WordbookItem & { status?: WordStatus }
+type WorkspaceEntry = WordbookItem & { status?: WordStatus; level?: WordLevel; levelReachedAt?: string; lastStudiedAt?: string }
 
 type RecentStudyRow = {
   id: string
@@ -77,6 +78,9 @@ function activityResult(activity: StudyDashboard['recentActivity'][number]) {
   if (activity.kind === 'flashcard') return activity.verdict === 'know'
     ? { result: '已掌握', resultTone: 'done' as const }
     : { result: '待复习', resultTone: 'pending' as const }
+  if (activity.kind === 'mark') return (activity.level ?? 0) >= 3
+    ? { result: '已标熟', resultTone: 'done' as const }
+    : { result: '已重置', resultTone: 'pending' as const }
   return activity.correct === false
     ? { result: '待复习', resultTone: 'pending' as const }
     : { result: '听写正确', resultTone: 'done' as const }
@@ -138,6 +142,30 @@ function remoteToWorkspaceBook(book: MyWordbook, index: number): WorkspaceBook {
   }
 }
 
+// The proficiency ladder keys off `level`, falling back to the legacy status only when the
+// server omits it. 新词学习 draws L0, 复习巩固 draws L1|L2, 听写训练 draws every word at L2+.
+const levelOf = (entry: WorkspaceEntry): WordLevel =>
+  entry.level ?? (entry.status === 'learning' ? 1 : entry.status === 'review' ? 2 : entry.status === 'mastered' ? 3 : 0)
+
+// Whole calendar days between two instants, in the client's local timezone.
+function calendarDayDiff(from: Date, to: Date): number {
+  const startOfDay = (date: Date) => new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime()
+  return Math.round((startOfDay(to) - startOfDay(from)) / 86_400_000)
+}
+
+// Spaced-review due rule, client-local calendar days (mirrors the backend day() rule): an L1
+// word is due once >= 1 whole calendar day has passed since its last event, an L2 word once
+// >= 2 days have. L0/L3/L4 are never "review due" (L3 has its own 7-day final check). An L1/L2
+// word without a lastStudiedAt (theoretically impossible) is treated as due.
+function isReviewDue(entry: WorkspaceEntry, now: Date = new Date()): boolean {
+  const level = levelOf(entry)
+  if (level !== 1 && level !== 2) return false
+  if (!entry.lastStudiedAt) return true
+  const last = new Date(entry.lastStudiedAt)
+  if (Number.isNaN(last.getTime())) return true
+  return calendarDayDiff(last, now) >= level
+}
+
 export function WordbookPage() {
   useDocumentTitle('我的单词本')
   const [books, setBooks] = useState<WorkspaceBook[]>([])
@@ -151,6 +179,9 @@ export function WordbookPage() {
   const [remoteEntries, setRemoteEntries] = useState<WorkspaceBook['entries'] | null>(null)
   const [dashboardLoading, setDashboardLoading] = useState(false)
   const [studyMode, setStudyMode] = useState<StudyMode | null>(null)
+  // 复习巩固 runs in one of two scopes: the default 'due' deck (words whose spaced-review
+  // interval has elapsed) or the voluntary 'ahead' deck (L1|L2 words reviewed early).
+  const [reviewScope, setReviewScope] = useState<'due' | 'ahead'>('due')
   const [settingsSection, setSettingsSection] = useState<SettingsSection | null>(null)
   const [showImporter, setShowImporter] = useState(false)
   const [showWordManager, setShowWordManager] = useState(false)
@@ -220,6 +251,7 @@ export function WordbookPage() {
     if (!selectedBook) return
     setPreferences(readStudyPreferences(selectedBook.id))
     setStudyMode(null)
+    setReviewScope('due')
     setSettingsSection(null)
   }, [selectedBook?.id])
 
@@ -260,6 +292,21 @@ export function WordbookPage() {
       await refreshSelectedBook()
       await refreshMyWordbooks(selectedBook.id)
       setNotice(`已更新「${patch.word}」，未重新处理其他词条。`)
+    } finally {
+      setWordSaving(false)
+    }
+  }
+
+  async function markManagedWordKnown(id: string) {
+    if (!api || !selectedBook) return
+    const entry = activeBook.entries.find((item) => item.id === id)
+    if (!entry) return
+    setWordSaving(true)
+    try {
+      await api.recordStudyEvent({ kind: 'mark', word: entry.word, wordbookId: selectedBook.id, level: 4 })
+      await refreshSelectedBook()
+      await refreshMyWordbooks(selectedBook.id)
+      setNotice(`已把「${entry.word}」标为精通。`)
     } finally {
       setWordSaving(false)
     }
@@ -332,38 +379,73 @@ export function WordbookPage() {
   const activeBook = { ...selectedBook, entries: remoteEntries ?? [] }
   const progress = dashboard?.wordbook.progress ?? selectedBook.progress
   const wordCount = dashboard?.wordbook.wordCount ?? selectedBook.wordCount
-  const learned = progress.mastered
-  const studying = progress.learning
-  const reviewDue = progress.review
   const completedNew = dashboard?.todayPlan.new.completed ?? 0
   const completedReview = dashboard?.todayPlan.review.completed ?? 0
   const completedDictation = dashboard?.todayPlan.dictation.completed ?? 0
-  // Studied words are everything except the "new" (未学习) bucket — they feed 听写训练.
-  const studiedCount = progress.mastered + progress.learning + progress.review
+  // 听写训练 draws from L2+ only (must be 熟悉 before spelling), matching its deck
+  // and the backend's dictationAvailable = l2 + l3 + l4.
+  const dictationEligibleCount = progress.levels.l2 + progress.levels.l3 + progress.levels.l4
+  // Spaced-review decks (see isReviewDue): 复习巩固 defaults to the words whose review
+  // interval has elapsed (due); an optional 提前复习 deck holds the L1|L2 words not yet due.
+  const reviewNow = new Date()
+  const isReviewLevel = (entry: WorkspaceEntry) => levelOf(entry) === 1 || levelOf(entry) === 2
+  const reviewDueEntries = activeBook.entries.filter((entry) => isReviewDue(entry, reviewNow))
+  const reviewAheadEntries = activeBook.entries.filter((entry) => isReviewLevel(entry) && !isReviewDue(entry, reviewNow))
+  const reviewDueCount = reviewDueEntries.length
+  const reviewAheadCount = reviewAheadEntries.length
   const planCounts = {
     new: Math.min(preferences.plan.newWords, progress.unstudied + completedNew),
-    review: Math.max(progress.review + progress.learning, completedReview),
-    dictation: Math.min(preferences.plan.dictation, studiedCount),
+    // 复习巩固 follows the due deck; keep today's completed tally as the floor so the
+    // progress bar stays full once everything that was due has been cleared.
+    review: Math.max(reviewDueCount, completedReview),
+    dictation: Math.min(preferences.plan.dictation, Math.max(completedDictation, dictationEligibleCount)),
   }
-  // Contract E queue semantics: 新词学习 draws status 'new', 复习巩固 draws 'learning'|'review',
-  // 听写训练 draws every studied word (status !== 'new'). Absent status is treated as 'new'.
+  // L3 words whose 7-day window has elapsed — a correct dictation promotes them to L4 (精通).
+  const finalCheckDue = dashboard?.finalCheckDue ?? 0
+  const dictationDetail = finalCheckDue > 0
+    ? `听音拼写，检测掌握 · ${finalCheckDue} 词满一周可冲刺精通`
+    : '听音拼写，检测掌握'
+  // "强化记忆，巩固掌握 · 今日到期 X · 可提前复习 Y" — omit the segments that are 0.
+  const reviewDetail = ['强化记忆，巩固掌握']
+    .concat(reviewDueCount > 0 ? [`今日到期 ${reviewDueCount}`] : [])
+    .concat(reviewAheadCount > 0 ? [`可提前复习 ${reviewAheadCount}`] : [])
+    .join(' · ')
   const entriesForMode = (nextMode: StudyMode) => {
-    const statusOf = (entry: WorkspaceEntry) => entry.status ?? 'new'
     if (nextMode === 'new') {
       return activeBook.entries
-        .filter((entry) => statusOf(entry) === 'new')
+        .filter((entry) => levelOf(entry) === 0)
         .slice(0, preferences.plan.newWords)
     }
+    // 复习巩固's default deck is the due words only; the ahead deck is served separately.
     if (nextMode === 'review') {
-      return activeBook.entries.filter((entry) => statusOf(entry) === 'review' || statusOf(entry) === 'learning')
+      return reviewDueEntries
     }
-    return activeBook.entries.filter((entry) => statusOf(entry) !== 'new').slice(0, preferences.plan.dictation)
+    return activeBook.entries.filter((entry) => levelOf(entry) >= 2).slice(0, preferences.plan.dictation)
   }
+  // The review session runs on whichever deck the current scope selects.
+  const reviewSessionEntries = reviewScope === 'ahead' ? reviewAheadEntries : reviewDueEntries
   // Every study-mode opener funnels through here so an enabled control can never
   // mount the session dialog with an empty deck (the session hooks seed their
   // queue once on mount and would lock in a fake "done" state).
   const entriesLoading = remoteEntries === null
   const openStudy = (nextMode: StudyMode) => {
+    // 复习巩固 opens the due deck; opening normally always resets the scope to 'due'. When
+    // nothing is due but words remain to review ahead, fall through to the 提前复习 deck so
+    // every entry point (plan card, quick action, 继续学习) behaves the same.
+    if (nextMode === 'review') {
+      if (reviewDueCount > 0) {
+        setReviewScope('due')
+        setStudyMode('review')
+        return
+      }
+      if (reviewAheadCount > 0) {
+        setReviewScope('ahead')
+        setStudyMode('review')
+        return
+      }
+      setNotice(entriesLoading ? '词条正在加载，请稍候再开始学习。' : '当前模式暂无可学的单词。')
+      return
+    }
     if (entriesForMode(nextMode).length === 0) {
       setNotice(entriesLoading ? '词条正在加载，请稍候再开始学习。' : '当前模式暂无可学的单词。')
       return
@@ -385,10 +467,10 @@ export function WordbookPage() {
         {notice && <p className="workspace-notice" role="status">{notice}</p>}
         <section className="workspace-overview">
           <WorkspaceCover tone={selectedBook.tone} label={selectedBook.shortLabel} />
-          <div className="workspace-overview-main"><div className="workspace-title-row"><h1 id="workspace-title">{selectedBook.title}</h1></div><p>{wordCount} 个单词　|　创建于 {new Date(selectedBook.createdAt).toLocaleDateString('zh-CN')}　|　最后更新：{new Date(selectedBook.updatedAt).toLocaleString('zh-CN')}</p><div className="workspace-progress-label"><span>学习进度</span><strong>{progress.percent}%</strong></div><div className="workspace-progress" role="progressbar" aria-label="词本学习进度" aria-valuenow={progress.percent} aria-valuemin={0} aria-valuemax={100}><i style={{ width: `${progress.percent}%` }} /></div><div className="workspace-summary-stats"><span>已掌握<strong className="green">{learned}</strong></span><span>学习中<strong className="blue">{studying}</strong></span><span>待复习<strong className="orange">{reviewDue}</strong></span><span>未学习<strong>{progress.unstudied}</strong></span></div></div><div className="overview-actions"><button type="button" className="overview-plan-settings" onClick={() => setSettingsSection('plan')}><WorkspaceIcon name="settings" />学习计划</button><button type="button" disabled={!wordCount || dashboardLoading} onClick={() => setShowWordManager(true)}><WorkspaceIcon name="edit" />管理词条</button><button type="button" onClick={() => void moveToRecycle(selectedBook.id)}>移入回收站</button></div>
+          <div className="workspace-overview-main"><div className="workspace-title-row"><h1 id="workspace-title">{selectedBook.title}</h1></div><p>{wordCount} 个单词　|　创建于 {new Date(selectedBook.createdAt).toLocaleDateString('zh-CN')}　|　最后更新：{new Date(selectedBook.updatedAt).toLocaleString('zh-CN')}</p><div className="workspace-progress-label"><span>学习进度</span><strong>{progress.percent}%</strong></div><div className="workspace-progress" role="progressbar" aria-label="词本学习进度" aria-valuenow={progress.percent} aria-valuemin={0} aria-valuemax={100}><i style={{ width: `${progress.percent}%` }} /></div><div className="workspace-summary-stats levels-5"><span>未学习<strong>{progress.levels.l0}</strong></span><span>初识<strong className="blue">{progress.levels.l1}</strong></span><span>熟悉<strong className="orange">{progress.levels.l2}</strong></span><span>掌握<strong className="green">{progress.levels.l3}</strong></span><span>精通<strong className="violet">{progress.levels.l4}</strong></span></div></div><div className="overview-actions"><button type="button" className="overview-plan-settings" onClick={() => setSettingsSection('plan')}><WorkspaceIcon name="settings" />学习计划</button><button type="button" disabled={!wordCount || dashboardLoading} onClick={() => setShowWordManager(true)}><WorkspaceIcon name="edit" />管理词条</button><button type="button" onClick={() => void moveToRecycle(selectedBook.id)}>移入回收站</button></div>
         </section>
 
-        <section className="workspace-plan"><header><h2>今日学习计划</h2><button type="button" onClick={() => setSettingsSection('plan')}><WorkspaceIcon name="settings" />调整计划</button></header><div className="plan-cards"><PlanCard icon="book" tone="blue" title="新词学习" count={planCounts.new} available={entriesForMode('new').length} loading={entriesLoading} completed={completedNew} detail="学习新词，建立印象" button="开始学习" onClick={() => openStudy('new')} onSettings={() => setSettingsSection('new')} /><PlanCard icon="repeat" tone="amber" title="复习巩固" count={planCounts.review} available={entriesForMode('review').length} loading={entriesLoading} completed={completedReview} detail="强化记忆，巩固掌握" button="开始复习" onClick={() => openStudy('review')} onSettings={() => setSettingsSection('review')} /><PlanCard icon="headphones" tone="green" title="听写训练" count={planCounts.dictation} available={entriesForMode('dictation').length} loading={entriesLoading} completed={completedDictation} detail="听音拼写，检测掌握" button="开始听写" onClick={() => openStudy('dictation')} onSettings={() => setSettingsSection('dictation')} /></div></section>
+        <section className="workspace-plan"><header><h2>今日学习计划</h2><button type="button" onClick={() => setSettingsSection('plan')}><WorkspaceIcon name="settings" />调整计划</button></header><div className="plan-cards"><PlanCard icon="book" tone="blue" title="新词学习" count={planCounts.new} available={entriesForMode('new').length} loading={entriesLoading} completed={completedNew} detail="学习新词，建立印象" button="开始学习" onClick={() => openStudy('new')} onSettings={() => setSettingsSection('new')} /><PlanCard icon="repeat" tone="amber" title="复习巩固" count={planCounts.review} available={reviewDueCount} aheadAvailable={reviewAheadCount} aheadButton="提前复习" loading={entriesLoading} completed={completedReview} detail={reviewDetail} button="开始复习" onClick={() => openStudy('review')} onSettings={() => setSettingsSection('review')} /><PlanCard icon="headphones" tone="green" title="听写训练" count={planCounts.dictation} available={entriesForMode('dictation').length} loading={entriesLoading} completed={completedDictation} detail={dictationDetail} button="开始听写" onClick={() => openStudy('dictation')} onSettings={() => setSettingsSection('dictation')} /></div></section>
 
         <div className="workspace-lower">
           <RecentStudy
@@ -414,9 +496,12 @@ export function WordbookPage() {
         onClose={() => setSettingsSection(null)}
       />}
       {studyMode && <StudySessionDialog
-        book={{ ...activeBook, entries: entriesForMode(studyMode) }}
+        key={`${studyMode}-${reviewScope}`}
+        book={{ ...activeBook, entries: studyMode === 'review' ? reviewSessionEntries : entriesForMode(studyMode) }}
         mode={studyMode}
         preferences={preferences.modes[studyMode]}
+        reviewAheadCount={studyMode === 'review' && reviewScope === 'due' ? reviewAheadCount : 0}
+        onContinueAhead={() => setReviewScope('ahead')}
         onClose={() => void exitStudy()}
       />}
       <ImportWordbookDialog
@@ -431,16 +516,20 @@ export function WordbookPage() {
         saving={wordSaving}
         onClose={() => setShowWordManager(false)}
         onSave={saveManagedWord}
+        onMarkKnown={markManagedWordKnown}
       />}
     </section>
   )
 }
 
-function PlanCard({ icon, tone, title, count, available, loading, completed, detail, button, onClick, onSettings }: { icon: 'book' | 'repeat' | 'headphones'; tone: 'blue' | 'amber' | 'green'; title: string; count: number; available: number; loading: boolean; completed: number; detail: string; button: string; onClick: () => void; onSettings: () => void }) {
+function PlanCard({ icon, tone, title, count, available, aheadAvailable = 0, aheadButton, loading, completed, detail, button, onClick, onSettings }: { icon: 'book' | 'repeat' | 'headphones'; tone: 'blue' | 'amber' | 'green'; title: string; count: number; available: number; aheadAvailable?: number; aheadButton?: string; loading: boolean; completed: number; detail: string; button: string; onClick: () => void; onSettings: () => void }) {
   const progress = count ? Math.min(100, completed / count * 100) : 0
-  // The start button follows the actual studyable deck (`available`), not the
-  // day-plan tally — the tally keeps counting words finished earlier today.
-  return <article className={`plan-card ${tone}`}><WorkspaceIcon name={icon} /><h3>{title}</h3><button type="button" className="plan-card-settings" aria-label={`设置${title}`} title={`设置${title}`} onClick={onSettings}><WorkspaceIcon name="settings" /></button><p>{detail}</p><strong>{count}<small>词</small></strong><div><i style={{ width: `${progress}%` }} /><span>{Math.min(completed, count)}/{count}</span></div><button type="button" disabled={available === 0} onClick={onClick}>{loading ? '加载中…' : available ? button : '暂无可学单词'}</button></article>
+  // The start button follows the actual studyable deck (`available`), not the day-plan tally
+  // — the tally keeps counting words finished earlier today. When the primary deck is empty
+  // but an ahead deck (e.g. 复习巩固's 提前复习) has words, stay enabled with its label.
+  const startable = available > 0 || aheadAvailable > 0
+  const label = loading ? '加载中…' : available > 0 ? button : aheadAvailable > 0 ? (aheadButton ?? button) : '暂无可学单词'
+  return <article className={`plan-card ${tone}`}><WorkspaceIcon name={icon} /><h3>{title}</h3><button type="button" className="plan-card-settings" aria-label={`设置${title}`} title={`设置${title}`} onClick={onSettings}><WorkspaceIcon name="settings" /></button><p>{detail}</p><strong>{count}<small>词</small></strong><div><i style={{ width: `${progress}%` }} /><span>{Math.min(completed, count)}/{count}</span></div><button type="button" disabled={!startable} onClick={onClick}>{label}</button></article>
 }
 
 function QuickAction({ icon, title, detail, onClick }: { icon: 'book' | 'repeat' | 'headphones' | 'card'; title: string; detail: string; onClick: () => void }) {
@@ -558,7 +647,7 @@ function SettingToggle({ label, detail, checked, onChange }: { label: string; de
   return <label className="study-setting-toggle"><span><strong>{label}</strong><small>{detail}</small></span><input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} /><i aria-hidden="true" /></label>
 }
 
-function StudySessionDialog({ book, mode, preferences, onClose }: { book: WorkspaceBook; mode: StudyMode; preferences: StudyDisplayPreferences & { underlineMistakes?: boolean }; onClose: () => void }) {
+function StudySessionDialog({ book, mode, preferences, reviewAheadCount = 0, onContinueAhead, onClose }: { book: WorkspaceBook; mode: StudyMode; preferences: StudyDisplayPreferences & { underlineMistakes?: boolean }; reviewAheadCount?: number; onContinueAhead?: () => void; onClose: () => void }) {
   useEffect(() => {
     const previousOverflow = document.body.style.overflow
     document.body.style.overflow = 'hidden'
@@ -575,12 +664,12 @@ function StudySessionDialog({ book, mode, preferences, onClose }: { book: Worksp
   return <div className="workspace-modal-backdrop study-session-backdrop" role="presentation">
     <section className="workspace-study-modal" role="dialog" aria-modal="true" aria-label={`${mode === 'new' ? '新词学习' : mode === 'review' ? '复习巩固' : '听写训练'}悬浮窗口`}>
       <button type="button" className="workspace-modal-close session-close" aria-label="关闭学习窗口" onClick={onClose}>×</button>
-      <WordbookStudyMode book={book} mode={mode} preferences={preferences} reportEnabled onExit={onClose} />
+      <WordbookStudyMode book={book} mode={mode} preferences={preferences} reportEnabled reviewAheadCount={reviewAheadCount} onContinueAhead={onContinueAhead} onExit={onClose} />
     </section>
   </div>
 }
 
-function WordbookStudyMode({ book, mode, preferences, reportEnabled, onExit }: { book: WorkspaceBook; mode: StudyMode; preferences: StudyDisplayPreferences & { underlineMistakes?: boolean }; reportEnabled: boolean; onExit: () => void }) {
+function WordbookStudyMode({ book, mode, preferences, reportEnabled, reviewAheadCount = 0, onContinueAhead, onExit }: { book: WorkspaceBook; mode: StudyMode; preferences: StudyDisplayPreferences & { underlineMistakes?: boolean }; reportEnabled: boolean; reviewAheadCount?: number; onContinueAhead?: () => void; onExit: () => void }) {
   const api = getWorkspaceApi()
   const reportVerdict = useCallback((word: string, verdict: 'know' | 'unknown') => {
     if (!reportEnabled || !api) return
@@ -593,7 +682,11 @@ function WordbookStudyMode({ book, mode, preferences, reportEnabled, onExit }: {
     if (!reportEnabled || !api) return
     void api.recordStudyEvent({ kind: 'dictation', word, correct, wordbookId: book.id }).catch(() => undefined)
   }, [api, book.id, reportEnabled])
-  const flashcards = useFlashcardSession(book.entries, reportVerdict)
+  const reportMastered = useCallback((word: string) => {
+    if (!reportEnabled || !api) return
+    void api.recordStudyEvent({ kind: 'mark', word, wordbookId: book.id, level: 4 }).catch(() => undefined)
+  }, [api, book.id, reportEnabled])
+  const flashcards = useFlashcardSession(book.entries, reportVerdict, reportMastered)
   const dictation = useDictationSession(book.entries, reportGrade)
   const { pronounce } = usePronounce(dictation.current?.word ?? '', dictation.current?.audioUrl, .78)
 
@@ -606,7 +699,7 @@ function WordbookStudyMode({ book, mode, preferences, reportEnabled, onExit }: {
   if (book.entries.length === 0) return <section className="workspace-study"><StudyHeader book={book} mode={mode} onExit={onExit} /><EmptyState title={`暂无可用于${modeTitle}的单词`} body={emptyBody} action={<Button onClick={onExit}>关闭窗口</Button>} /></section>
 
   if (mode !== 'dictation') {
-    return <section className="workspace-study"><StudyHeader book={book} mode={mode} onExit={onExit} />{flashcards.done ? <div className="workspace-session-summary"><p>本轮{modeTitle}完成</p><h2>掌握 <strong>{flashcards.knownCount}</strong> 词，共 {flashcards.totalCount} 词</h2><p>{flashcards.unknownCount ? `${flashcards.unknownCount} 个词已标记为不熟，可稍后继续复习。` : '这一轮表现很好，继续保持。'}</p><div><Button onClick={flashcards.restart}>再来一轮</Button><Button variant="secondary" onClick={onExit}>关闭窗口</Button></div></div> : <><div className="workspace-study-progress"><span>{modeTitle}</span><strong>{flashcards.reviewedCount} / {flashcards.totalCount}</strong></div>{flashcards.current && <Flashcard item={flashcards.current} flipped={flashcards.flipped} onFlip={flashcards.flip} preferences={preferences} />}<FlashcardControls flipped={flashcards.flipped} onFlip={flashcards.flip} onKnow={flashcards.markKnown} onUnknown={flashcards.markUnknown} disableVerdicts={!flashcards.flipped} /></>}</section>
+    return <section className="workspace-study"><StudyHeader book={book} mode={mode} onExit={onExit} />{flashcards.done ? <div className="workspace-session-summary"><p>本轮{modeTitle}完成</p><h2>掌握 <strong>{flashcards.knownCount}</strong> 词，共 {flashcards.totalCount} 词</h2><p>{flashcards.unknownCount ? `${flashcards.unknownCount} 个词已标记为不熟，可稍后继续复习。` : '这一轮表现很好，继续保持。'}</p><div><Button onClick={flashcards.restart}>再来一轮</Button>{mode === 'review' && onContinueAhead && reviewAheadCount > 0 && <Button onClick={onContinueAhead}>继续复习未到期的 {reviewAheadCount} 词</Button>}<Button variant="secondary" onClick={onExit}>关闭窗口</Button></div></div> :<><div className="workspace-study-progress"><span>{modeTitle}</span><strong>{flashcards.reviewedCount} / {flashcards.totalCount}</strong></div>{flashcards.current && <Flashcard item={flashcards.current} flipped={flashcards.flipped} onFlip={flashcards.flip} preferences={preferences} />}<FlashcardControls flipped={flashcards.flipped} onFlip={flashcards.flip} onKnow={flashcards.markKnown} onUnknown={flashcards.markUnknown} disableVerdicts={!flashcards.flipped} onMastered={flashcards.markMastered} /></>}</section>
   }
 
   const lastAnswer = dictation.answers[dictation.answers.length - 1]

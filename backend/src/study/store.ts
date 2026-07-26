@@ -3,11 +3,12 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { isValidWordQuery, normalizeWord } from "../words/normalize.js";
 import { isJsonObject } from "./validation.js";
+import { FINAL_CHECK_WINDOW_MS } from "./types.js";
 import type {
   CatalogCard, CatalogQuery, CatalogWordbook, CommitImportDraftInput, CreateImportDraftInput, CreateMyWordbookInput,
-  ImportDraft, ImportDraftEntry, LearningEvent, LearningEventInput, LearningQueueItem, MyWordbook, MyWordbookCard,
-  ResolvedImportDraftEntry, StudyDashboard, StudyStore, StudyWordEntry, UpdateCatalogWordbookInput, UpdateWordInput,
-  UpdateWordResult, UploadCatalogWordbookInput, WordLearningStatus, WordbookProgress, WordbookWord,
+  ImportDraft, ImportDraftEntry, LearningEvent, LearningEventInput, LearningQueueItem, LevelCounts, MyWordbook, MyWordbookCard,
+  ResolvedImportDraftEntry, StudiedWord, StudyDashboard, StudyStore, StudyWordEntry, UpdateCatalogWordbookInput, UpdateWordInput,
+  UpdateWordResult, UploadCatalogWordbookInput, WordLearningStatus, WordLevel, WordbookProgress, WordbookWord,
 } from "./types.js";
 
 interface ClientData { favorites: string[]; wordbooks: MyWordbook[]; events: LearningEvent[]; drafts: ImportDraft[]; }
@@ -19,39 +20,85 @@ const BATCH_SIZE = 500;
 function clone<T>(value: T): T { return structuredClone(value); }
 function day(date: Date): string { return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`; }
 function shiftDay(now: Date, offset: number): Date { const result = new Date(now); result.setDate(now.getDate() + offset); return result; }
+/** Whole local calendar days from `from` to `to`, DST-safe: both are collapsed to local midnight and the gap is rounded, so a ±1h DST shift never miscounts. */
+function dayDiff(from: Date, to: Date): number { return Math.round((new Date(to.getFullYear(), to.getMonth(), to.getDate()).getTime() - new Date(from.getFullYear(), from.getMonth(), from.getDate()).getTime()) / 86_400_000); }
 function toWordbookWords(words: StudyWordEntry[], at: string): WordbookWord[] { return words.map((word) => ({ ...clone(word), id: randomUUID(), addedAt: at })); }
 function toCatalogWords(words: WordbookWord[]): StudyWordEntry[] { return words.map(({ id: _id, addedAt: _addedAt, ...word }) => clone(word)); }
 function defaultClient(): ClientData { return { favorites: [], wordbooks: [], events: [], drafts: [] }; }
-interface WordEventSummary { lastFlashcard?: Extract<LearningEvent, { kind: "flashcard" }>; lastDictation?: Extract<LearningEvent, { kind: "dictation" }>; lastNew?: Extract<LearningEvent, { kind: "new" }>; }
-function indexEventsByWord(events: LearningEvent[]): Map<string, WordEventSummary> {
-  const index = new Map<string, WordEventSummary>();
+interface WordLadderState { level: WordLevel; levelReachedAt?: string; lastStudiedAt?: string; }
+/**
+ * Replay one word's full event history into its proficiency ladder state. Events must arrive
+ * oldest-first (ties keep insertion order). `levelReachedAt` is the occurredAt of the event that
+ * last CHANGED the level; a "mark" always counts as a change, even to the same rung — so it also
+ * doubles as "when L3 was reached" for the 7-day final-check window.
+ */
+function replayLadder(events: LearningEvent[]): WordLadderState {
+  let level: WordLevel = 0;
+  let levelReachedAt: string | undefined;
   for (const event of events) {
-    let summary = index.get(event.wordId);
-    if (!summary) { summary = {}; index.set(event.wordId, summary); }
-    if (event.kind === "flashcard" && (summary.lastFlashcard?.occurredAt.localeCompare(event.occurredAt) ?? -1) <= 0) summary.lastFlashcard = event;
-    else if (event.kind === "dictation" && (summary.lastDictation?.occurredAt.localeCompare(event.occurredAt) ?? -1) <= 0) summary.lastDictation = event;
-    else if (event.kind === "new" && (summary.lastNew?.occurredAt.localeCompare(event.occurredAt) ?? -1) <= 0) summary.lastNew = event;
+    const previous: WordLevel = level;
+    switch (event.kind) {
+      case "new": // Seeing a word (any verdict, absent = know) confirms 初识.
+        level = Math.max(level, 1) as WordLevel; break;
+      case "flashcard": // 认识 climbs one rung but flashcards can never pass L2; 不认识 demotes to a floor of L1.
+        level = event.verdict === "know" ? (level < 2 ? (level + 1) as WordLevel : level) : Math.max(1, level - 1) as WordLevel; break;
+      case "dictation":
+        if (event.correct) {
+          // L2 → L3 at once; L3 → L4 only once the 7-day window has passed; L0/L1 never promote.
+          if (level === 2) level = 3;
+          else if (level === 3 && levelReachedAt !== undefined && Date.parse(event.occurredAt) - Date.parse(levelReachedAt) >= FINAL_CHECK_WINDOW_MS) level = 4;
+        } else level = Math.max(1, level - 1) as WordLevel;
+        break;
+      case "mark": // Manual override to an exact rung.
+        level = event.level; break;
+    }
+    if (level !== previous || event.kind === "mark") levelReachedAt = event.occurredAt;
   }
-  return index;
+  // Events arrive oldest-first, so the tail is the most recent touch of ANY kind (mark included) —
+  // the spaced-review clock's "last studied" stamp.
+  const lastStudiedAt = events.length ? events[events.length - 1]!.occurredAt : undefined;
+  return { level, ...(levelReachedAt !== undefined ? { levelReachedAt } : {}), ...(lastStudiedAt !== undefined ? { lastStudiedAt } : {}) };
 }
-// Lifecycle (学完新词进入待复习，复习掌握才算已掌握): a finished flashcard "know" is the
-// only path to "mastered"; a fresh "new" session leaves the word due for review.
-function wordStatusFrom(index: Map<string, WordEventSummary>, wordId: string): WordLearningStatus {
-  const summary = index.get(wordId);
-  if (!summary) return "new";
-  if (summary.lastFlashcard?.verdict === "know") return "mastered";
-  if (summary.lastFlashcard?.verdict === "unknown" || (summary.lastDictation && !summary.lastDictation.correct)) return "review";
-  // A "new" session with an "unknown" self-report stays "learning"; otherwise (verdict
-  // "know" or legacy events without a verdict) the word graduates to "review".
-  if (summary.lastNew) return summary.lastNew.verdict === "unknown" ? "learning" : "review";
-  return "learning";
+/**
+ * Bucket a wordbook's events by wordId in one pass, then replay each word's ladder. Each bucket is
+ * stable-sorted by occurredAt so an injected/rewound clock or migrated data still replays strictly
+ * chronologically (Array.sort is stable, so equal timestamps keep their insertion order).
+ */
+function ladderStates(events: LearningEvent[]): Map<string, WordLadderState> {
+  const buckets = new Map<string, LearningEvent[]>();
+  for (const event of events) {
+    const bucket = buckets.get(event.wordId);
+    if (bucket) bucket.push(event); else buckets.set(event.wordId, [event]);
+  }
+  const states = new Map<string, WordLadderState>();
+  for (const [wordId, bucket] of buckets) {
+    bucket.sort((a, b) => Date.parse(a.occurredAt) - Date.parse(b.occurredAt));
+    states.set(wordId, replayLadder(bucket));
+  }
+  return states;
+}
+function ladderOf(states: Map<string, WordLadderState>, wordId: string): WordLadderState { return states.get(wordId) ?? { level: 0 }; }
+// Legacy 4-status compat kept for the ?status= filter: L0 new / L1 learning / L2 review / L3-L4 mastered.
+function statusFromLevel(level: WordLevel): WordLearningStatus { return level === 0 ? "new" : level === 1 ? "learning" : level === 2 ? "review" : "mastered"; }
+function studiedWord(word: WordbookWord, state: WordLadderState): StudiedWord { return { ...clone(word), level: state.level, ...(state.levelReachedAt !== undefined ? { levelReachedAt: state.levelReachedAt } : {}), ...(state.lastStudiedAt !== undefined ? { lastStudiedAt: state.lastStudiedAt } : {}) }; }
+function queueItem(word: WordbookWord, state: WordLadderState): LearningQueueItem { return { ...studiedWord(word, state), status: statusFromLevel(state.level) }; }
+/**
+ * 复习巩固 due rule on server-local calendar days: an L1 word becomes due 1 day after its last event,
+ * an L2 word 2 days after (so `dayDiff >= level` covers both). L0/L3/L4 are never review-due — L3 has
+ * its own 7-day final-check window. A level-1|2 word with no recorded event is treated as due.
+ */
+function reviewDue(state: WordLadderState, now: Date): boolean {
+  if (state.level !== 1 && state.level !== 2) return false;
+  if (state.lastStudiedAt === undefined) return true;
+  return dayDiff(new Date(state.lastStudiedAt), now) >= state.level;
 }
 function progress(book: MyWordbook, events: LearningEvent[]): WordbookProgress {
-  const index = indexEventsByWord(events);
-  const tally: Record<WordLearningStatus, number> = { new: 0, learning: 0, review: 0, mastered: 0 };
-  for (const word of book.words) tally[wordStatusFrom(index, word.id)] += 1;
+  const states = ladderStates(events);
+  const levels: LevelCounts = { l0: 0, l1: 0, l2: 0, l3: 0, l4: 0 };
+  for (const word of book.words) levels[`l${ladderOf(states, word.id).level}` as keyof LevelCounts] += 1;
   const total = book.words.length;
-  return { mastered: tally.mastered, learning: tally.learning, review: tally.review, unstudied: tally.new, percent: total ? Math.round(((tally.mastered + (tally.learning + tally.review) * 0.5) / total) * 100) : 0 };
+  const percent = total ? Math.round(((levels.l1 * 0.25 + levels.l2 * 0.5 + levels.l3 * 0.75 + levels.l4) / total) * 100) : 0;
+  return { mastered: levels.l3 + levels.l4, learning: levels.l1, review: levels.l2, unstudied: levels.l0, percent, levels };
 }
 function card(book: MyWordbook, events: LearningEvent[]): MyWordbookCard {
   const { words: _words, deletedAt: _deletedAt, ...rest } = book;
@@ -181,19 +228,19 @@ abstract class BaseStore implements StudyStore {
   async restoreMyWordbook(clientId: string, id: string): Promise<MyWordbookCard | null> { return await this.mutate((state) => { const client = this.client(state, clientId); const book = client.wordbooks.find((item) => item.id === id && item.deletedAt); if (!book) return null; book.deletedAt = undefined; book.updatedAt = this.now().toISOString(); return card(book, client.events); }); }
   async listWords(clientId: string, id: string, status?: WordLearningStatus): Promise<LearningQueueItem[] | null> { return await this.read((state) => {
     const client = this.clientView(state, clientId); const book = client.wordbooks.find((item) => item.id === id && !item.deletedAt); if (!book) return null;
-    const index = indexEventsByWord(client.events.filter((event) => event.wordbookId === id));
-    return book.words.map((word) => ({ ...clone(word), status: wordStatusFrom(index, word.id) })).filter((word) => !status || word.status === status);
+    const states = ladderStates(client.events.filter((event) => event.wordbookId === id));
+    return book.words.map((word) => queueItem(word, ladderOf(states, word.id))).filter((word) => !status || word.status === status);
   }); }
   async addWordToMyWordbook(clientId: string, wordbookId: string, entry: StudyWordEntry): Promise<{ word: LearningQueueItem; created: boolean } | null> { return await this.mutate((state) => {
     const client = this.client(state, clientId); const book = client.wordbooks.find((item) => item.id === wordbookId && !item.deletedAt); if (!book) return null;
     // Words are stored normalized; dedupe on an exact normalized match.
-    const index = indexEventsByWord(client.events.filter((event) => event.wordbookId === wordbookId));
+    const states = ladderStates(client.events.filter((event) => event.wordbookId === wordbookId));
     const existing = book.words.find((word) => word.word === entry.word);
-    if (existing) return { word: { ...clone(existing), status: wordStatusFrom(index, existing.id) }, created: false };
+    if (existing) return { word: queueItem(existing, ladderOf(states, existing.id)), created: false };
     const at = this.now().toISOString();
     const added: WordbookWord = { ...clone(entry), id: randomUUID(), addedAt: at };
     book.words.push(added); book.updatedAt = at;
-    return { word: { ...clone(added), status: wordStatusFrom(index, added.id) }, created: true };
+    return { word: queueItem(added, ladderOf(states, added.id)), created: true };
   }); }
   async purgeMyWordbook(clientId: string, id: string): Promise<boolean> { return await this.mutate((state) => {
     const client = this.client(state, clientId); const index = client.wordbooks.findIndex((item) => item.id === id && item.deletedAt);
@@ -231,7 +278,10 @@ abstract class BaseStore implements StudyStore {
       if (input.zhMeaning) { target.zhMeaning = input.zhMeaning; target.zhMeaningSource = "user"; }
       else { delete target.zhMeaning; delete target.zhMeaningSource; }
     }
-    book.updatedAt = this.now().toISOString(); return { kind: "updated", word: clone(target) };
+    book.updatedAt = this.now().toISOString();
+    // A rename keeps the word id, so its replayed proficiency survives unchanged.
+    const ladderState = ladderOf(ladderStates(client.events.filter((event) => event.wordbookId === wordbookId)), target.id);
+    return { kind: "updated", word: studiedWord(target, ladderState) };
   }); }
   async createImportDrafts(clientId: string, input: CreateImportDraftInput): Promise<ImportDraft[]> { return await this.mutate((state) => {
     const client = this.client(state, clientId);
@@ -319,24 +369,38 @@ abstract class BaseStore implements StudyStore {
     if (!book || !target) return null;
     const now = this.now(); client.events = client.events.filter((event) => Date.parse(event.occurredAt) >= now.getTime() - RETENTION_MS);
     const common = { wordbookId: book.id, word: target.word, wordId: target.id, id: randomUUID(), occurredAt: now.toISOString() };
-    const event: LearningEvent = input.kind === "new" ? { ...common, kind: "new", ...(input.verdict ? { verdict: input.verdict } : {}) } : input.kind === "flashcard" ? { ...common, kind: "flashcard", verdict: input.verdict } : { ...common, kind: "dictation", correct: input.correct };
+    const event: LearningEvent = input.kind === "new" ? { ...common, kind: "new", ...(input.verdict ? { verdict: input.verdict } : {}) } : input.kind === "flashcard" ? { ...common, kind: "flashcard", verdict: input.verdict } : input.kind === "dictation" ? { ...common, kind: "dictation", correct: input.correct } : { ...common, kind: "mark", level: input.level };
     client.events.push(event); book.updatedAt = event.occurredAt; return event;
   }); }
   async getDashboard(clientId: string, id: string): Promise<StudyDashboard | null> { return await this.read((state) => {
     const client = this.clientView(state, clientId); const book = client.wordbooks.find((item) => item.id === id && !item.deletedAt); if (!book) return null;
-    const now = this.now(); const today = day(now); const events = client.events.filter((event) => event.wordbookId === id); const todayEvents = events.filter((event) => day(new Date(event.occurredAt)) === today);
+    const now = this.now(); const today = day(now); const events = client.events.filter((event) => event.wordbookId === id);
+    // "mark" events are manual overrides, not study effort: excluded from calendar/streak/week and
+    // today's completed tallies, but still surfaced in recentActivity (with their level) below.
+    const studyEvents = events.filter((event) => event.kind !== "mark");
+    const todayEvents = studyEvents.filter((event) => day(new Date(event.occurredAt)) === today);
     const count = (items: LearningEvent[], kind: LearningEvent["kind"]) => items.filter((event) => event.kind === kind).length;
-    const completedNew = count(todayEvents, "new"); const completedReview = count(todayEvents, "flashcard"); const completedDictation = count(todayEvents, "dictation"); const bookProgress = progress(book, events);
-    // 听写训练 draws from every studied word (status !== "new"); a brand-new book has none.
-    const studied = book.words.length - bookProgress.unstudied;
-    const perDay = new Map<string, number>(); for (const event of events) { const key = day(new Date(event.occurredAt)); perDay.set(key, (perDay.get(key) ?? 0) + 1); }
+    const completedNew = count(todayEvents, "new"); const completedReview = count(todayEvents, "flashcard"); const completedDictation = count(todayEvents, "dictation");
+    const states = ladderStates(events); const bookProgress = progress(book, events); const { levels } = bookProgress;
+    // Availability per contract: 新词学习 from l0, 听写训练 from l2+l3+l4; 复习巩固 is the DUE count (below).
+    const newAvailable = levels.l0; const dictationAvailable = levels.l2 + levels.l3 + levels.l4;
+    // One walk of the word list feeds two spaced-review widgets:
+    //   复习巩固 availability = L1|L2 words whose calendar-day gap has elapsed (reviewDue).
+    //   终审待办 (finalCheckDue) = L3 words whose 7-day window has passed — next correct dictation reaches L4.
+    let reviewAvailable = 0; let finalCheckDue = 0;
+    for (const word of book.words) {
+      const s = ladderOf(states, word.id);
+      if (reviewDue(s, now)) reviewAvailable += 1;
+      if (s.level === 3 && s.levelReachedAt !== undefined && now.getTime() - Date.parse(s.levelReachedAt) >= FINAL_CHECK_WINDOW_MS) finalCheckDue += 1;
+    }
+    const perDay = new Map<string, number>(); for (const event of studyEvents) { const key = day(new Date(event.occurredAt)); perDay.set(key, (perDay.get(key) ?? 0) + 1); }
     const calendar = Array.from({ length: 7 }, (_, index) => { const date = day(shiftDay(now, index - 6)); const amount = perDay.get(date) ?? 0; return { date, count: amount, active: amount > 0 }; });
     let streak = 0; for (let offset = 0; offset < 365; offset += 1) { if (!perDay.get(day(shiftDay(now, -offset)))) break; streak += 1; }
     // Same 7 calendar days as the calendar block so both widgets always agree.
     const weekDays = new Set(calendar.map((item) => item.date));
-    const weekEvents = events.filter((event) => weekDays.has(day(new Date(event.occurredAt))));
+    const weekEvents = studyEvents.filter((event) => weekDays.has(day(new Date(event.occurredAt))));
     const weekNew = count(weekEvents, "new"); const weekReview = count(weekEvents, "flashcard"); const weekDictation = count(weekEvents, "dictation");
-    return { wordbook: card(book, events), todayPlan: { new: { target: Math.min(20, Math.max(completedNew, bookProgress.unstudied)), completed: completedNew }, review: { target: Math.min(30, Math.max(completedReview, bookProgress.review + bookProgress.learning)), completed: completedReview }, dictation: { target: Math.min(15, Math.max(completedDictation, studied)), completed: completedDictation } }, recentActivity: clone([...events].sort((a, b) => b.occurredAt.localeCompare(a.occurredAt)).slice(0, 5)), calendar, week: { newCount: weekNew, reviewCount: weekReview, dictationCount: weekDictation, total: weekNew + weekReview + weekDictation }, streakDays: streak, updatedAt: book.updatedAt };
+    return { wordbook: card(book, events), todayPlan: { new: { target: Math.min(20, Math.max(completedNew, newAvailable)), completed: completedNew }, review: { target: Math.min(30, Math.max(completedReview, reviewAvailable)), completed: completedReview }, dictation: { target: Math.min(15, Math.max(completedDictation, dictationAvailable)), completed: completedDictation } }, recentActivity: clone([...events].sort((a, b) => b.occurredAt.localeCompare(a.occurredAt)).slice(0, 5)), calendar, week: { newCount: weekNew, reviewCount: weekReview, dictationCount: weekDictation, total: weekNew + weekReview + weekDictation }, streakDays: streak, finalCheckDue, updatedAt: book.updatedAt };
   }); }
   private catalogCard(book: CatalogWordbook, client?: ClientData, clientId?: string): CatalogCard {
     const { words: _words, ownerClientId: _owner, sourceWordbookId: _source, ...rest } = book;

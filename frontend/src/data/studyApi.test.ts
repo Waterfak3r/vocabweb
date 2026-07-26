@@ -11,7 +11,10 @@ function book(overrides: Partial<MyWordbook> & { id: string; updatedAt: string }
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: overrides.updatedAt,
     wordCount: overrides.wordCount ?? 0,
-    progress: overrides.progress ?? { mastered: 0, learning: 0, review: 0, unstudied: 0, percent: 0 },
+    progress: overrides.progress ?? {
+      mastered: 0, learning: 0, review: 0, unstudied: 0, percent: 0,
+      levels: { l0: 0, l1: 0, l2: 0, l3: 0, l4: 0 },
+    },
   }
 }
 
@@ -43,7 +46,10 @@ describe('summarizeMyWordbooks', () => {
         title: '雅思核心',
         updatedAt: '2026-07-26T00:00:00.000Z',
         wordCount: 40,
-        progress: { mastered: 12, learning: 8, review: 5, unstudied: 15, percent: 46 },
+        progress: {
+          mastered: 12, learning: 8, review: 5, unstudied: 15, percent: 46,
+          levels: { l0: 15, l1: 8, l2: 5, l3: 9, l4: 3 },
+        },
       }),
     ])
 

@@ -9,6 +9,9 @@ export type CatalogExam = 'IELTS' | 'TOEFL' | 'GRE' | '高考' | '四六级' | '
 export type LearningGoal = '写作' | '阅读' | '听力' | '口语'
 export type CatalogQuery = { q?: string; exam?: CatalogExam; goal?: LearningGoal; sort?: CatalogSort }
 export type WordStatus = 'new' | 'learning' | 'review' | 'mastered'
+/** 熟练度档位：0 未学习 / 1 初识 / 2 熟悉 / 3 掌握 / 4 精通 */
+export type WordLevel = 0 | 1 | 2 | 3 | 4
+export type LevelCounts = { l0: number; l1: number; l2: number; l3: number; l4: number }
 
 export type CatalogWordbook = {
   id: string
@@ -33,6 +36,8 @@ export type WordbookProgress = {
   review: number
   unstudied: number
   percent: number
+  /** Per-level tallies; derived from the legacy buckets when the server omits them. */
+  levels: LevelCounts
 }
 
 export type MyWordbook = {
@@ -53,10 +58,12 @@ export type StudyDashboard = {
     review: { target: number; completed: number }
     dictation: { target: number; completed: number }
   }
-  recentActivity: Array<{ id: string; kind: 'new' | 'flashcard' | 'dictation'; wordbookId: string; word: string; occurredAt: string; verdict?: 'know' | 'unknown'; correct?: boolean }>
+  recentActivity: Array<{ id: string; kind: 'new' | 'flashcard' | 'dictation' | 'mark'; wordbookId: string; word: string; occurredAt: string; verdict?: 'know' | 'unknown'; correct?: boolean; level?: WordLevel }>
   calendar: Array<{ date: string; count: number; active: boolean }>
   week: { newCount: number; reviewCount: number; dictationCount: number; total: number }
   streakDays: number
+  /** L3 words whose 7-day window has passed — dictation now promotes them to L4. */
+  finalCheckDue?: number
   updatedAt: string
 }
 
@@ -64,6 +71,8 @@ export type LearningEvent =
   | { kind: 'new'; wordbookId: string; word: string; verdict?: 'know' | 'unknown' }
   | { kind: 'flashcard'; wordbookId: string; word: string; verdict: 'know' | 'unknown' }
   | { kind: 'dictation'; wordbookId: string; word: string; correct: boolean }
+  /** Manual proficiency override, e.g. 标熟 sets level 4. */
+  | { kind: 'mark'; wordbookId: string; word: string; level: WordLevel }
 
 export type ImportDraftLine = {
   line: number
@@ -116,9 +125,17 @@ function isText(value: unknown): value is string { return typeof value === 'stri
 function isCount(value: unknown): value is number { return typeof value === 'number' && Number.isFinite(value) && value >= 0 }
 function textArray(value: unknown): string[] | null { return Array.isArray(value) && value.every(isText) ? value : null }
 
+function parseLevelCounts(value: unknown): LevelCounts | null {
+  if (!isRecord(value) || !isCount(value.l0) || !isCount(value.l1) || !isCount(value.l2) || !isCount(value.l3) || !isCount(value.l4)) return null
+  return { l0: value.l0, l1: value.l1, l2: value.l2, l3: value.l3, l4: value.l4 }
+}
+
 function parseProgress(value: unknown): WordbookProgress | null {
   if (!isRecord(value) || !isCount(value.mastered) || !isCount(value.learning) || !isCount(value.review) || !isCount(value.unstudied) || !isCount(value.percent)) return null
-  return { mastered: value.mastered, learning: value.learning, review: value.review, unstudied: value.unstudied, percent: value.percent }
+  const levels = parseLevelCounts(value.levels)
+    // Older payloads carry only the legacy buckets; approximate the ladder from them.
+    ?? { l0: value.unstudied, l1: value.learning, l2: value.review, l3: value.mastered, l4: 0 }
+  return { mastered: value.mastered, learning: value.learning, review: value.review, unstudied: value.unstudied, percent: value.percent, levels }
 }
 
 function parseMyWordbook(value: unknown): MyWordbook | null {
@@ -144,7 +161,11 @@ function parseMeaning(value: unknown): WordMeaning | null {
   return { pos: value.pos, definition: value.definition, example: value.example }
 }
 
-function parseWord(value: unknown): (WordbookItem & { status?: WordStatus }) | null {
+function isWordLevel(value: unknown): value is WordLevel {
+  return value === 0 || value === 1 || value === 2 || value === 3 || value === 4
+}
+
+function parseWord(value: unknown): (WordbookItem & { status?: WordStatus; level?: WordLevel; levelReachedAt?: string; lastStudiedAt?: string }) | null {
   if (!isRecord(value) || !isText(value.id) || !isText(value.word) || !isText(value.phonetic) || !isText(value.addedAt) || !isText(value.source) || !Array.isArray(value.meanings) || (value.audioUrl !== undefined && !isText(value.audioUrl))) return null
   if (
     (value.zhMeaning !== undefined && !isText(value.zhMeaning))
@@ -156,6 +177,9 @@ function parseWord(value: unknown): (WordbookItem & { status?: WordStatus }) | n
   if (meanings.some((meaning) => meaning === null)) return null
   const status = value.status
   if (status !== undefined && status !== 'new' && status !== 'learning' && status !== 'review' && status !== 'mastered') return null
+  if (value.level !== undefined && !isWordLevel(value.level)) return null
+  if (value.levelReachedAt !== undefined && !isText(value.levelReachedAt)) return null
+  if (value.lastStudiedAt !== undefined && !isText(value.lastStudiedAt)) return null
   return {
     id: value.id,
     word: value.word,
@@ -167,6 +191,9 @@ function parseWord(value: unknown): (WordbookItem & { status?: WordStatus }) | n
     zhMeaning: value.zhMeaning,
     zhMeaningSource: value.zhMeaningSource,
     status,
+    level: value.level,
+    levelReachedAt: value.levelReachedAt,
+    lastStudiedAt: value.lastStudiedAt,
   }
 }
 
@@ -183,14 +210,16 @@ function parseDashboard(value: unknown): StudyDashboard | null {
   if (!wordbook || !todayPlan || !isCount(value.week.newCount) || !isCount(value.week.reviewCount) || !isCount(value.week.dictationCount) || !isCount(value.week.total)) return null
   const recentActivity = value.recentActivity.map((entry) => {
     if (!isRecord(entry) || !isText(entry.id) || !isText(entry.kind) || !isText(entry.wordbookId) || !isText(entry.word) || !isText(entry.occurredAt)) return null
-    if (entry.kind !== 'new' && entry.kind !== 'flashcard' && entry.kind !== 'dictation') return null
+    if (entry.kind !== 'new' && entry.kind !== 'flashcard' && entry.kind !== 'dictation' && entry.kind !== 'mark') return null
     if (entry.verdict !== undefined && entry.verdict !== 'know' && entry.verdict !== 'unknown') return null
     if (entry.correct !== undefined && typeof entry.correct !== 'boolean') return null
-    return { id: entry.id, kind: entry.kind, wordbookId: entry.wordbookId, word: entry.word, occurredAt: entry.occurredAt, verdict: entry.verdict, correct: entry.correct }
+    if (entry.level !== undefined && !isWordLevel(entry.level)) return null
+    return { id: entry.id, kind: entry.kind, wordbookId: entry.wordbookId, word: entry.word, occurredAt: entry.occurredAt, verdict: entry.verdict, correct: entry.correct, level: entry.level }
   })
   const calendar = value.calendar.map((entry) => isRecord(entry) && isText(entry.date) && isCount(entry.count) && typeof entry.active === 'boolean' ? { date: entry.date, count: entry.count, active: entry.active } : null)
   if (recentActivity.some((entry) => entry === null) || calendar.some((entry) => entry === null)) return null
-  return { wordbook, todayPlan, recentActivity: recentActivity as StudyDashboard['recentActivity'], calendar: calendar as StudyDashboard['calendar'], week: { newCount: value.week.newCount, reviewCount: value.week.reviewCount, dictationCount: value.week.dictationCount, total: value.week.total }, streakDays: value.streakDays, updatedAt: value.updatedAt }
+  if (value.finalCheckDue !== undefined && !isCount(value.finalCheckDue)) return null
+  return { wordbook, todayPlan, recentActivity: recentActivity as StudyDashboard['recentActivity'], calendar: calendar as StudyDashboard['calendar'], week: { newCount: value.week.newCount, reviewCount: value.week.reviewCount, dictationCount: value.week.dictationCount, total: value.week.total }, streakDays: value.streakDays, ...(value.finalCheckDue !== undefined ? { finalCheckDue: value.finalCheckDue } : {}), updatedAt: value.updatedAt }
 }
 
 function parseImportStatus(value: unknown): ImportDraftStatus | null {

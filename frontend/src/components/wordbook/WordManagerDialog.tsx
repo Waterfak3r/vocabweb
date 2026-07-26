@@ -1,10 +1,14 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import type { WordbookItem } from '../../domain/types'
+import type { WordLevel, WordStatus } from '../../data/workspaceApi'
 import './word-manager-dialog.css'
 
 export type EditableWordbookItem = WordbookItem & {
   zhMeaning?: string
   zhMeaningSource?: 'user' | 'dictionary'
+  status?: WordStatus
+  level?: WordLevel
+  levelReachedAt?: string
 }
 
 export type WordbookWordPatch = {
@@ -15,12 +19,22 @@ export type WordbookWordPatch = {
   meanings: EditableWordbookItem['meanings']
 }
 
+/** 熟练度档位显示名，索引即档位 0-4。 */
+const LEVEL_NAMES = ['未学习', '初识', '熟悉', '掌握', '精通'] as const
+
+/** Same fallback ladder as the wordbook decks: prefer level, else map the legacy status. */
+function levelOf(entry: EditableWordbookItem): WordLevel {
+  return entry.level ?? (entry.status === 'learning' ? 1 : entry.status === 'review' ? 2 : entry.status === 'mastered' ? 3 : 0)
+}
+
 type Props = {
   title: string
   entries: EditableWordbookItem[]
   saving?: boolean
   onClose: () => void
   onSave: (id: string, patch: WordbookWordPatch) => Promise<void>
+  /** 标熟: marks the word 精通 (L4) and stops it appearing in study decks. Absent -> button hidden. */
+  onMarkKnown?: (id: string) => Promise<void>
 }
 
 function meaningsToText(item: EditableWordbookItem) {
@@ -46,7 +60,7 @@ export function parseEditableMeanings(value: string): EditableWordbookItem['mean
     .filter((meaning) => meaning.definition)
 }
 
-export function WordManagerDialog({ title, entries, saving = false, onClose, onSave }: Props) {
+export function WordManagerDialog({ title, entries, saving = false, onClose, onSave, onMarkKnown }: Props) {
   const [query, setQuery] = useState('')
   const [selectedId, setSelectedId] = useState(entries[0]?.id ?? '')
   const selected = entries.find((entry) => entry.id === selectedId) ?? entries[0]
@@ -141,7 +155,10 @@ export function WordManagerDialog({ title, entries, saving = false, onClose, onS
                   className={entry.id === selected?.id ? 'selected' : ''}
                   onClick={() => setSelectedId(entry.id)}
                 >
-                  <strong>{entry.word}</strong>
+                  <span className="word-manager-list-head">
+                    <strong>{entry.word}</strong>
+                    <span className="word-manager-level" data-level={levelOf(entry)}>{LEVEL_NAMES[levelOf(entry)]}</span>
+                  </span>
                   <small>{entry.zhMeaning || entry.meanings[0]?.definition || '暂无释义'}</small>
                 </button>
               ))}
@@ -169,6 +186,16 @@ export function WordManagerDialog({ title, entries, saving = false, onClose, onS
               {word !== selected.word && <p className="word-manager-note">修改英文词头后，后台只会重新匹配这一条单词。</p>}
               {error && <p className="word-manager-error" role="alert">{error}</p>}
               <footer>
+                {onMarkKnown && levelOf(selected) < 4 && (
+                  <button
+                    type="button"
+                    className="word-manager-mark"
+                    disabled={saving}
+                    onClick={() => { void onMarkKnown(selected.id) }}
+                  >
+                    标熟（不再学习）
+                  </button>
+                )}
                 <button type="button" onClick={onClose}>取消</button>
                 <button type="submit" disabled={saving}>{saving ? '保存中…' : '保存此词条'}</button>
               </footer>

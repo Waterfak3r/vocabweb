@@ -175,9 +175,11 @@ test("study events drive queues and the selected-wordbook dashboard", async () =
     const dictation = await fetch(`${app.baseUrl}/api/study/events`, { method: "POST", headers, body: JSON.stringify({ kind: "dictation", wordbookId: book.id, word: queue[1]!.word, correct: false }) });
     assert.equal(dictation.status, 201);
     const dashboard = await fetch(`${app.baseUrl}/api/study/dashboard/${book.id}`, { headers });
-    const data = await dashboard.json() as { wordbook: { progress: { mastered: number; review: number } }; todayPlan: { review: { completed: number }; dictation: { completed: number } }; recentActivity: unknown[]; calendar: unknown[] };
-    assert.equal(data.wordbook.progress.mastered, 1);
-    assert.equal(data.wordbook.progress.review, 1);
+    const data = await dashboard.json() as { wordbook: { progress: { mastered: number; learning: number; levels: { l1: number } } }; todayPlan: { review: { completed: number }; dictation: { completed: number } }; recentActivity: unknown[]; calendar: unknown[] };
+    // A single flashcard "know" reaches 初识 (L1); a failed dictation floors the other word at L1 too.
+    assert.equal(data.wordbook.progress.learning, 2);
+    assert.equal(data.wordbook.progress.levels.l1, 2);
+    assert.equal(data.wordbook.progress.mastered, 0);
     assert.equal(data.todayPlan.review.completed, 1);
     assert.equal(data.todayPlan.dictation.completed, 1);
     assert.equal(data.recentActivity.length, 2);
@@ -382,8 +384,10 @@ test("draft conflicts, word edits, and catalog publishing keep stable learner da
     const renamed = await fetch(`${app.baseUrl}/api/my/wordbooks/${privateBook.id}/words/${initial.id}`, { method: "PATCH", headers, body: JSON.stringify({ word: "durable" }) });
     assert.equal(renamed.status, 200);
     assert.deepEqual((await renamed.json() as { id: string; word: string }).id, initial.id);
-    const masteredWords = await (await fetch(`${app.baseUrl}/api/my/wordbooks/${privateBook.id}/words?status=mastered`, { headers })).json() as Array<{ word: string }>;
-    assert.deepEqual(masteredWords.map((word) => word.word), ["durable"]);
+    // One flashcard "know" leaves the word at 初识 (L1 -> legacy status "learning"); the rename keeps its id and replayed level.
+    const learningWords = await (await fetch(`${app.baseUrl}/api/my/wordbooks/${privateBook.id}/words?status=learning`, { headers })).json() as Array<{ word: string; level: number }>;
+    assert.deepEqual(learningWords.map((word) => word.word), ["durable"]);
+    assert.equal(learningWords[0]!.level, 1);
     assert.ok(lookedUp.includes("durable"));
 
     const published = await fetch(`${app.baseUrl}/api/catalog/uploads`, { method: "POST", headers, body: JSON.stringify({ sourceWordbookId: privateBook.id, title: "社区快照" }) });
@@ -414,7 +418,9 @@ test("v2 state migrates word IDs and old learning events without dropping progre
     const store = new JsonFileStudyStore(file);
     const words = await store.listWords(CLIENT, "my-legacy");
     assert.ok(words?.[0]?.id);
-    assert.equal(words?.[0]?.status, "mastered");
+    // The old flashcard "know" replays cleanly to 初识 (L1 -> legacy status "learning").
+    assert.equal(words?.[0]?.status, "learning");
+    assert.equal(words?.[0]?.level, 1);
     // Reads keep the migrated state in memory only; the first mutation persists it.
     await store.createMyWordbook(CLIENT, { title: "Trigger", words: [] });
     const persisted = JSON.parse(await readFile(file, "utf8")) as { version: number; clients: Record<string, { wordbooks: Array<{ words: Array<{ id?: string }> }>; events: Array<{ wordId?: string }> }> };
@@ -556,53 +562,193 @@ test("a new-session verdict round-trips into stored events and dashboard recent 
   } finally { await app.close(); }
 });
 
-test("word status follows the review-before-mastery lifecycle", async () => {
+test("word level follows the proficiency ladder over HTTP", async () => {
   const app = await server();
   try {
     const make = async (title: string) => {
       const created = await fetch(`${app.baseUrl}/api/my/wordbooks`, { method: "POST", headers, body: JSON.stringify({ title, words: [{ word: "resilient", phonetic: "", source: "user", meanings: [{ pos: "adjective", definition: "Able to recover quickly." }] }] }) });
       const book = await created.json() as { id: string };
-      const words = await (await fetch(`${app.baseUrl}/api/my/wordbooks/${book.id}/words`, { headers })).json() as Array<{ id: string; status: string }>;
-      return { id: book.id, wordId: words[0]!.id, initialStatus: words[0]!.status };
+      const words = await (await fetch(`${app.baseUrl}/api/my/wordbooks/${book.id}/words`, { headers })).json() as Array<{ id: string; status: string; level: number }>;
+      return { id: book.id, wordId: words[0]!.id, initialStatus: words[0]!.status, initialLevel: words[0]!.level };
     };
-    const statusOf = async (bookId: string) => ((await (await fetch(`${app.baseUrl}/api/my/wordbooks/${bookId}/words`, { headers })).json()) as Array<{ status: string }>)[0]!.status;
+    const wordOf = async (bookId: string) => {
+      const word = ((await (await fetch(`${app.baseUrl}/api/my/wordbooks/${bookId}/words`, { headers })).json()) as Array<{ status: string; level: number }>)[0]!;
+      return { status: word.status, level: word.level };
+    };
     const record = (bookId: string, body: Record<string, unknown>) => fetch(`${app.baseUrl}/api/study/events`, { method: "POST", headers, body: JSON.stringify({ wordbookId: bookId, ...body }) });
 
-    // No events at all: the word is untouched.
+    // No events at all: the word is untouched at L0.
     const fresh = await make("未学习");
     assert.equal(fresh.initialStatus, "new");
+    assert.equal(fresh.initialLevel, 0);
 
-    // A finished "new" session with a "know" self-report leaves the word due for review.
-    const newKnow = await make("新词已会");
-    await record(newKnow.id, { kind: "new", wordId: newKnow.wordId, verdict: "know" });
-    assert.equal(await statusOf(newKnow.id), "review");
+    // Any finished "new" session (know, unknown, or legacy verdict-less) establishes L1 初识.
+    for (const [title, extra] of [["新词已会", { verdict: "know" }], ["新词不会", { verdict: "unknown" }], ["旧数据无判定", {}]] as const) {
+      const book = await make(title);
+      await record(book.id, { kind: "new", wordId: book.wordId, ...extra });
+      assert.deepEqual(await wordOf(book.id), { status: "learning", level: 1 });
+    }
 
-    // A "new" session marked "unknown" is still being learned.
-    const newUnknown = await make("新词不会");
-    await record(newUnknown.id, { kind: "new", wordId: newUnknown.wordId, verdict: "unknown" });
-    assert.equal(await statusOf(newUnknown.id), "learning");
+    // Flashcards climb one rung per 掌握 but can never pass L2 熟悉.
+    const cards = await make("单词卡封顶");
+    await record(cards.id, { kind: "new", wordId: cards.wordId, verdict: "know" });
+    await record(cards.id, { kind: "flashcard", wordId: cards.wordId, verdict: "know" });
+    assert.deepEqual(await wordOf(cards.id), { status: "review", level: 2 });
+    await record(cards.id, { kind: "flashcard", wordId: cards.wordId, verdict: "know" });
+    assert.deepEqual(await wordOf(cards.id), { status: "review", level: 2 });
 
-    // A verdict-less "new" event (legacy data) counts as "know" -> review.
-    const newLegacy = await make("旧数据无判定");
-    await record(newLegacy.id, { kind: "new", wordId: newLegacy.wordId });
-    assert.equal(await statusOf(newLegacy.id), "review");
+    // A correct dictation is the only way to L3 掌握; failures step one rung down with an L1 floor.
+    await record(cards.id, { kind: "dictation", wordId: cards.wordId, correct: true });
+    assert.deepEqual(await wordOf(cards.id), { status: "mastered", level: 3 });
+    // A same-day second correct dictation does NOT reach L4 — the 7-day window has not passed.
+    await record(cards.id, { kind: "dictation", wordId: cards.wordId, correct: true });
+    assert.deepEqual(await wordOf(cards.id), { status: "mastered", level: 3 });
+    await record(cards.id, { kind: "flashcard", wordId: cards.wordId, verdict: "unknown" });
+    assert.deepEqual(await wordOf(cards.id), { status: "review", level: 2 });
+    await record(cards.id, { kind: "dictation", wordId: cards.wordId, correct: false });
+    await record(cards.id, { kind: "dictation", wordId: cards.wordId, correct: false });
+    assert.deepEqual(await wordOf(cards.id), { status: "learning", level: 1 });
 
-    // Only a flashcard "know" reaches "mastered".
-    const cardKnow = await make("复习掌握");
-    await record(cardKnow.id, { kind: "flashcard", wordId: cardKnow.wordId, verdict: "know" });
-    assert.equal(await statusOf(cardKnow.id), "mastered");
+    // 标熟 jumps straight to the marked rung.
+    const marked = await make("直接标熟");
+    await record(marked.id, { kind: "mark", wordId: marked.wordId, level: 4 });
+    assert.deepEqual(await wordOf(marked.id), { status: "mastered", level: 4 });
 
-    // A flashcard "unknown" and a failed dictation both mean "review".
-    const cardUnknown = await make("复习不会");
-    await record(cardUnknown.id, { kind: "flashcard", wordId: cardUnknown.wordId, verdict: "unknown" });
-    assert.equal(await statusOf(cardUnknown.id), "review");
-
-    const dictationWrong = await make("默写错误");
-    await record(dictationWrong.id, { kind: "dictation", wordId: dictationWrong.wordId, correct: false });
-    assert.equal(await statusOf(dictationWrong.id), "review");
-
-    // A later flashcard "know" overrides an earlier "unknown" new session.
-    await record(newUnknown.id, { kind: "flashcard", wordId: newUnknown.wordId, verdict: "know" });
-    assert.equal(await statusOf(newUnknown.id), "mastered");
+    // Dictation on an unstudied word never promotes (deck excludes it, but the event may exist).
+    const dictationOnly = await make("未学直接听写");
+    await record(dictationOnly.id, { kind: "dictation", wordId: dictationOnly.wordId, correct: true });
+    assert.deepEqual(await wordOf(dictationOnly.id), { status: "new", level: 0 });
   } finally { await app.close(); }
+});
+
+// --- Store-level ladder tests driven by a movable clock (InMemoryStudyStore injects `now`). ---
+
+/** Single-word book built at the current clock; returns the book id and its only word id. */
+async function singleWordBook(store: InMemoryStudyStore, title: string, word = "resilient"): Promise<{ id: string; wordId: string }> {
+  const book = await store.createMyWordbook(CLIENT, { title, words: [{ word, phonetic: "", meanings: [], source: "user" }] });
+  const wordId = (await store.listWords(CLIENT, book.id))![0]!.id;
+  return { id: book.id, wordId };
+}
+
+test("store ladder: an L3 word promotes to L4 only once the 7-day final-check window has elapsed", async () => {
+  let clock = new Date("2026-01-01T00:00:00.000Z");
+  const store = new InMemoryStudyStore({ now: () => clock });
+  const book = await singleWordBook(store, "七天终审");
+  const level = async () => (await store.listWords(CLIENT, book.id))![0]!.level;
+  await store.recordEvent(CLIENT, { kind: "new", wordbookId: book.id, wordId: book.wordId });
+  await store.recordEvent(CLIENT, { kind: "flashcard", wordbookId: book.id, wordId: book.wordId, verdict: "know" });
+  await store.recordEvent(CLIENT, { kind: "dictation", wordbookId: book.id, wordId: book.wordId, correct: true });
+  assert.equal(await level(), 3);
+
+  // 6 days after reaching L3: a correct dictation still stays at L3.
+  clock = new Date("2026-01-07T00:00:00.000Z");
+  await store.recordEvent(CLIENT, { kind: "dictation", wordbookId: book.id, wordId: book.wordId, correct: true });
+  assert.equal(await level(), 3);
+
+  // 7 days after reaching L3: the correct dictation finally reaches L4.
+  clock = new Date("2026-01-08T00:00:00.000Z");
+  await store.recordEvent(CLIENT, { kind: "dictation", wordbookId: book.id, wordId: book.wordId, correct: true });
+  assert.equal(await level(), 4);
+});
+
+test("store dashboard: finalCheckDue turns on at 7 days and clears again after the L4 promotion", async () => {
+  let clock = new Date("2026-01-01T00:00:00.000Z");
+  const store = new InMemoryStudyStore({ now: () => clock });
+  const book = await singleWordBook(store, "终审待办");
+  const finalCheckDue = async () => (await store.getDashboard(CLIENT, book.id))!.finalCheckDue;
+  await store.recordEvent(CLIENT, { kind: "new", wordbookId: book.id, wordId: book.wordId });
+  await store.recordEvent(CLIENT, { kind: "flashcard", wordbookId: book.id, wordId: book.wordId, verdict: "know" });
+  await store.recordEvent(CLIENT, { kind: "dictation", wordbookId: book.id, wordId: book.wordId, correct: true });
+  assert.equal(await finalCheckDue(), 0); // just reached L3
+
+  clock = new Date("2026-01-08T00:00:00.000Z");
+  assert.equal(await finalCheckDue(), 1); // window has now passed
+
+  await store.recordEvent(CLIENT, { kind: "dictation", wordbookId: book.id, wordId: book.wordId, correct: true }); // -> L4
+  assert.equal(await finalCheckDue(), 0); // no longer an L3 word
+});
+
+test("store dashboard: 复习巩固 availability applies the L1(≥1d)/L2(≥2d) calendar-day due rule", async () => {
+  let clock = new Date("2026-01-01T09:00:00.000Z");
+  const store = new InMemoryStudyStore({ now: () => clock });
+  // review.target == max(completedReview, availability); with only mark events (excluded from
+  // completed tallies), completedReview stays 0 so target reads the availability directly.
+  const reviewAvailable = async (id: string) => (await store.getDashboard(CLIENT, id))!.todayPlan.review.target;
+
+  const l1 = await singleWordBook(store, "L1隔一天", "resilient");
+  await store.recordEvent(CLIENT, { kind: "mark", wordbookId: l1.id, wordId: l1.wordId, level: 1 });
+  const l2 = await singleWordBook(store, "L2隔两天", "empirical");
+  await store.recordEvent(CLIENT, { kind: "mark", wordbookId: l2.id, wordId: l2.wordId, level: 2 });
+
+  // Same calendar day as the last event: neither is due yet.
+  assert.equal(await reviewAvailable(l1.id), 0);
+  assert.equal(await reviewAvailable(l2.id), 0);
+
+  clock = new Date("2026-01-02T09:00:00.000Z"); // +1 calendar day
+  assert.equal(await reviewAvailable(l1.id), 1); // L1 due at ≥1 day
+  assert.equal(await reviewAvailable(l2.id), 0); // L2 still needs ≥2 days
+
+  clock = new Date("2026-01-03T09:00:00.000Z"); // +2 calendar days
+  assert.equal(await reviewAvailable(l2.id), 1); // L2 now due
+});
+
+test("store: lastStudiedAt is the occurredAt of the latest event of any kind, mark included, and re-stamps", async () => {
+  let clock = new Date("2026-01-01T00:00:00.000Z");
+  const store = new InMemoryStudyStore({ now: () => clock });
+  const book = await singleWordBook(store, "最后学习时间");
+  const lastStudiedAt = async () => (await store.listWords(CLIENT, book.id))![0]!.lastStudiedAt;
+
+  assert.equal(await lastStudiedAt(), undefined); // untouched word carries no stamp
+
+  await store.recordEvent(CLIENT, { kind: "new", wordbookId: book.id, wordId: book.wordId });
+  assert.equal(await lastStudiedAt(), "2026-01-01T00:00:00.000Z");
+
+  clock = new Date("2026-01-05T00:00:00.000Z");
+  await store.recordEvent(CLIENT, { kind: "flashcard", wordbookId: book.id, wordId: book.wordId, verdict: "know" });
+  assert.equal(await lastStudiedAt(), "2026-01-05T00:00:00.000Z");
+
+  // A later "mark" (which does not count as study effort) still re-stamps lastStudiedAt.
+  clock = new Date("2026-01-09T00:00:00.000Z");
+  await store.recordEvent(CLIENT, { kind: "mark", wordbookId: book.id, wordId: book.wordId, level: 4 });
+  assert.equal(await lastStudiedAt(), "2026-01-09T00:00:00.000Z");
+});
+
+test("store progress: levels tally l0..l4 and the weighted mastery percent", async () => {
+  const store = new InMemoryStudyStore({ now: () => new Date("2026-01-01T00:00:00.000Z") });
+  const book = await store.createMyWordbook(CLIENT, { title: "档位统计", words: [
+    { word: "alpha", phonetic: "", meanings: [], source: "user" },
+    { word: "bravo", phonetic: "", meanings: [], source: "user" },
+    { word: "charlie", phonetic: "", meanings: [], source: "user" },
+    { word: "delta", phonetic: "", meanings: [], source: "user" },
+    { word: "echo", phonetic: "", meanings: [], source: "user" },
+  ] });
+  const items = (await store.listWords(CLIENT, book.id))!;
+  const idOf = (word: string) => items.find((item) => item.word === word)!.id;
+  // alpha stays L0. bravo -> L1. charlie -> L2. delta -> L3. echo -> L4 (mark).
+  await store.recordEvent(CLIENT, { kind: "new", wordbookId: book.id, wordId: idOf("bravo") });
+  await store.recordEvent(CLIENT, { kind: "new", wordbookId: book.id, wordId: idOf("charlie") });
+  await store.recordEvent(CLIENT, { kind: "flashcard", wordbookId: book.id, wordId: idOf("charlie"), verdict: "know" });
+  await store.recordEvent(CLIENT, { kind: "new", wordbookId: book.id, wordId: idOf("delta") });
+  await store.recordEvent(CLIENT, { kind: "flashcard", wordbookId: book.id, wordId: idOf("delta"), verdict: "know" });
+  await store.recordEvent(CLIENT, { kind: "dictation", wordbookId: book.id, wordId: idOf("delta"), correct: true });
+  await store.recordEvent(CLIENT, { kind: "mark", wordbookId: book.id, wordId: idOf("echo"), level: 4 });
+
+  const bookCard = (await store.getMyWordbook(CLIENT, book.id))!;
+  assert.deepEqual(bookCard.progress.levels, { l0: 1, l1: 1, l2: 1, l3: 1, l4: 1 });
+  // (l1*0.25 + l2*0.5 + l3*0.75 + l4*1) / 5 = 2.5 / 5 = 50%.
+  assert.equal(bookCard.progress.percent, 50);
+  assert.deepEqual({ mastered: bookCard.progress.mastered, learning: bookCard.progress.learning, review: bookCard.progress.review, unstudied: bookCard.progress.unstudied }, { mastered: 2, learning: 1, review: 1, unstudied: 1 });
+});
+
+test("store dashboard: mark events stay out of week/calendar/streak yet surface in recentActivity with their level", async () => {
+  const store = new InMemoryStudyStore({ now: () => new Date("2026-01-15T12:00:00.000Z") });
+  const book = await singleWordBook(store, "标熟不计入统计");
+  await store.recordEvent(CLIENT, { kind: "mark", wordbookId: book.id, wordId: book.wordId, level: 4 });
+  const dashboard = (await store.getDashboard(CLIENT, book.id))!;
+  assert.deepEqual(dashboard.week, { newCount: 0, reviewCount: 0, dictationCount: 0, total: 0 });
+  assert.ok(dashboard.calendar.every((entry) => !entry.active));
+  assert.equal(dashboard.streakDays, 0);
+  const marks = dashboard.recentActivity.filter((entry) => entry.kind === "mark");
+  assert.equal(marks.length, 1);
+  assert.equal((marks[0] as { level: number }).level, 4);
 });

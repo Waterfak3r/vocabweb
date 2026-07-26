@@ -3,7 +3,7 @@ import {
   WORD_SOURCES, type CatalogExam, type CatalogQuery, type CatalogSort, type CommitImportDraftInput, type CreateImportDraftInput,
   type CreateMyWordbookInput, type ImportLineInput, type ImportResolution, type LearningEventInput, type LearningGoal,
   type StudyMeaning, type StudyWordEntry, type UpdateCatalogWordbookInput, type UpdateWordInput, type UploadCatalogWordbookInput,
-  type WordLearningStatus, type WordSource, type ZhMeaningSource,
+  type WordLearningStatus, type WordLevel, type WordSource, type ZhMeaningSource,
 } from "./types.js";
 
 type JsonObject = Record<string, unknown>;
@@ -110,6 +110,8 @@ export function parseLearningEvent(value: unknown): LearningEventInput | null {
   }
   if (value.kind === "flashcard" && (value.verdict === "know" || value.verdict === "unknown")) return { kind: "flashcard", ...target, verdict: value.verdict };
   if (value.kind === "dictation" && typeof value.correct === "boolean") return { kind: "dictation", ...target, correct: value.correct };
+  // "mark" is a manual proficiency override; the payload level must be an integer 0-4.
+  if (value.kind === "mark" && typeof value.level === "number" && Number.isInteger(value.level) && value.level >= 0 && value.level <= 4) return { kind: "mark", ...target, level: value.level as WordLevel };
   return null;
 }
 export function parseAddWord(value: unknown): { word: string; zhMeaning?: string } | null {

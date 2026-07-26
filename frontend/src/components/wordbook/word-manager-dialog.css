@@ -49,6 +49,16 @@
 .word-manager-layout form footer button[type='submit'] { border-color: var(--accent); background: var(--accent); color: white; font-weight: 700; }
 .word-manager-layout form footer button:disabled { opacity: .55; }
 .word-manager-empty { display: grid; place-items: center; color: var(--muted); }
+.word-manager-list-head { display: flex; align-items: center; justify-content: space-between; gap: .4rem; min-width: 0; }
+.word-manager-list-head strong { flex: 1 1 auto; min-width: 0; }
+.word-manager-level { flex: none; padding: .05rem .4rem; border-radius: .7rem; font-size: .62rem; font-weight: 700; line-height: 1.5; white-space: nowrap; }
+.word-manager-level[data-level='0'] { background: #eef0f2; color: #7a828a; }
+.word-manager-level[data-level='1'] { background: #e8f0fb; color: #2764bf; }
+.word-manager-level[data-level='2'] { background: #fff0e2; color: #e07f2c; }
+.word-manager-level[data-level='3'] { background: #e4f6ec; color: #23935e; }
+.word-manager-level[data-level='4'] { background: #efe9fb; color: #6f4fc0; }
+.word-manager-layout form footer .word-manager-mark { margin-right: auto; border-color: transparent; background: transparent; color: var(--accent); font-weight: 600; }
+.word-manager-layout form footer .word-manager-mark:hover:not(:disabled) { background: var(--accent-soft); }
 
 @media (max-width: 700px) {
   .word-manager-backdrop { align-items: end; padding: 0; }

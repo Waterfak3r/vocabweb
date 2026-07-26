@@ -33,17 +33,32 @@ export interface MyWordbookCard {
   wordCount: number; progress: WordbookProgress;
 }
 
+/** Proficiency ladder: 0 未学习 / 1 初识 / 2 熟悉 / 3 掌握 / 4 精通. */
+export type WordLevel = 0 | 1 | 2 | 3 | 4;
+/** An L3 word promotes to L4 only once this window has elapsed since it reached L3. */
+export const FINAL_CHECK_WINDOW_MS = 7 * 86_400_000;
+export const LEVEL_NAMES: Record<WordLevel, string> = { 0: "未学习", 1: "初识", 2: "熟悉", 3: "掌握", 4: "精通" };
+
 export type LearningEventInput =
   | { kind: "new"; wordbookId: string; word?: string; wordId?: string; verdict?: "know" | "unknown" }
   | { kind: "flashcard"; wordbookId: string; word?: string; wordId?: string; verdict: "know" | "unknown" }
-  | { kind: "dictation"; wordbookId: string; word?: string; wordId?: string; correct: boolean };
+  | { kind: "dictation"; wordbookId: string; word?: string; wordId?: string; correct: boolean }
+  | { kind: "mark"; wordbookId: string; word?: string; wordId?: string; level: WordLevel };
 export type LearningEvent =
   | ({ kind: "new"; wordbookId: string; word: string; wordId: string; verdict?: "know" | "unknown"; id: string; occurredAt: string })
   | ({ kind: "flashcard"; wordbookId: string; word: string; wordId: string; verdict: "know" | "unknown"; id: string; occurredAt: string })
-  | ({ kind: "dictation"; wordbookId: string; word: string; wordId: string; correct: boolean; id: string; occurredAt: string });
+  | ({ kind: "dictation"; wordbookId: string; word: string; wordId: string; correct: boolean; id: string; occurredAt: string })
+  | ({ kind: "mark"; wordbookId: string; word: string; wordId: string; level: WordLevel; id: string; occurredAt: string });
 export type WordLearningStatus = "new" | "learning" | "review" | "mastered";
-export interface WordbookProgress { mastered: number; learning: number; review: number; unstudied: number; percent: number; }
-export interface LearningQueueItem extends WordbookWord { status: WordLearningStatus; }
+export interface LevelCounts { l0: number; l1: number; l2: number; l3: number; l4: number; }
+export interface WordbookProgress { mastered: number; learning: number; review: number; unstudied: number; percent: number; levels: LevelCounts; }
+/**
+ * A stored word plus its replayed proficiency. `levelReachedAt` is omitted while still at L0;
+ * `lastStudiedAt` (occurredAt of the last event of ANY kind, mark included) drives the spaced-review
+ * due rule and is omitted only when the word has never been touched.
+ */
+export type StudiedWord = WordbookWord & { level: WordLevel; levelReachedAt?: string; lastStudiedAt?: string };
+export interface LearningQueueItem extends StudiedWord { status: WordLearningStatus; }
 
 export interface StudyDashboard {
   wordbook: MyWordbookCard;
@@ -56,6 +71,8 @@ export interface StudyDashboard {
   calendar: Array<{ date: string; count: number; active: boolean }>;
   week: { newCount: number; reviewCount: number; dictationCount: number; total: number };
   streakDays: number;
+  /** Words currently at L3 whose 7-day window has passed; their next correct dictation reaches L4. */
+  finalCheckDue: number;
   updatedAt: string;
 }
 
@@ -96,7 +113,7 @@ export interface CommitImportDraftInput { resolutions?: Record<string, ImportRes
 export interface UpdateWordInput {
   word?: string; zhMeaning?: string | null; phonetic?: string; audioUrl?: string | null; meanings?: StudyMeaning[];
 }
-export type UpdateWordResult = { kind: "updated"; word: WordbookWord } | { kind: "not-found" } | { kind: "duplicate" } | { kind: "lookup-failed" };
+export type UpdateWordResult = { kind: "updated"; word: StudiedWord } | { kind: "not-found" } | { kind: "duplicate" } | { kind: "lookup-failed" };
 
 /** Persistence seam: production JSON is durable; tests inject the memory store. */
 export interface StudyStore {

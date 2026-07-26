@@ -15,6 +15,8 @@ export type FlashcardSession = {
   flip: () => void
   markKnown: () => void
   markUnknown: () => void
+  /** 标熟: drops the card from the queue entirely (no requeue), outside the known/unknown tallies. */
+  markMastered: () => void
   restart: () => void
 }
 
@@ -22,6 +24,8 @@ export type FlashcardVerdictReporter = (
   word: string,
   verdict: FlashcardVerdict,
 ) => void
+
+export type FlashcardMasteredReporter = (word: string) => void
 
 /**
  * Session-only flashcard queue:
@@ -31,6 +35,7 @@ export type FlashcardVerdictReporter = (
 export function useFlashcardSession(
   items: readonly WordbookItem[],
   onVerdict?: FlashcardVerdictReporter,
+  onMastered?: FlashcardMasteredReporter,
 ): FlashcardSession {
   const [queue, setQueue] = useState<WordbookItem[]>(() => shuffled(items))
   const [flipped, setFlipped] = useState(false)
@@ -71,6 +76,23 @@ export function useFlashcardSession(
     }
   }, [current, flipped, totalCount, onVerdict])
 
+  const markMastered = useCallback(() => {
+    if (!current || !flipped) return
+    // Remove the card outright — no requeue, and it stays out of the known/unknown
+    // tallies — but it still advances the reviewed counter. A card the user first
+    // marked 不熟 must leave that tally too, or the summary would claim there is
+    // still something to review.
+    setUnknownIds((ids) => ids.filter((id) => id !== current.id))
+    setQueue((q) => q.slice(1))
+    setReviewedCount((count) => count + 1)
+    setFlipped(false)
+    try {
+      onMastered?.(current.word)
+    } catch {
+      // Reporting learning activity must never interrupt the card session.
+    }
+  }, [current, flipped, onMastered])
+
   const restart = useCallback(() => {
     setQueue(shuffled(items))
     setFlipped(false)
@@ -91,8 +113,9 @@ export function useFlashcardSession(
       flip,
       markKnown,
       markUnknown,
+      markMastered,
       restart,
     }),
-    [current, flipped, reviewedCount, totalCount, knownIds.length, unknownIds.length, done, flip, markKnown, markUnknown, restart],
+    [current, flipped, reviewedCount, totalCount, knownIds.length, unknownIds.length, done, flip, markKnown, markUnknown, markMastered, restart],
   )
 }
