@@ -11,13 +11,13 @@
 .plan-card > div i { display: block; min-width: 0; flex: 0 0 auto; background: var(--accent); }
 .plan-card > div span { position: absolute; top: -.15rem; right: 0; transform: translateY(100%); }
 .plan-card > button { margin-top: 1rem; }
-.workspace-data { display: grid; grid-template-columns: 6.6rem minmax(0,1fr); align-items: center; min-height: 13.6rem; }
+.workspace-data { display: grid; grid-template-columns: auto minmax(0,1fr); column-gap: 1.15rem; align-items: center; min-height: 13.6rem; }
 .workspace-data > header, .workspace-data > .workspace-data-state { grid-column: 1 / -1; }
-.data-donut { width: 6.6rem; margin: 1.1rem .9rem .25rem .15rem; background: conic-gradient(#2c65ba 0 var(--week-new-stop),#ff8939 var(--week-new-stop) var(--week-review-stop),#42a270 var(--week-review-stop) 100%); }
+.data-donut { width: 6.6rem; margin: .5rem 0 .4rem .3rem; background: conic-gradient(#2c65ba 0 var(--week-new-stop),#ff8939 var(--week-new-stop) var(--week-review-stop),#42a270 var(--week-review-stop) 100%); }
 .data-donut.is-empty { background: #e5e8ec; }
 .data-donut::before { width: 4.8rem; height: 4.8rem; }
 .data-donut span { font-size: .68rem; }.data-donut strong { font-size: 1rem; }
-.workspace-data ul { gap: .65rem; padding-top: 1.25rem; font-size: .78rem; }
+.workspace-data ul { gap: .65rem; padding-top: 0; font-size: .78rem; }
 .workspace-data-state { margin-top: 1rem; color: var(--muted); font-size: var(--text-sm); }
 .study-streak { min-height: 13.4rem; }.study-streak > strong { margin-top: .45rem; font-size: 2.1rem; }.study-streak > div { gap: .2rem; margin-top: .8rem; }.study-streak > div i { width: 1.2rem; height: 1.2rem; font-size: .6rem; }
 .workspace-visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
@@ -38,7 +38,7 @@
   .recent-study { overflow: visible; }
   .recent-study > .recent-study-table-wrap { min-width: 0; overflow-x: auto; }
   .recent-study table { min-width: 34rem; }
-  .workspace-data { grid-template-columns: 7rem minmax(0, 1fr); }
+  .workspace-data { grid-template-columns: auto minmax(0, 1fr); }
 }
 
 /* Custom study system */
