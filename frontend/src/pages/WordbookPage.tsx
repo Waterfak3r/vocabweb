@@ -539,7 +539,7 @@ function PlanCard({ icon, tone, title, count, available, aheadAvailable = 0, ahe
   // but an ahead deck (e.g. 复习巩固's 提前复习) has words, stay enabled with its label.
   const startable = available > 0 || aheadAvailable > 0
   const label = loading ? '加载中…' : available > 0 ? button : aheadAvailable > 0 ? (aheadButton ?? button) : '暂无可学单词'
-  return <article className={`plan-card ${tone}`}><WorkspaceIcon name={icon} /><h3>{title}</h3><button type="button" className="plan-card-settings" aria-label={`设置${title}`} title={`设置${title}`} onClick={onSettings}><WorkspaceIcon name="settings" /></button><p>{detail}</p><strong>{count}<small>词</small></strong><div><i style={{ width: `${progress}%` }} /><span>{Math.min(completed, count)}/{count}</span></div><button type="button" disabled={!startable} onClick={onClick}>{label}</button></article>
+  return <article className={`plan-card ${tone}`}><WorkspaceIcon name={icon} /><h3>{title}</h3><button type="button" className="plan-card-settings" aria-label={`设置${title}`} title={`设置${title}`} onClick={onSettings}><WorkspaceIcon name="settings" /></button><p>{detail}</p><strong>{count}<small>词</small></strong><div className="plan-card-progress"><span className="plan-card-progress-track"><i style={{ width: `${progress}%` }} /></span><span className="plan-card-progress-count">{Math.min(completed, count)}/{count}</span></div><button type="button" disabled={!startable} onClick={onClick}>{label}</button></article>
 }
 
 function QuickAction({ icon, title, detail, onClick }: { icon: 'book' | 'repeat' | 'headphones' | 'card'; title: string; detail: string; onClick: () => void }) {
