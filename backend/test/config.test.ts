@@ -12,8 +12,11 @@ test("loadConfig provides bounded word lookup defaults", () => {
     wordCacheMaxEntries: 1_000,
     wordRateLimitWindowMs: 60_000,
     wordRateLimitMaxRequests: 60,
+    loginRateLimitWindowMs: 900_000,
+    loginRateLimitMaxRequests: 10,
     trustProxy: 0,
     staticDir: "",
+    databaseFile: "./data/study-state.sqlite",
     dataFile: "./data/study-state.json",
   });
 });
@@ -28,8 +31,11 @@ test("loadConfig parses configured word lookup settings", () => {
     WORD_CACHE_MAX_ENTRIES: "25",
     WORD_RATE_LIMIT_WINDOW_MS: "30000",
     WORD_RATE_LIMIT_MAX_REQUESTS: "10",
+    LOGIN_RATE_LIMIT_WINDOW_MS: "120000",
+    LOGIN_RATE_LIMIT_MAX_REQUESTS: "4",
     TRUST_PROXY: "1",
     STATIC_DIR: " ../frontend/dist ",
+    DATABASE_FILE: "C:/data/vocab.sqlite",
     DATA_FILE: "C:/data/vocab.json",
   });
 
@@ -42,8 +48,11 @@ test("loadConfig parses configured word lookup settings", () => {
     wordCacheMaxEntries: 25,
     wordRateLimitWindowMs: 30_000,
     wordRateLimitMaxRequests: 10,
+    loginRateLimitWindowMs: 120_000,
+    loginRateLimitMaxRequests: 4,
     trustProxy: 1,
     staticDir: "../frontend/dist",
+    databaseFile: "C:/data/vocab.sqlite",
     dataFile: "C:/data/vocab.json",
   });
 });

@@ -9,7 +9,11 @@ export interface AppConfig {
   wordCacheMaxEntries: number;
   wordRateLimitWindowMs: number;
   wordRateLimitMaxRequests: number;
+  loginRateLimitWindowMs: number;
+  loginRateLimitMaxRequests: number;
   trustProxy: number;
+  databaseFile: string;
+  /** Legacy JSON source retained for one-time SQLite migration. */
   dataFile: string;
   staticDir: string;
 }
@@ -90,7 +94,20 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       1,
       100_000,
     ),
+    loginRateLimitWindowMs: parseInteger(
+      "LOGIN_RATE_LIMIT_WINDOW_MS", env.LOGIN_RATE_LIMIT_WINDOW_MS, 15 * 60_000, 1_000, 24 * 60 * 60 * 1_000,
+    ),
+    loginRateLimitMaxRequests: parseInteger(
+      "LOGIN_RATE_LIMIT_MAX_REQUESTS", env.LOGIN_RATE_LIMIT_MAX_REQUESTS, 10, 1, 100_000,
+    ),
     trustProxy: parseInteger("TRUST_PROXY", env.TRUST_PROXY, 0, 0, 10),
+    databaseFile: (() => {
+      const value = env.DATABASE_FILE?.trim() || "./data/study-state.sqlite";
+      if (value.length > 1_000) {
+        throw new Error("DATABASE_FILE must be at most 1000 characters");
+      }
+      return value;
+    })(),
     dataFile: (() => {
       const value = env.DATA_FILE?.trim() || "./data/study-state.json";
       if (value.length > 1_000) {

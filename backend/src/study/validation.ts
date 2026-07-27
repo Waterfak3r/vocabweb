@@ -11,6 +11,7 @@ const EXAMS = ["IELTS", "TOEFL", "GRE", "高考", "四六级", "考研"] as cons
 const GOALS = ["写作", "阅读", "听力", "口语"] as const;
 const SORTS = ["recommended", "hot", "newest", "rating"] as const;
 const RESOLUTIONS = ["keep", "replace", "merge", "discard"] as const;
+const VISIBILITIES = ["public", "unlisted", "private"] as const;
 
 export function isJsonObject(value: unknown): value is JsonObject { return typeof value === "object" && value !== null && !Array.isArray(value); }
 export function parseClientId(value: unknown): string | null {
@@ -27,7 +28,9 @@ export function parseWordId(value: unknown): string | null {
 }
 export function parseShareCode(value: unknown): string | null {
   const code = typeof value === "string" ? value.trim().toUpperCase() : "";
-  return /^[A-Z0-9]{6,12}$/.test(code) ? code : null;
+  // Accept legacy short codes while new uploads use 24 hexadecimal characters
+  // (96 bits), making online guessing impractical even under sustained traffic.
+  return /^[A-Z0-9]{6,24}$/.test(code) ? code : null;
 }
 function text(value: unknown, max: number, allowEmpty = false): string | null {
   if (typeof value !== "string") return null;
@@ -84,20 +87,23 @@ export function parseUploadCatalog(value: unknown): UploadCatalogWordbookInput |
   const sourceWordbookId = value.sourceWordbookId === undefined ? undefined : parseResourceId(value.sourceWordbookId);
   if (sourceWordbookId === null) return null;
   const exams = choices(value.exams, EXAMS); const goals = choices(value.goals, GOALS); if (!exams || !goals) return null;
+  const visibility = value.visibility === undefined ? undefined : VISIBILITIES.includes(value.visibility as typeof VISIBILITIES[number]) ? value.visibility as typeof VISIBILITIES[number] : null;
+  if (visibility === null) return null;
   if (sourceWordbookId) {
     const title = value.title === undefined ? undefined : text(value.title, 100);
     const description = value.description === undefined ? undefined : text(value.description, 500, true);
-    return title !== null && description !== null ? { sourceWordbookId, ...(title ? { title } : {}), ...(description !== undefined ? { description } : {}), exams, goals } : null;
+    return title !== null && description !== null ? { sourceWordbookId, ...(title ? { title } : {}), ...(description !== undefined ? { description } : {}), exams, goals, ...(visibility ? { visibility } : {}) } : null;
   }
-  const base = parseWordbookInput(value); return base ? { ...base, exams, goals } : null;
+  const base = parseWordbookInput(value); return base ? { ...base, exams, goals, ...(visibility ? { visibility } : {}) } : null;
 }
 export function parseUpdateCatalog(value: unknown): UpdateCatalogWordbookInput | null {
   if (!isJsonObject(value)) return null;
   const sourceWordbookId = value.sourceWordbookId === undefined ? undefined : parseResourceId(value.sourceWordbookId);
   const title = value.title === undefined ? undefined : text(value.title, 100); const description = value.description === undefined ? undefined : text(value.description, 500, true);
   const exams = value.exams === undefined ? undefined : choices(value.exams, EXAMS); const goals = value.goals === undefined ? undefined : choices(value.goals, GOALS);
-  if (sourceWordbookId === null || title === null || description === null || exams === null || goals === null || (sourceWordbookId === undefined && title === undefined && description === undefined && exams === undefined && goals === undefined)) return null;
-  return { ...(sourceWordbookId ? { sourceWordbookId } : {}), ...(title !== undefined ? { title } : {}), ...(description !== undefined ? { description } : {}), ...(exams ? { exams } : {}), ...(goals ? { goals } : {}) };
+  const visibility = value.visibility === undefined ? undefined : VISIBILITIES.includes(value.visibility as typeof VISIBILITIES[number]) ? value.visibility as typeof VISIBILITIES[number] : null;
+  if (sourceWordbookId === null || title === null || description === null || exams === null || goals === null || visibility === null || (sourceWordbookId === undefined && title === undefined && description === undefined && exams === undefined && goals === undefined && visibility === undefined)) return null;
+  return { ...(sourceWordbookId ? { sourceWordbookId } : {}), ...(title !== undefined ? { title } : {}), ...(description !== undefined ? { description } : {}), ...(exams ? { exams } : {}), ...(goals ? { goals } : {}), ...(visibility ? { visibility } : {}) };
 }
 export function parseLearningEvent(value: unknown): LearningEventInput | null {
   if (!isJsonObject(value)) return null;

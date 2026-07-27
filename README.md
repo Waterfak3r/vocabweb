@@ -1,11 +1,11 @@
 # Vacabweb 背单词
 
-本地优先的查词 + 背单词应用：React 前端可独立离线使用（查词、单词本、单词卡、听写），可选的 Express 后端提供词典代理、云端单词本、单词广场与学习统计。
+本地优先的查词 + 背单词应用：React 前端可独立离线使用（查词、单词本、单词卡、听写）；Express 后端提供词典代理、账号同步、个人词本、学习统计，以及支持公开、邀请码和私密三档可见性的单词社区。
 
 ## 目录结构
 
 - `frontend/` — React 19 + Vite + zustand，独立 npm 包
-- `backend/` — Express 5 + TypeScript，独立 npm 包（匿名 client-id 标识，JSON 文件持久化）
+- `backend/` — Express 5 + TypeScript + SQLite，独立 npm 包（scrypt 密码、HttpOnly 会话、匿名数据合并）
 - `resources/` — 词典资源与前后端共享的契约数据（如 `normalize-contract.json`）
 
 ## 快速开始
@@ -19,14 +19,16 @@ cd backend && npm install && cp .env.example .env && npm run dev
 前端（端口 5173）：
 
 ```bash
-cd frontend && npm install && cp .env.example .env.local && npm run dev
+cd frontend && npm install && npm run dev
 ```
 
-前端 `.env.local` 里的 `VITE_API_BASE=http://localhost:3000` 指向后端；不配置时前端以纯本地模式运行（内置 IELTS 词表 + 免费词典 API）。
+开发模式由 Vite 把 `/api` 同源代理到 `127.0.0.1:3000`，让 SameSite 会话 Cookie 正常工作；仓库内的 `.env.development` 已配置 `VITE_API_BASE=/`。如需纯本地模式，可在 `.env.local` 中把该变量留空（内置 IELTS 词表 + 免费词典 API）。
 
 ## 部署
 
 生产模式下由后端进程同时提供 API 与前端静态页面（同源），只需访问一个地址（默认 `http://localhost:3000`）。以下两种方式二选一。
+
+账号会话按同站部署设计：生产环境应保持前后端同源（推荐）或至少同站。仅添加跨站 `FRONTEND_ORIGIN` 并不能让 `SameSite=Lax` Cookie 在第三方站点工作。若 HTTPS 在反向代理终止，必须把 `TRUST_PROXY` 设为真实代理跳数，确保服务端识别 HTTPS 并签发 `Secure` 会话 Cookie。
 
 ### 方式一：Node 直跑（任意 OS，Node ≥ 20）
 
@@ -55,15 +57,18 @@ docker compose up -d --build
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
 | `PORT` | `3000` | HTTP 监听端口 |
-| `DATA_FILE` | `./data/study-state.json` | 持久化文件路径，相对 `backend/` 解析 |
+| `DATABASE_FILE` | `./data/study-state.sqlite` | SQLite 数据库路径，相对 `backend/` 解析 |
+| `DATA_FILE` | `./data/study-state.json` | 旧 JSON 数据源；仅在空数据库首次启动时导入一次 |
 | `STATIC_DIR` | 构建后的 `frontend/dist`（Docker 内为 `/app/frontend/dist`） | 前端静态资源目录，设为空则关闭静态托管 |
 | `FRONTEND_ORIGIN` | `http://localhost:5173,http://127.0.0.1:5173` | 额外允许的跨域来源（同源访问无需配置） |
 | `TRUST_PROXY` | `0` | 前置反向代理的层数，用于正确识别客户端 IP（限流所需） |
+| `LOGIN_RATE_LIMIT_WINDOW_MS` | `900000` | 注册/登录认证限流窗口（毫秒） |
+| `LOGIN_RATE_LIMIT_MAX_REQUESTS` | `10` | 单 IP 每个认证限流窗口的最大尝试次数 |
 | `WIKTAPI_BASE_URL` | `https://api.wiktapi.dev/v1/en/word` | 词典查询上游地址 |
 
 ### 数据备份
 
-学习数据保存在 `backend/data/study-state.json`（Docker 部署时位于命名卷 `vacab-data` 内）。备份或迁移时复制该文件（或该卷）即可。
+账号、会话、社区与学习数据保存在 `backend/data/study-state.sqlite`（Docker 部署时位于命名卷 `vacab-data` 内）。备份前请先停止服务，再复制数据库文件或整个数据卷；不要只复制运行中的主文件而遗漏 WAL。旧版 `study-state.json` 会在 SQLite 为空时自动导入，导入标记会阻止重复执行。
 
 ## 校验
 
@@ -78,6 +83,14 @@ npm test
 ```
 
 CI（`.github/workflows/ci.yml`）会在 push/PR 时对两个包分别执行 typecheck、测试与前端构建。
+
+账号与社区的真实浏览器回归（需要系统 Chrome）：
+
+```bash
+npm ci
+npm run build
+npm run test:e2e:community-account
+```
 
 `normalizeWord` 在前后端各有一份刻意保持一致的实现，由 `resources/normalize-contract.json` 的共享用例表在两侧测试中锁定；修改任一侧请同步更新另一侧与该表。
 

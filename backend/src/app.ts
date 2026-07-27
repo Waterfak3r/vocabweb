@@ -1,12 +1,16 @@
 import path from "node:path";
 import cors from "cors";
 import express, { type ErrorRequestHandler, type RequestHandler } from "express";
+import {
+  clearSessionCookie, createSessionToken, hashPassword, hashSessionToken, parseAuthCredentials,
+  readSessionToken, sessionCookie, sessionExpiresAt, verifyPassword,
+} from "./auth.js";
 import { FixedWindowRateLimiter, type RateLimiter } from "./http/rate-limit.js";
 import { WiktApiProvider } from "./providers/wiktapi.js";
 import { CsvLocalChineseDictionary, type LocalChineseLookup } from "./study/local-dictionary.js";
 import { JsonFileStudyStore } from "./study/store.js";
 import { parseAddWord, parseCatalogQuery, parseClientId, parseCommitImportDraft, parseCreateImportDraft, parseCreateMyWordbook, parseLearningEvent, parseResourceId, parseShareCode, parseStatus, parseUpdateCatalog, parseUpdateWord, parseUploadCatalog, parseWordId } from "./study/validation.js";
-import type { ImportLineInput, PreparedImportLine, ResolvedImportDraftEntry, StudyStore, StudyWordEntry } from "./study/types.js";
+import type { AccountUser, ImportLineInput, PreparedImportLine, ResolvedImportDraftEntry, StudyStore, StudyWordEntry } from "./study/types.js";
 import { isValidWordQuery, normalizeWord } from "./words/normalize.js";
 import { WordService, type WordLookup } from "./words/word-service.js";
 import { WordProviderError } from "./words/types.js";
@@ -16,6 +20,7 @@ export interface CreateAppOptions {
   wordLookup?: WordLookup;
   wordRateLimiter?: RateLimiter;
   mutationRateLimiter?: RateLimiter;
+  loginRateLimiter?: RateLimiter;
   studyStore?: StudyStore;
   localChineseLookup?: LocalChineseLookup;
   /** Express "trust proxy" hop count; set to the number of reverse proxies in front of the app. */
@@ -38,12 +43,36 @@ class CorsOriginError extends Error {
   }
 }
 
+class AuthCapacityError extends Error {
+  constructor() {
+    super("Authentication crypto capacity is busy");
+    this.name = "AuthCapacityError";
+  }
+}
+
 function apiError(code: string, message: string): ApiErrorBody {
   return { error: { code, message } };
 }
 
-function readClientId(request: express.Request, response: express.Response): string | null {
-  const clientId = parseClientId(request.header("x-vocab-client-id"));
+type RequestIdentity = {
+  user: AccountUser | null;
+  clientId: string | null;
+  headerClientId: string | null;
+  headerClaimedBy: AccountUser | null;
+  sessionTokenHash: string | null;
+};
+
+function identityOf(response: express.Response): RequestIdentity {
+  return response.locals.identity as RequestIdentity;
+}
+
+function readClientId(_request: express.Request, response: express.Response): string | null {
+  const identity = identityOf(response);
+  if (!identity.user && identity.headerClaimedBy) {
+    response.status(401).json(apiError("AUTH_REQUIRED", "This data belongs to a registered account"));
+    return null;
+  }
+  const clientId = identity.clientId;
   if (clientId) {
     return clientId;
   }
@@ -64,8 +93,21 @@ export function createApp(options: CreateAppOptions = {}) {
   const mutationRateLimiter =
     options.mutationRateLimiter ??
     new FixedWindowRateLimiter({ windowMs: 60_000, maxRequests: 240 });
+  const loginRateLimiter =
+    options.loginRateLimiter ??
+    new FixedWindowRateLimiter({ windowMs: 15 * 60_000, maxRequests: 10 });
   const studyStore = options.studyStore ?? new JsonFileStudyStore("./data/study-state.json");
   const localChineseLookup = options.localChineseLookup ?? new CsvLocalChineseDictionary();
+  // Missing usernames still pay the same scrypt verification cost as real users.
+  const dummyPasswordHash = hashPassword(createSessionToken().token);
+  let activeAuthCrypto = 0;
+  const runAuthCrypto = async <T>(operation: () => Promise<T>): Promise<T> => {
+    // scrypt runs on libuv's bounded worker pool. Reject excess work promptly so
+    // distributed attempts cannot starve unrelated filesystem/DNS operations.
+    if (activeAuthCrypto >= 4) throw new AuthCapacityError();
+    activeAuthCrypto += 1;
+    try { return await operation(); } finally { activeAuthCrypto -= 1; }
+  };
   const lookupJobs: Array<{ word: string; resolve: (value: Awaited<ReturnType<WordLookup["lookup"]>>) => void; reject: (reason: unknown) => void }> = [];
   let activeLookups = 0;
   const drainLookupQueue = () => {
@@ -158,7 +200,7 @@ export function createApp(options: CreateAppOptions = {}) {
       // expressRequest.protocol honors the "trust proxy" setting (X-Forwarded-Proto).
       const sameOrigin = `${expressRequest.protocol}://${expressRequest.headers.host}`;
       if (!origin || allowedOrigins.includes(origin) || origin === sameOrigin) {
-        callback(null, { origin: true });
+        callback(null, { origin: true, credentials: true });
         return;
       }
 
@@ -167,6 +209,128 @@ export function createApp(options: CreateAppOptions = {}) {
   );
   app.use("/api", enforceMutationRateLimit);
   app.use(express.json({ limit: "2mb" }));
+  app.use("/api", async (request, response, next) => {
+    try {
+      const headerClientId = parseClientId(request.header("x-vocab-client-id"));
+      const token = readSessionToken(request.header("cookie"));
+      const tokenHash = token ? hashSessionToken(token) : null;
+      const session = tokenHash ? await studyStore.getSession(tokenHash, new Date()) : null;
+      const headerClaimedBy = !session && headerClientId ? await studyStore.getUserByClientId(headerClientId) : null;
+      response.locals.identity = {
+        user: session?.user ?? null,
+        clientId: session?.user.clientId ?? headerClientId,
+        headerClientId,
+        headerClaimedBy,
+        sessionTokenHash: tokenHash,
+      } satisfies RequestIdentity;
+      next();
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  const authDto = (user: AccountUser) => ({ username: user.username, clientId: user.clientId });
+  const beginSession = async (response: express.Response, user: AccountUser) => {
+    const created = createSessionToken();
+    await studyStore.createSession(created.tokenHash, user.id, sessionExpiresAt());
+    response.setHeader("Set-Cookie", sessionCookie(created.token, response.req.secure));
+  };
+  const enforceLoginRateLimit: RequestHandler = (request, response, next) => {
+    const clientKey = request.ip || request.socket.remoteAddress || "unknown";
+    const decision = loginRateLimiter.consume(clientKey);
+    if (!decision.allowed) {
+      response.setHeader("Retry-After", Math.max(1, Math.ceil(decision.retryAfterMs / 1_000)));
+      response.status(429).json(apiError("LOGIN_RATE_LIMITED", "Too many login attempts"));
+      return;
+    }
+    next();
+  };
+
+  app.post("/api/auth/register", enforceLoginRateLimit, async (request, response, next) => {
+    const credentials = parseAuthCredentials(request.body);
+    const identity = identityOf(response);
+    if (!credentials) {
+      response.status(400).json(apiError("INVALID_CREDENTIALS", "Username or password is invalid"));
+      return;
+    }
+    if (!identity.headerClientId) {
+      response.status(400).json(apiError("INVALID_CLIENT_ID", "X-Vocab-Client-Id must be a valid anonymous client id"));
+      return;
+    }
+    if (identity.user || identity.headerClaimedBy) {
+      response.status(409).json(apiError("CLIENT_ID_ALREADY_REGISTERED", "This client id already belongs to an account"));
+      return;
+    }
+    try {
+      const passwordHash = await runAuthCrypto(() => hashPassword(credentials.password));
+      const result = await studyStore.createUser(credentials.username, passwordHash, identity.headerClientId);
+      if (result.kind === "taken") {
+        response.status(409).json(apiError("USERNAME_TAKEN", "Username is already in use"));
+        return;
+      }
+      if (result.kind === "client-taken") {
+        response.status(409).json(apiError("CLIENT_ID_ALREADY_REGISTERED", "This client id already belongs to an account"));
+        return;
+      }
+      await beginSession(response, result.user);
+      response.status(201).json(authDto(result.user));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/auth/login", enforceLoginRateLimit, async (request, response, next) => {
+    const credentials = parseAuthCredentials(request.body);
+    const identity = identityOf(response);
+    if (!credentials || !identity.headerClientId) {
+      response.status(400).json(apiError("INVALID_CREDENTIALS", "Username, password, or client id is invalid"));
+      return;
+    }
+    try {
+      const user = await studyStore.getUserByUsername(credentials.username);
+      const passwordRecord = user?.passwordHash ?? await dummyPasswordHash;
+      const passwordMatches = await runAuthCrypto(() => verifyPassword(credentials.password, passwordRecord));
+      if (!user || !passwordMatches) {
+        response.status(401).json(apiError("INVALID_LOGIN", "Username or password is incorrect"));
+        return;
+      }
+      if (identity.user && identity.user.id !== user.id) {
+        response.status(409).json(apiError("ACTIVE_SESSION_ACCOUNT_CONFLICT", "Log out before signing in to another account"));
+        return;
+      }
+      if (identity.headerClaimedBy && identity.headerClaimedBy.id !== user.id) {
+        response.status(409).json(apiError("CLIENT_ID_ACCOUNT_CONFLICT", "This client id belongs to another account"));
+        return;
+      }
+      if (!identity.user && !identity.headerClaimedBy && identity.headerClientId !== user.clientId) {
+        await studyStore.mergeClients(identity.headerClientId, user.clientId);
+      }
+      await beginSession(response, user);
+      response.status(200).json(authDto(user));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/auth/logout", async (_request, response, next) => {
+    try {
+      const identity = identityOf(response);
+      if (identity.sessionTokenHash) await studyStore.deleteSession(identity.sessionTokenHash);
+      response.setHeader("Set-Cookie", clearSessionCookie(response.req.secure));
+      response.status(204).end();
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/auth/me", (_request, response) => {
+    const user = identityOf(response).user;
+    if (!user) {
+      response.status(401).json(apiError("AUTH_REQUIRED", "No active account session"));
+      return;
+    }
+    response.status(200).json(authDto(user));
+  });
 
   app.get("/api/health", (_request, response) => {
     response.status(200).json({ status: "ok", service: "vacabweb-backend" });
@@ -250,14 +414,36 @@ export function createApp(options: CreateAppOptions = {}) {
     const clientId = readClientId(request, response); const input = parseUploadCatalog(request.body);
     if (!clientId) return;
     if (!input) { response.status(400).json(apiError("INVALID_CATALOG_UPLOAD", "Catalog upload is invalid")); return; }
-    try { const catalog = await studyStore.uploadCatalog(clientId, input); if (!catalog) response.status(404).json(apiError("WORDBOOK_NOT_FOUND", "Source wordbook was not found")); else response.status(201).json(catalog); } catch (error) { next(error); }
+    const user = identityOf(response).user;
+    if ((input.visibility ?? "public") === "public" && !user) {
+      response.status(401).json(apiError("AUTH_REQUIRED_FOR_PUBLIC", "Sign in before publishing publicly"));
+      return;
+    }
+    try {
+      const catalog = await studyStore.uploadCatalog(clientId, {
+        ...input,
+        ...(user ? { author: { userId: user.id, username: user.username } } : {}),
+      });
+      if (!catalog) response.status(404).json(apiError("WORDBOOK_NOT_FOUND", "Source wordbook was not found")); else response.status(201).json(catalog);
+    } catch (error) { next(error); }
   });
   const updateCatalogSnapshot: RequestHandler = async (request, response, next) => {
     const clientId = readClientId(request, response); const id = parseResourceId(request.params.id); const input = parseUpdateCatalog(request.body);
     if (!clientId) return;
     if (!id) { response.status(400).json(apiError("INVALID_RESOURCE_ID", "Resource id is invalid")); return; }
     if (!input) { response.status(400).json(apiError("INVALID_CATALOG_UPLOAD", "Catalog update is invalid")); return; }
-    try { const catalog = await studyStore.updateCatalog(clientId, id, input); if (!catalog) response.status(404).json(apiError("CATALOG_NOT_FOUND", "Catalog wordbook or source wordbook was not found")); else response.status(200).json(catalog); } catch (error) { next(error); }
+    const user = identityOf(response).user;
+    if (input.visibility === "public" && !user) {
+      response.status(401).json(apiError("AUTH_REQUIRED_FOR_PUBLIC", "Sign in before publishing publicly"));
+      return;
+    }
+    try {
+      const catalog = await studyStore.updateCatalog(clientId, id, {
+        ...input,
+        ...(user ? { author: { userId: user.id, username: user.username } } : {}),
+      });
+      if (!catalog) response.status(404).json(apiError("CATALOG_NOT_FOUND", "Catalog wordbook or source wordbook was not found")); else response.status(200).json(catalog);
+    } catch (error) { next(error); }
   };
   app.patch("/api/catalog/wordbooks/:id", updateCatalogSnapshot);
   app.put("/api/catalog/wordbooks/:id", updateCatalogSnapshot);
@@ -458,6 +644,12 @@ export function createApp(options: CreateAppOptions = {}) {
       response
         .status(403)
         .json(apiError("CORS_ORIGIN_DENIED", "Origin is not allowed"));
+      return;
+    }
+
+    if (error instanceof AuthCapacityError) {
+      response.setHeader("Retry-After", "1");
+      response.status(503).json(apiError("AUTH_BUSY", "Authentication is busy; retry shortly"));
       return;
     }
 

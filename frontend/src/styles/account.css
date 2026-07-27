@@ -1,0 +1,132 @@
+/* 账号：header 弹层的登录态 + 登录/注册弹窗（复用 workspace 弹窗视觉语言） */
+
+/* ── 账号弹层：登录态用户名与退出 ── */
+.account-popover .account-user {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.55rem;
+  color: var(--ink);
+  font-size: var(--text-base);
+  font-weight: 600;
+}
+
+.account-popover .account-user::before {
+  flex: 0 0 auto;
+  width: 1.6rem;
+  height: 1.6rem;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 0.85rem;
+  font-weight: 700;
+  content: '账';
+}
+
+.account-popover .account-logout { color: var(--danger); }
+.account-popover .account-logout:hover { background: var(--danger-soft); }
+.account-popover .account-logout:disabled { cursor: wait; opacity: 0.65; }
+.account-popover .account-menu-error {
+  max-width: 13rem;
+  padding: 0.35rem 0.55rem;
+  color: var(--danger);
+  font-size: 0.72rem;
+  line-height: 1.35;
+}
+
+/* ── 登录 / 注册弹窗 ── */
+.auth-dialog {
+  position: relative;
+  width: min(24rem, 100%);
+  max-height: calc(100vh - 3rem);
+  overflow: auto;
+  border: 1px solid var(--rule);
+  border-radius: 1rem;
+  background: #fffdfa;
+  box-shadow: 0 1.4rem 4rem rgba(13, 39, 60, 0.24);
+}
+
+.auth-dialog > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 1.15rem 1.3rem;
+  border-bottom: 1px solid var(--rule);
+}
+
+.auth-dialog > header p { color: var(--accent); font-size: 0.75rem; font-weight: 700; }
+.auth-dialog > header h2 { margin-top: 0.2rem; font-family: var(--font-serif); font-size: 1.45rem; }
+
+.auth-dialog form {
+  display: grid;
+  gap: 0.6rem;
+  padding: 1.25rem 1.3rem 1.4rem;
+}
+
+.auth-dialog form label {
+  display: grid;
+  gap: 0.35rem;
+  color: var(--ink);
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.auth-dialog form input {
+  width: 100%;
+  padding: 0.65rem 0.7rem;
+  border: 1px solid #cfd7de;
+  border-radius: 0.45rem;
+  background: white;
+  color: var(--ink);
+  font: inherit;
+  font-weight: 400;
+}
+
+.auth-dialog form input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-color: var(--accent);
+}
+
+.auth-dialog form input[aria-invalid='true'] { border-color: var(--danger); }
+
+.auth-hint { color: var(--muted); font-size: 0.72rem; }
+.auth-error { color: var(--danger); font-size: 0.78rem; }
+
+.auth-submit {
+  min-height: 2.6rem;
+  margin-top: 0.35rem;
+  padding: 0.55rem 0.9rem;
+  border: 1px solid var(--accent);
+  border-radius: 0.45rem;
+  background: var(--accent);
+  color: white;
+  font-weight: 700;
+}
+
+.auth-submit:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); }
+.auth-submit:disabled { opacity: 0.55; cursor: not-allowed; }
+
+.auth-switch {
+  margin-top: 0.2rem;
+  color: var(--muted);
+  font-size: 0.8rem;
+  text-align: center;
+}
+
+.auth-switch button {
+  margin-left: 0.35rem;
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.auth-switch button:hover { text-decoration: underline; }
+.auth-switch button:disabled,
+.auth-dialog .workspace-modal-close:disabled { cursor: wait; opacity: 0.5; }
+
+@media (max-width: 640px) {
+  .auth-backdrop { align-items: end; padding: 0; }
+  .auth-dialog { width: 100%; max-height: 92vh; border-radius: 1rem 1rem 0 0; }
+}

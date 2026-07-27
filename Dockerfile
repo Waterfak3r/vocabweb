@@ -24,6 +24,11 @@ RUN npm run build
 FROM node:22-alpine AS backend-build
 WORKDIR /app/backend
 
+# better-sqlite3 normally downloads a musl prebuild. Keep a native-build
+# fallback in this disposable stage so a missing architecture prebuild does not
+# make production images unreproducible.
+RUN apk add --no-cache python3 make g++
+
 COPY backend/package.json backend/package-lock.json ./
 RUN npm ci
 
@@ -55,8 +60,9 @@ ENV NODE_ENV=production \
     PORT=3000 \
     STATIC_DIR=/app/frontend/dist
 
-# Persistent study state lives here (DATA_FILE default ./data/study-state.json,
-# relative to this WORKDIR). Owned by the unprivileged node user.
+# SQLite state lives here (DATABASE_FILE default ./data/study-state.sqlite).
+# DATA_FILE points at the legacy JSON source imported once on first startup.
+# Both paths are relative to this WORKDIR and owned by the unprivileged node user.
 RUN mkdir -p /app/backend/data && chown -R node:node /app/backend/data
 VOLUME ["/app/backend/data"]
 

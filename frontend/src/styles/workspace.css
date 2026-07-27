@@ -221,7 +221,10 @@
 /* 复习巩固结束页可能出现三个操作（再来一轮 / 提前复习 / 关闭），允许换行居中。 */
 .workspace-session-summary > div { flex-wrap: wrap; justify-content: center; }
 .delete-upload:hover { text-decoration: underline; }
-.collection-manage { display: inline-flex; align-items: center; gap: .6rem; margin-top: .2rem; }
+.collection-manage { display: inline-flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin-top: .2rem; }
 .collection-manage .collection-update { margin-top: 0; }
 .collection-delete { color: var(--danger); font-size: .68rem; font-weight: 700; text-align: left; }
 .collection-delete:hover { text-decoration: underline; }
+/* 「我的上传」行内可见性切换 */
+.collection-visibility { min-height: 1.7rem; padding: .1rem 1.2rem .1rem .35rem; border: 1px solid var(--rule); border-radius: .3rem; background: #fffefa; color: var(--ink); font: inherit; font-size: .7rem; font-weight: 700; cursor: pointer; }
+.collection-visibility:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent); }

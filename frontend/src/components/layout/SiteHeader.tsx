@@ -1,5 +1,7 @@
-import { useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { NavLink } from 'react-router-dom'
+import { AuthDialog, type AuthMode } from '../account/AuthDialog'
+import { useAuth } from '../../hooks/useAuth'
 
 const NAVIGATION = [
   { to: '/', label: '查词', icon: 'search', end: true },
@@ -46,6 +48,76 @@ function NavIcon({ name }: { name: string }) {
 
 export function SiteHeader() {
   const [accountOpen, setAccountOpen] = useState(false)
+  const [authMode, setAuthMode] = useState<AuthMode | null>(null)
+  const [logoutError, setLogoutError] = useState('')
+  const [loggingOut, setLoggingOut] = useState(false)
+  const accountMenuRef = useRef<HTMLDivElement>(null)
+  const accountTriggerRef = useRef<HTMLButtonElement>(null)
+  const { user, loading, login, register, logout } = useAuth()
+
+  function openAuth(mode: AuthMode) {
+    setLogoutError('')
+    setAccountOpen(false)
+    setAuthMode(mode)
+  }
+
+  useEffect(() => {
+    if (!accountOpen) return
+    const closeOutside = (event: PointerEvent) => {
+      if (!accountMenuRef.current?.contains(event.target as Node)) setAccountOpen(false)
+    }
+    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      setAccountOpen(false)
+      accountTriggerRef.current?.focus()
+    }
+    document.addEventListener('pointerdown', closeOutside)
+    window.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('pointerdown', closeOutside)
+      window.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [accountOpen])
+
+  function focusMenuItem(position: 'first' | 'last') {
+    requestAnimationFrame(() => {
+      const items = accountMenuRef.current?.querySelectorAll<HTMLElement>('[role="menuitem"]:not(:disabled)')
+      if (!items?.length) return
+      items[position === 'first' ? 0 : items.length - 1]?.focus()
+    })
+  }
+
+  function handleTriggerKeyDown(event: KeyboardEvent<HTMLButtonElement>) {
+    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
+    event.preventDefault()
+    setAccountOpen(true)
+    focusMenuItem(event.key === 'ArrowDown' ? 'first' : 'last')
+  }
+
+  function handleMenuKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    const items = Array.from(accountMenuRef.current?.querySelectorAll<HTMLElement>('[role="menuitem"]:not(:disabled)') ?? [])
+    if (!items.length) return
+    const current = items.indexOf(document.activeElement as HTMLElement)
+    let next = current
+    if (event.key === 'ArrowDown') next = (current + 1) % items.length
+    else if (event.key === 'ArrowUp') next = (current - 1 + items.length) % items.length
+    else if (event.key === 'Home') next = 0
+    else if (event.key === 'End') next = items.length - 1
+    else return
+    event.preventDefault()
+    items[next]?.focus()
+  }
+
+  async function handleLogout() {
+    setLoggingOut(true)
+    setLogoutError('')
+    try {
+      await logout()
+    } catch {
+      setLogoutError('退出失败，请检查网络后重试。')
+      setLoggingOut(false)
+    }
+  }
 
   return (
     <header className="site-header">
@@ -70,13 +142,18 @@ export function SiteHeader() {
             {label}
           </NavLink>
         ))}
-        <div className="account-menu">
+        <div ref={accountMenuRef} className="account-menu">
           <button
+            ref={accountTriggerRef}
             className="nav-link account-trigger"
             type="button"
             aria-expanded={accountOpen}
             aria-haspopup="menu"
-            onClick={() => setAccountOpen((open) => !open)}
+            onClick={() => {
+              setLogoutError('')
+              setAccountOpen((open) => !open)
+            }}
+            onKeyDown={handleTriggerKeyDown}
           >
             <NavIcon name="account" />
             账号
@@ -85,14 +162,44 @@ export function SiteHeader() {
             </svg>
           </button>
           {accountOpen && (
-            <div className="account-popover" role="menu">
-              <p>学习者</p>
-              <button type="button" role="menuitem" onClick={() => setAccountOpen(false)}>账号设置</button>
-              <button type="button" role="menuitem" onClick={() => setAccountOpen(false)}>本地数据已保存</button>
+            <div className="account-popover" role="menu" aria-label="账号操作" onKeyDown={handleMenuKeyDown}>
+              {loading ? (
+                <p>加载中…</p>
+              ) : user ? (
+                <>
+                  <p className="account-user">{user.username}</p>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="account-logout"
+                    disabled={loggingOut}
+                    onClick={() => void handleLogout()}
+                  >
+                    {loggingOut ? '正在退出…' : '退出登录'}
+                  </button>
+                  {logoutError && <p className="account-menu-error" role="alert">{logoutError}</p>}
+                </>
+              ) : (
+                <>
+                  <p>未登录</p>
+                  <button type="button" role="menuitem" onClick={() => openAuth('login')}>登录</button>
+                  <button type="button" role="menuitem" onClick={() => openAuth('register')}>注册</button>
+                </>
+              )}
             </div>
           )}
         </div>
       </nav>
+      {authMode && (
+        <AuthDialog
+          mode={authMode}
+          onModeChange={setAuthMode}
+          onClose={() => setAuthMode(null)}
+          login={login}
+          register={register}
+          returnFocus={accountTriggerRef.current}
+        />
+      )}
     </header>
   )
 }

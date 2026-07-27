@@ -4,193 +4,142 @@ import { dirname, resolve } from "node:path";
 import { isValidWordQuery, normalizeWord } from "../words/normalize.js";
 import { isJsonObject } from "./validation.js";
 import { FINAL_CHECK_WINDOW_MS } from "./types.js";
+import {
+  BATCH_SIZE, RETENTION_MS, card, catalogCard, clone, day, dayDiff, defaultClient, EMPTY, ladderEventLevels, ladderOf,
+  ladderStates, migrate, progress, queueItem, reviewDue, sameMeanings, shiftDay, studiedWord, toCatalogWords,
+  toWordbookWords, visibleTo,
+} from "./ladder.js";
+import type { ClientData, State } from "./ladder.js";
 import type {
-  CatalogCard, CatalogQuery, CatalogWordbook, CommitImportDraftInput, CreateImportDraftInput, CreateMyWordbookInput,
-  ImportDraft, ImportDraftEntry, LearningEvent, LearningEventInput, LearningQueueItem, LevelCounts, MyWordbook, MyWordbookCard,
-  ResolvedImportDraftEntry, StudiedWord, StudyDashboard, StudyStore, StudyWordEntry, UpdateCatalogWordbookInput, UpdateWordInput,
-  UpdateWordResult, UploadCatalogWordbookInput, WordLearningStatus, WordLevel, WordbookProgress, WordbookWord,
+  AccountUser, CatalogCard, CatalogQuery, CatalogWordbook, CommitImportDraftInput, CreateImportDraftInput, CreateMyWordbookInput,
+  ImportDraft, ImportDraftEntry, LearningEvent, LearningEventInput, LearningQueueItem, MyWordbook, MyWordbookCard,
+  ResolvedImportDraftEntry, StudyDashboard, StudyStore, StudyWordEntry, UpdateCatalogWordbookInput, UpdateWordInput,
+  UpdateWordResult, UploadCatalogWordbookInput, WordbookWord, WordLearningStatus, WordLevel,
 } from "./types.js";
 
-interface ClientData { favorites: string[]; wordbooks: MyWordbook[]; events: LearningEvent[]; drafts: ImportDraft[]; }
-interface State { version: 3; catalog: CatalogWordbook[]; clients: Record<string, ClientData>; }
-const EMPTY = (): State => ({ version: 3, catalog: [], clients: {} });
-const RETENTION_MS = 90 * 86_400_000;
-const BATCH_SIZE = 500;
+export { EMPTY, migrate };
+export type { ClientData, State };
 
-function clone<T>(value: T): T { return structuredClone(value); }
-function day(date: Date): string { return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`; }
-function shiftDay(now: Date, offset: number): Date { const result = new Date(now); result.setDate(now.getDate() + offset); return result; }
-/** Whole local calendar days from `from` to `to`, DST-safe: both are collapsed to local midnight and the gap is rounded, so a ±1h DST shift never miscounts. */
-function dayDiff(from: Date, to: Date): number { return Math.round((new Date(to.getFullYear(), to.getMonth(), to.getDate()).getTime() - new Date(from.getFullYear(), from.getMonth(), from.getDate()).getTime()) / 86_400_000); }
-function toWordbookWords(words: StudyWordEntry[], at: string): WordbookWord[] { return words.map((word) => ({ ...clone(word), id: randomUUID(), addedAt: at })); }
-function toCatalogWords(words: WordbookWord[]): StudyWordEntry[] { return words.map(({ id: _id, addedAt: _addedAt, ...word }) => clone(word)); }
-function defaultClient(): ClientData { return { favorites: [], wordbooks: [], events: [], drafts: [] }; }
-interface WordLadderState { level: WordLevel; levelReachedAt?: string; lastStudiedAt?: string; }
-/**
- * Replay one word's full event history into its proficiency ladder state. Events must arrive
- * oldest-first (ties keep insertion order). `levelReachedAt` is the occurredAt of the event that
- * last CHANGED the level; a "mark" always counts as a change, even to the same rung — so it also
- * doubles as "when L3 was reached" for the 7-day final-check window.
- */
-function replayLadder(events: LearningEvent[], onEvent?: (event: LearningEvent, level: WordLevel) => void): WordLadderState {
-  let level: WordLevel = 0;
-  let levelReachedAt: string | undefined;
-  for (const event of events) {
-    const previous: WordLevel = level;
-    switch (event.kind) {
-      case "new": // Seeing a word (any verdict, absent = know) confirms 初识.
-        level = Math.max(level, 1) as WordLevel; break;
-      case "flashcard": // 认识 climbs one rung but flashcards can never pass L2; 不认识 demotes to a floor of L1.
-        level = event.verdict === "know" ? (level < 2 ? (level + 1) as WordLevel : level) : Math.max(1, level - 1) as WordLevel; break;
-      case "dictation":
-        if (event.correct) {
-          // L2 → L3 at once; L3 → L4 only once the 7-day window has passed; L0/L1 never promote.
-          if (level === 2) level = 3;
-          else if (level === 3 && levelReachedAt !== undefined && Date.parse(event.occurredAt) - Date.parse(levelReachedAt) >= FINAL_CHECK_WINDOW_MS) level = 4;
-        } else level = Math.max(1, level - 1) as WordLevel;
-        break;
-      case "mark": // Manual override to an exact rung.
-        level = event.level; break;
-    }
-    if (level !== previous || event.kind === "mark") levelReachedAt = event.occurredAt;
-    onEvent?.(event, level);
-  }
-  // Events arrive oldest-first, so the tail is the most recent touch of ANY kind (mark included) —
-  // the spaced-review clock's "last studied" stamp.
-  const lastStudiedAt = events.length ? events[events.length - 1]!.occurredAt : undefined;
-  return { level, ...(levelReachedAt !== undefined ? { levelReachedAt } : {}), ...(lastStudiedAt !== undefined ? { lastStudiedAt } : {}) };
-}
-/**
- * Bucket a wordbook's events by wordId in one pass. Each bucket is stable-sorted by occurredAt so
- * an injected/rewound clock or migrated data still replays strictly chronologically (Array.sort is
- * stable, so equal timestamps keep their insertion order).
- */
-function bucketByWord(events: LearningEvent[]): Map<string, LearningEvent[]> {
-  const buckets = new Map<string, LearningEvent[]>();
-  for (const event of events) {
-    const bucket = buckets.get(event.wordId);
-    if (bucket) bucket.push(event); else buckets.set(event.wordId, [event]);
-  }
-  for (const bucket of buckets.values()) bucket.sort((a, b) => Date.parse(a.occurredAt) - Date.parse(b.occurredAt));
-  return buckets;
-}
-function ladderStates(events: LearningEvent[]): Map<string, WordLadderState> {
-  const states = new Map<string, WordLadderState>();
-  for (const [wordId, bucket] of bucketByWord(events)) states.set(wordId, replayLadder(bucket));
-  return states;
-}
-/** Level each word held right AFTER each event, keyed by event id — feeds recentActivity honesty. */
-function ladderEventLevels(events: LearningEvent[]): Map<string, WordLevel> {
-  const after = new Map<string, WordLevel>();
-  for (const bucket of bucketByWord(events).values()) replayLadder(bucket, (event, level) => after.set(event.id, level));
-  return after;
-}
-function ladderOf(states: Map<string, WordLadderState>, wordId: string): WordLadderState { return states.get(wordId) ?? { level: 0 }; }
-// Legacy 4-status compat kept for the ?status= filter: L0 new / L1 learning / L2 review / L3-L4 mastered.
-function statusFromLevel(level: WordLevel): WordLearningStatus { return level === 0 ? "new" : level === 1 ? "learning" : level === 2 ? "review" : "mastered"; }
-function studiedWord(word: WordbookWord, state: WordLadderState): StudiedWord { return { ...clone(word), level: state.level, ...(state.levelReachedAt !== undefined ? { levelReachedAt: state.levelReachedAt } : {}), ...(state.lastStudiedAt !== undefined ? { lastStudiedAt: state.lastStudiedAt } : {}) }; }
-function queueItem(word: WordbookWord, state: WordLadderState): LearningQueueItem { return { ...studiedWord(word, state), status: statusFromLevel(state.level) }; }
-/**
- * 复习巩固 due rule on server-local calendar days: an L1 word becomes due 1 day after its last event,
- * an L2 word 2 days after (so `dayDiff >= level` covers both). L0/L3/L4 are never review-due — L3 has
- * its own 7-day final-check window. A level-1|2 word with no recorded event is treated as due.
- */
-function reviewDue(state: WordLadderState, now: Date): boolean {
-  if (state.level !== 1 && state.level !== 2) return false;
-  if (state.lastStudiedAt === undefined) return true;
-  return dayDiff(new Date(state.lastStudiedAt), now) >= state.level;
-}
-function progress(book: MyWordbook, events: LearningEvent[]): WordbookProgress {
-  const states = ladderStates(events);
-  const levels: LevelCounts = { l0: 0, l1: 0, l2: 0, l3: 0, l4: 0 };
-  for (const word of book.words) levels[`l${ladderOf(states, word.id).level}` as keyof LevelCounts] += 1;
-  const total = book.words.length;
-  const percent = total ? Math.round(((levels.l1 * 0.25 + levels.l2 * 0.5 + levels.l3 * 0.75 + levels.l4) / total) * 100) : 0;
-  return { mastered: levels.l3 + levels.l4, learning: levels.l1, review: levels.l2, unstudied: levels.l0, percent, levels };
-}
-function card(book: MyWordbook, events: LearningEvent[]): MyWordbookCard {
-  const { words: _words, deletedAt: _deletedAt, ...rest } = book;
-  return { ...clone(rest), wordCount: book.words.length, progress: progress(book, events) };
-}
-function sameMeanings(left: StudyWordEntry["meanings"], right: StudyWordEntry["meanings"]): StudyWordEntry["meanings"] {
-  const existing = new Set(left.map((meaning) => `${meaning.pos}\u0000${meaning.definition}`));
-  return [...clone(left), ...right.filter((meaning) => !existing.has(`${meaning.pos}\u0000${meaning.definition}`)).map(clone)];
-}
-
-/** Fold curly apostrophes in stored word text so it matches today's normalizeWord output. */
-function foldApostrophes(word: string): string { return word.replace(/[’ʼ]/g, "'"); }
-
-/** Upgrade the old v2 JSON without losing wordbooks, events, or publishing data. */
-function migrate(raw: unknown): State {
-  if (!isJsonObject(raw) || !Array.isArray(raw.catalog) || !isJsonObject(raw.clients)) throw new Error("Study data file has an unsupported format");
-  if (raw.version !== 2 && raw.version !== 3) throw new Error("Study data file has an unsupported format");
-  const state = raw as unknown as State;
-  state.version = 3;
-  for (const book of state.catalog) {
-    for (const word of book.words ?? []) word.word = foldApostrophes(word.word);
-  }
-  for (const clientValue of Object.values(state.clients)) {
-    const client = clientValue as ClientData;
-    client.favorites ??= [];
-    client.wordbooks ??= [];
-    client.events ??= [];
-    client.drafts ??= [];
-    for (const book of client.wordbooks) {
-      book.words ??= [];
-      for (const word of book.words) {
-        word.word = foldApostrophes(word.word);
-        if (!word.id || typeof word.id !== "string") word.id = randomUUID();
-        if (!word.addedAt || typeof word.addedAt !== "string") word.addedAt = book.createdAt;
-        if (word.zhMeaningSource !== "user" && word.zhMeaningSource !== "dictionary") {
-          delete word.zhMeaningSource;
-        }
-        if (typeof word.zhMeaning !== "string" || !word.zhMeaning.trim()) delete word.zhMeaning;
-      }
-    }
-    client.events = client.events.map((event) => {
-      const legacy = event as unknown as { wordbookId?: string; word?: string; wordId?: string };
-      const legacyWord = legacy.word === undefined ? undefined : foldApostrophes(legacy.word);
-      const book = client.wordbooks.find((item) => item.id === legacy.wordbookId);
-      const matched = book?.words.find((item) => item.id === legacy.wordId || item.word === legacyWord);
-      return { ...event, word: matched?.word ?? legacyWord ?? "", wordId: matched?.id ?? legacy.wordId ?? randomUUID() } as LearningEvent;
-    });
-    for (const draft of client.drafts) {
-      draft.status ??= "pending";
-      draft.groupId ??= `group-${randomUUID()}`;
-      draft.entries ??= [];
-      for (const entry of draft.entries) {
-        if (entry.word) entry.word = foldApostrophes(entry.word);
-        if (entry.entry) entry.entry.word = foldApostrophes(entry.entry.word);
-      }
-    }
-  }
-  return state;
-}
-
-abstract class BaseStore implements StudyStore {
+export abstract class BaseStore implements StudyStore {
   private statePromise: Promise<State> | undefined;
   private queue: Promise<void> = Promise.resolve();
-  protected constructor(private readonly now: () => Date = () => new Date()) {}
+  protected constructor(protected readonly now: () => Date = () => new Date()) {}
   protected abstract load(): Promise<State>;
-  protected abstract save(state: State): Promise<void>;
+  /** Persist one state transition; record-oriented stores can diff against `previous`. */
+  protected abstract save(state: State, previous?: State): Promise<void>;
 
+  // --- Accounts & sessions ---
+  async createUser(username: string, passwordHash: string, clientId: string): Promise<{ kind: "created"; user: AccountUser } | { kind: "taken" } | { kind: "client-taken" }> { return await this.mutate((state) => {
+    const lower = username.toLowerCase();
+    if (state.users.some((user) => user.username.toLowerCase() === lower)) return { kind: "taken" as const };
+    if (state.users.some((user) => user.clientId === clientId)) return { kind: "client-taken" as const };
+    const user: AccountUser = { id: `user-${randomUUID()}`, username, passwordHash, clientId, createdAt: this.now().toISOString() };
+    state.users.push(user);
+    // Registering adopts the requesting anonymous client as the account's data home.
+    this.client(state, clientId);
+    return { kind: "created" as const, user: clone(user) };
+  }); }
+  async getUserByUsername(username: string): Promise<AccountUser | null> { return await this.read((state) => { const lower = username.toLowerCase(); const user = state.users.find((item) => item.username.toLowerCase() === lower); return user ? clone(user) : null; }); }
+  async getUserById(id: string): Promise<AccountUser | null> { return await this.read((state) => { const user = state.users.find((item) => item.id === id); return user ? clone(user) : null; }); }
+  async getUserByClientId(clientId: string): Promise<AccountUser | null> { return await this.read((state) => { const user = state.users.find((item) => item.clientId === clientId); return user ? clone(user) : null; }); }
+  async createSession(tokenHash: string, userId: string, expiresAt: string): Promise<void> { await this.mutate((state) => {
+    const now = this.now();
+    state.sessions = state.sessions.filter((session) => session.tokenHash !== tokenHash && Date.parse(session.expiresAt) > now.getTime());
+    state.sessions.push({ tokenHash, userId, expiresAt, createdAt: now.toISOString() });
+  }); }
+  async getSession(tokenHash: string, now: Date): Promise<{ user: AccountUser; expiresAt: string } | null> {
+    // A live session is a pure read; only an expired one triggers a write (its deletion).
+    const found = await this.read((state) => {
+      const session = state.sessions.find((item) => item.tokenHash === tokenHash);
+      if (!session) return { value: null, expired: false };
+      if (Date.parse(session.expiresAt) <= now.getTime()) return { value: null, expired: true };
+      const user = state.users.find((item) => item.id === session.userId);
+      return { value: user ? { user: clone(user), expiresAt: session.expiresAt } : null, expired: false };
+    });
+    if (found.expired) await this.deleteSession(tokenHash);
+    return found.value;
+  }
+  async deleteSession(tokenHash: string): Promise<void> { await this.mutate((state) => { state.sessions = state.sessions.filter((session) => session.tokenHash !== tokenHash); }); }
+  async mergeClients(fromClientId: string, intoClientId: string): Promise<void> { await this.mutate((state) => {
+    if (fromClientId === intoClientId) return;
+    const source = state.clients[fromClientId];
+    if (!source || (!source.wordbooks.length && !source.events.length && !source.drafts.length && !source.favorites.length)) return;
+    const target = this.client(state, intoClientId);
+    const incoming = clone(source);
+    // A migrated/crafted data file can contain ids that already exist in the account
+    // home. Remap only colliding ids and rewrite every dependent reference.
+    const usedBookIds = new Set(target.wordbooks.map((book) => book.id));
+    const usedWordIds = new Set(target.wordbooks.flatMap((book) => book.words.map((word) => word.id)));
+    const usedEventIds = new Set(target.events.map((event) => event.id));
+    const usedDraftIds = new Set(target.drafts.map((draft) => draft.id));
+    const usedDraftEntryIds = new Set(target.drafts.flatMap((draft) => draft.entries.map((entry) => entry.id)));
+    const bookIds = new Map<string, string>();
+    const wordIds = new Map<string, string>();
+    for (const book of incoming.wordbooks) {
+      const oldBookId = book.id;
+      if (usedBookIds.has(book.id)) book.id = `my-${randomUUID()}`;
+      usedBookIds.add(book.id);
+      bookIds.set(oldBookId, book.id);
+      for (const word of book.words) {
+        const oldWordId = word.id;
+        if (usedWordIds.has(word.id)) word.id = randomUUID();
+        usedWordIds.add(word.id);
+        wordIds.set(`${oldBookId}:${oldWordId}`, word.id);
+      }
+    }
+    for (const event of incoming.events) {
+      const oldBookId = event.wordbookId;
+      event.wordbookId = bookIds.get(oldBookId) ?? oldBookId;
+      event.wordId = wordIds.get(`${oldBookId}:${event.wordId}`) ?? event.wordId;
+      if (usedEventIds.has(event.id)) event.id = randomUUID();
+      usedEventIds.add(event.id);
+    }
+    for (const draft of incoming.drafts) {
+      if (usedDraftIds.has(draft.id)) draft.id = `draft-${randomUUID()}`;
+      usedDraftIds.add(draft.id);
+      if (draft.targetWordbookId) draft.targetWordbookId = bookIds.get(draft.targetWordbookId) ?? draft.targetWordbookId;
+      for (const entry of draft.entries) {
+        if (usedDraftEntryIds.has(entry.id)) entry.id = randomUUID();
+        usedDraftEntryIds.add(entry.id);
+      }
+    }
+    target.wordbooks.push(...incoming.wordbooks);
+    target.events.push(...incoming.events);
+    target.drafts.push(...incoming.drafts);
+    target.favorites = [...new Set([...target.favorites, ...source.favorites])];
+    // Owned catalog listings follow the merged client home; author attribution is untouched.
+    for (const book of state.catalog) if (book.ownerClientId === fromClientId) {
+      book.ownerClientId = intoClientId;
+      if (book.sourceWordbookId) book.sourceWordbookId = bookIds.get(book.sourceWordbookId) ?? book.sourceWordbookId;
+    }
+    // The now-empty source home is retired so a repeat merge is a no-op.
+    delete state.clients[fromClientId];
+  }); }
+
+  // --- Catalog & marketplace ---
   async listCatalog(clientId: string, query: CatalogQuery): Promise<CatalogCard[]> { return await this.read((state) => {
     const client = this.clientView(state, clientId); const q = query.q?.toLowerCase();
-    const books = state.catalog.filter((book) => (!q || `${book.title} ${book.description} ${book.author}`.toLowerCase().includes(q)) && (!query.exam || book.exams.includes(query.exam)) && (!query.goal || book.goals.includes(query.goal)));
+    // The public marketplace lists public entries only; unlisted/private stay off the shelves.
+    const books = state.catalog.filter((book) => book.visibility === "public" && (!q || `${book.title} ${book.description} ${book.author}`.toLowerCase().includes(q)) && (!query.exam || book.exams.includes(query.exam)) && (!query.goal || book.goals.includes(query.goal)));
     const ordered = [...books].sort((a, b) => query.sort === "hot" ? b.uses - a.uses : query.sort === "newest" ? b.createdAt.localeCompare(a.createdAt) : query.sort === "rating" ? b.rating - a.rating : b.uses - a.uses);
-    return ordered.map((book) => this.catalogCard(book, client, clientId));
+    return ordered.map((book) => catalogCard(book, client, clientId));
   }); }
-  async listFavorites(clientId: string): Promise<CatalogCard[]> { return await this.read((state) => { const client = this.clientView(state, clientId); return state.catalog.filter((book) => client.favorites.includes(book.id)).map((book) => this.catalogCard(book, client, clientId)); }); }
-  async listUploads(clientId: string): Promise<CatalogCard[]> { return await this.read((state) => { const client = this.clientView(state, clientId); return state.catalog.filter((book) => book.ownerClientId === clientId).map((book) => this.catalogCard(book, client, clientId)); }); }
-  async getCatalog(clientId: string, id: string): Promise<CatalogCard | null> { return await this.read((state) => { const found = state.catalog.find((book) => book.id === id); return found ? this.catalogCard(found, this.clientView(state, clientId), clientId) : null; }); }
+  async listFavorites(clientId: string): Promise<CatalogCard[]> { return await this.read((state) => {
+    const client = this.clientView(state, clientId);
+    // Keep an already-favorited unlisted entry manageable, while private remains owner-only.
+    return state.catalog.filter((book) => client.favorites.includes(book.id) && (book.visibility !== "private" || book.ownerClientId === clientId)).map((book) => catalogCard(book, client, clientId));
+  }); }
+  async listUploads(clientId: string): Promise<CatalogCard[]> { return await this.read((state) => { const client = this.clientView(state, clientId); return state.catalog.filter((book) => book.ownerClientId === clientId).map((book) => catalogCard(book, client, clientId)); }); }
+  async getCatalog(clientId: string, id: string): Promise<CatalogCard | null> { return await this.read((state) => { const found = state.catalog.find((book) => book.id === id); return found && visibleTo(found, clientId) ? catalogCard(found, this.clientView(state, clientId), clientId) : null; }); }
   async toggleFavorite(clientId: string, id: string): Promise<{ favorited: boolean } | null> { return await this.mutate((state) => {
-    if (!state.catalog.some((book) => book.id === id)) return null;
+    const book = state.catalog.find((item) => item.id === id);
     const client = this.client(state, clientId); const index = client.favorites.indexOf(id);
+    if (!book || (index < 0 && !visibleTo(book, clientId)) || (index >= 0 && book.visibility === "private" && book.ownerClientId !== clientId)) return null;
     if (index >= 0) { client.favorites.splice(index, 1); return { favorited: false }; }
     client.favorites.push(id); return { favorited: true };
   }); }
   async addCatalogToMine(clientId: string, id: string): Promise<{ wordbook: MyWordbookCard; created: boolean } | null> { return await this.mutate((state) => {
-    const source = state.catalog.find((book) => book.id === id); if (!source) return null;
+    const source = state.catalog.find((book) => book.id === id); if (!source || !visibleTo(source, clientId)) return null;
     const client = this.client(state, clientId); const existing = client.wordbooks.find((book) => !book.deletedAt && book.sourceCatalogId === id);
     if (existing) return { wordbook: card(existing, client.events), created: false };
     source.uses += 1; const at = this.now().toISOString();
@@ -205,11 +154,14 @@ abstract class BaseStore implements StudyStore {
       id: `catalog-${randomUUID()}`,
       title: input.title ?? source?.title ?? "",
       description: input.description ?? source?.description ?? "",
-      author: "我的词库", exams: input.exams ?? [], goals: input.goals ?? [], rating: 0, uses: 0, createdAt: now,
+      // An authenticated upload is attributed to its username; anonymous uploads read "匿名".
+      author: input.author?.username ?? "匿名", exams: input.exams ?? [], goals: input.goals ?? [], rating: 0, uses: 0, createdAt: now,
+      visibility: input.visibility ?? "public",
       shareCode: this.shareCode(state), words: source ? toCatalogWords(source.words) : clone(input.words ?? []), ownerClientId: clientId,
+      ...(input.author ? { authorUserId: input.author.userId } : {}),
       ...(source ? { sourceWordbookId: source.id } : {}),
     };
-    state.catalog.push(book); return this.catalogCard(book, client, clientId);
+    state.catalog.push(book); return catalogCard(book, client, clientId);
   }); }
   async updateCatalog(clientId: string, id: string, input: UpdateCatalogWordbookInput): Promise<CatalogCard | null> { return await this.mutate((state) => {
     const catalog = state.catalog.find((item) => item.id === id && item.ownerClientId === clientId); if (!catalog) return null;
@@ -222,9 +174,32 @@ abstract class BaseStore implements StudyStore {
     if (input.description !== undefined) catalog.description = input.description;
     if (input.exams !== undefined) catalog.exams = clone(input.exams);
     if (input.goals !== undefined) catalog.goals = clone(input.goals);
-    return this.catalogCard(catalog, client, clientId);
+    if (input.visibility !== undefined) catalog.visibility = input.visibility;
+    // Going public (or any authenticated edit) re-attributes the entry to the acting account.
+    if (input.author !== undefined) { catalog.author = input.author.username; catalog.authorUserId = input.author.userId; }
+    return catalogCard(catalog, client, clientId);
   }); }
-  async importShareCode(clientId: string, shareCode: string): Promise<{ wordbook: MyWordbookCard; created: boolean } | null> { return await this.read((state) => state.catalog.find((book) => book.shareCode === shareCode)?.id ?? null).then((id) => id ? this.addCatalogToMine(clientId, id) : null); }
+  async importShareCode(clientId: string, shareCode: string): Promise<{ wordbook: MyWordbookCard; created: boolean } | null> {
+    // This is intentionally one mutation instead of delegating to direct-id add:
+    // unlisted is valid here, and the lookup/use increment/copy must share one state snapshot.
+    return await this.mutate((state) => {
+      const source = state.catalog.find((book) => book.shareCode === shareCode && book.visibility !== "private");
+      if (!source) return null;
+      const client = this.client(state, clientId);
+      const existing = client.wordbooks.find((book) => !book.deletedAt && book.sourceCatalogId === source.id);
+      if (existing) return { wordbook: card(existing, client.events), created: false };
+      source.uses += 1;
+      const at = this.now().toISOString();
+      const book: MyWordbook = {
+        id: `my-${randomUUID()}`, title: source.title, description: source.description,
+        sourceCatalogId: source.id, createdAt: at, updatedAt: at, words: toWordbookWords(source.words, at),
+      };
+      client.wordbooks.push(book);
+      return { wordbook: card(book, client.events), created: true };
+    });
+  }
+
+  // --- Private collection ---
   async listMyWordbooks(clientId: string, trash: boolean): Promise<MyWordbookCard[]> { return await this.read((state) => { const client = this.clientView(state, clientId); return client.wordbooks.filter((book) => Boolean(book.deletedAt) === trash).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).map((book) => card(book, client.events)); }); }
   async createMyWordbook(clientId: string, input: CreateMyWordbookInput): Promise<MyWordbookCard> { return await this.mutate((state) => {
     const at = this.now().toISOString(); const client = this.client(state, clientId);
@@ -410,21 +385,23 @@ abstract class BaseStore implements StudyStore {
     const weekNew = count(weekEvents, "new"); const weekReview = count(weekEvents, "flashcard"); const weekDictation = count(weekEvents, "dictation");
     // The 结果 column shows the proficiency a word held right after each study action.
     const afterById = ladderEventLevels(events);
-    return { wordbook: card(book, events), todayPlan: { new: { target: Math.min(20, Math.max(completedNew, newAvailable)), completed: completedNew }, review: { target: Math.min(30, Math.max(completedReview, reviewAvailable)), completed: completedReview }, dictation: { target: Math.min(15, Math.max(completedDictation, dictationAvailable)), completed: completedDictation } }, recentActivity: clone([...events].sort((a, b) => b.occurredAt.localeCompare(a.occurredAt)).slice(0, 5)).map((event) => ({ ...event, levelAfter: afterById.get(event.id) ?? 0 as WordLevel })), calendar, week: { newCount: weekNew, reviewCount: weekReview, dictationCount: weekDictation, total: weekNew + weekReview + weekDictation }, streakDays: streak, finalCheckDue, updatedAt: book.updatedAt };
+    // Reverse first so equal-millisecond events retain newest-insertion-first
+    // ordering under JavaScript's stable sort.
+    return { wordbook: card(book, events), todayPlan: { new: { target: Math.min(20, Math.max(completedNew, newAvailable)), completed: completedNew }, review: { target: Math.min(30, Math.max(completedReview, reviewAvailable)), completed: completedReview }, dictation: { target: Math.min(15, Math.max(completedDictation, dictationAvailable)), completed: completedDictation } }, recentActivity: clone([...events].reverse().sort((a, b) => b.occurredAt.localeCompare(a.occurredAt)).slice(0, 5)).map((event) => ({ ...event, levelAfter: afterById.get(event.id) ?? 0 as WordLevel })), calendar, week: { newCount: weekNew, reviewCount: weekReview, dictationCount: weekDictation, total: weekNew + weekReview + weekDictation }, streakDays: streak, finalCheckDue, updatedAt: book.updatedAt };
   }); }
-  private catalogCard(book: CatalogWordbook, client?: ClientData, clientId?: string): CatalogCard {
-    const { words: _words, ownerClientId: _owner, sourceWordbookId: _source, ...rest } = book;
-    return { ...clone(rest), wordCount: book.words.length, favorited: client?.favorites.includes(book.id) ?? false, added: client?.wordbooks.some((item) => !item.deletedAt && item.sourceCatalogId === book.id) ?? false, uploaded: book.ownerClientId === clientId };
-  }
+
+  // --- Shared state plumbing ---
   private client(state: State, id: string): ClientData { return state.clients[id] ??= defaultClient(); }
   /** Read-only view: never inserts a client record, so GETs cannot grow the persisted state. */
   private clientView(state: State, id: string): ClientData { return state.clients[id] ?? defaultClient(); }
-  private shareCode(state: State): string { let code = ""; do { code = randomUUID().replace(/-/g, "").slice(0, 8).toUpperCase(); } while (state.catalog.some((book) => book.shareCode === code)); return code; }
+  /** 12 hexadecimal characters = 48 bits; legacy 6–8 character codes remain importable. */
+  private shareCode(state: State): string { let code = ""; do { code = randomUUID().replace(/-/g, "").slice(0, 24).toUpperCase(); } while (state.catalog.some((book) => book.shareCode === code)); return code; }
   private async read<T>(operation: (state: State) => T): Promise<T> { const task = this.queue.then(async () => operation(await this.state())); this.queue = task.then(() => undefined, () => undefined); return await task; }
   private async mutate<T>(operation: (state: State) => T): Promise<T> { const task = this.queue.then(async () => {
-    const draft = clone(await this.state());
+    const previous = await this.state();
+    const draft = clone(previous);
     const value = operation(draft);
-    await this.save(draft);
+    await this.save(draft, previous);
     this.statePromise = Promise.resolve(draft);
     return value;
   }); this.queue = task.then(() => undefined, () => undefined); return await task; }
@@ -437,10 +414,10 @@ abstract class BaseStore implements StudyStore {
     return await this.statePromise;
   }
 }
-export class InMemoryStudyStore extends BaseStore { constructor(options: { now?: () => Date } = {}) { super(options.now); } protected async load(): Promise<State> { return EMPTY(); } protected async save(_state: State): Promise<void> {} }
+export class InMemoryStudyStore extends BaseStore { constructor(options: { now?: () => Date } = {}) { super(options.now); } protected async load(): Promise<State> { return EMPTY(); } protected async save(_state: State, _previous?: State): Promise<void> {} }
 export class JsonFileStudyStore extends BaseStore {
   private readonly filePath: string;
   constructor(filePath: string, options: { now?: () => Date } = {}) { super(options.now); this.filePath = resolve(filePath); }
   protected async load(): Promise<State> { try { return migrate(JSON.parse(await readFile(this.filePath, "utf8")) as unknown); } catch (error) { if (isJsonObject(error) && error.code === "ENOENT") return EMPTY(); throw error; } }
-  protected async save(state: State): Promise<void> { await mkdir(dirname(this.filePath), { recursive: true }); const temp = `${this.filePath}.${process.pid}.${randomUUID()}.tmp`; try { await writeFile(temp, `${JSON.stringify(state, null, 2)}\n`, "utf8"); await rename(temp, this.filePath); } catch (error) { await rm(temp, { force: true }).catch(() => undefined); throw error; } }
+  protected async save(state: State, _previous?: State): Promise<void> { await mkdir(dirname(this.filePath), { recursive: true }); const temp = `${this.filePath}.${process.pid}.${randomUUID()}.tmp`; try { await writeFile(temp, `${JSON.stringify(state, null, 2)}\n`, "utf8"); await rename(temp, this.filePath); } catch (error) { await rm(temp, { force: true }).catch(() => undefined); throw error; } }
 }

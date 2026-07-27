@@ -7,7 +7,7 @@ services:
       - "3000:3000"
     restart: unless-stopped
     volumes:
-      # Persist anonymous catalog, wordbooks, and study events across restarts.
+      # Persist SQLite accounts, sessions, catalog, wordbooks, and study events.
       - vacab-data:/app/backend/data
     environment:
       # The image already sets NODE_ENV=production, PORT=3000 and
@@ -21,8 +21,11 @@ services:
       # requests (served frontend) need no entry here.
       # - FRONTEND_ORIGIN=https://vocab.example.com
       #
-      # Override the persistent state file location (relative to /app/backend).
-      # Keep it inside the mounted volume so data survives container recreation.
+      # Override the SQLite path (relative to /app/backend). Keep it inside the
+      # mounted volume so data survives container recreation.
+      # - DATABASE_FILE=./data/study-state.sqlite
+      #
+      # Optional legacy JSON source imported once when the SQLite database is empty.
       # - DATA_FILE=./data/study-state.json
 
 volumes:

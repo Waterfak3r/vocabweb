@@ -49,6 +49,52 @@ export function getStudyClientId() {
   }
 }
 
+/**
+ * Persist the account's data client id after register/login, replacing the
+ * anonymous one so every consumer re-reads under the account's data home once
+ * the page reloads. Shares CLIENT_ID_KEY with getStudyClientId — do not fork it.
+ */
+export function setStudyClientId(value: string) {
+  const clientId = value.trim()
+  if (!clientId) return
+  try {
+    window.localStorage.setItem(CLIENT_ID_KEY, clientId)
+  } catch {
+    // Privacy-mode storage can fail; without persistence the header id simply
+    // reverts to a fresh anonymous id on the next read, which is acceptable.
+  }
+}
+
+/**
+ * Starts a genuinely separate anonymous data home after a confirmed logout.
+ *
+ * Account sessions are the authorization boundary. This identifier remains only
+ * a compatibility/data-partition hint for anonymous APIs and must never be
+ * treated as proof of identity.
+ */
+export function rotateStudyClientId() {
+  let previous = ''
+  try {
+    previous = window.localStorage.getItem(CLIENT_ID_KEY)?.trim() ?? ''
+  } catch {
+    // A fresh in-memory value is still preferable when storage is unavailable.
+  }
+
+  let clientId = newClientId()
+  if (clientId === previous) clientId = newClientId()
+  if (clientId === previous) {
+    const fallback = `client-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+    clientId = fallback === previous ? `${fallback}-new` : fallback
+  }
+
+  try {
+    window.localStorage.setItem(CLIENT_ID_KEY, clientId)
+  } catch {
+    // The caller can still use the returned value for this page lifetime.
+  }
+  return clientId
+}
+
 function countItemsAddedToday(items: readonly WordbookItem[]) {
   const today = new Date()
   today.setHours(0, 0, 0, 0)

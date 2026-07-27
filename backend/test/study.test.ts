@@ -23,6 +23,17 @@ async function server(options: Omit<CreateAppOptions, "studyStore"> = {}) {
   };
 }
 
+async function register(baseUrl: string, clientId = CLIENT, username = "tester") {
+  const response = await fetch(`${baseUrl}/api/auth/register`, {
+    method: "POST",
+    headers: { "x-vocab-client-id": clientId, "content-type": "application/json" },
+    body: JSON.stringify({ username, password: "password-123" }),
+  });
+  assert.equal(response.status, 201);
+  const cookie = response.headers.get("set-cookie")!.split(";")[0]!;
+  return { "x-vocab-client-id": clientId, "content-type": "application/json", cookie };
+}
+
 test("new clients start with an empty collection and catalog; uploaded wordbooks remain usable", async () => {
   const app = await server();
   try {
@@ -41,9 +52,10 @@ test("new clients start with an empty collection and catalog; uploaded wordbooks
     const mineBeforeImport = await fetch(`${app.baseUrl}/api/my/wordbooks`, { headers });
     assert.deepEqual(await mineBeforeImport.json(), []);
 
+    const accountHeaders = await register(app.baseUrl);
     const upload = await fetch(`${app.baseUrl}/api/catalog/uploads`, {
       method: "POST",
-      headers,
+      headers: accountHeaders,
       body: JSON.stringify({
         title: "自定义雅思词库",
         exams: ["IELTS"],
@@ -60,23 +72,23 @@ test("new clients start with an empty collection and catalog; uploaded wordbooks
     assert.equal(uploaded.uploaded, true);
     const id = uploaded.id;
 
-    const filteredCatalog = await fetch(`${app.baseUrl}/api/catalog/wordbooks?exam=IELTS`, { headers });
+    const filteredCatalog = await fetch(`${app.baseUrl}/api/catalog/wordbooks?exam=IELTS`, { headers: accountHeaders });
     assert.deepEqual((await filteredCatalog.json() as Array<{ id: string }>).map((card) => card.id), [id]);
 
-    const favorite = await fetch(`${app.baseUrl}/api/catalog/wordbooks/${id}/favorite`, { method: "POST", headers });
+    const favorite = await fetch(`${app.baseUrl}/api/catalog/wordbooks/${id}/favorite`, { method: "POST", headers: accountHeaders });
     assert.deepEqual(await favorite.json(), { favorited: true });
-    const favoriteAgain = await fetch(`${app.baseUrl}/api/catalog/wordbooks/${id}/favorite`, { method: "POST", headers });
+    const favoriteAgain = await fetch(`${app.baseUrl}/api/catalog/wordbooks/${id}/favorite`, { method: "POST", headers: accountHeaders });
     assert.deepEqual(await favoriteAgain.json(), { favorited: false });
-    const added = await fetch(`${app.baseUrl}/api/catalog/wordbooks/${id}/add`, { method: "POST", headers });
+    const added = await fetch(`${app.baseUrl}/api/catalog/wordbooks/${id}/add`, { method: "POST", headers: accountHeaders });
     assert.equal(added.status, 201);
     const first = await added.json() as { wordbook: { id: string; wordCount: number }; created: boolean };
     assert.equal(first.created, true);
     assert.equal(first.wordbook.wordCount, 2);
-    const repeated = await fetch(`${app.baseUrl}/api/catalog/wordbooks/${id}/add`, { method: "POST", headers });
+    const repeated = await fetch(`${app.baseUrl}/api/catalog/wordbooks/${id}/add`, { method: "POST", headers: accountHeaders });
     assert.equal(repeated.status, 200);
     assert.equal((await repeated.json() as { created: boolean }).created, false);
 
-    const mine = await fetch(`${app.baseUrl}/api/my/wordbooks`, { headers });
+    const mine = await fetch(`${app.baseUrl}/api/my/wordbooks`, { headers: accountHeaders });
     assert.equal((await mine.json() as unknown[]).length, 1);
     const isolated = await fetch(`${app.baseUrl}/api/my/wordbooks`, { headers: { "x-vocab-client-id": OTHER_CLIENT } });
     assert.deepEqual(await isolated.json(), []);
@@ -155,6 +167,7 @@ test("study events drive queues and the selected-wordbook dashboard", async () =
       headers,
       body: JSON.stringify({
         title: "练习词库",
+        visibility: "unlisted",
         words: [
           { word: "resilient", phonetic: "/rɪˈzɪliənt/", source: "user", meanings: [{ pos: "adjective", definition: "Able to recover quickly." }] },
           { word: "empirical", phonetic: "/ɪmˈpɪrɪkəl/", source: "user", meanings: [{ pos: "adjective", definition: "Based on observation." }] },
@@ -190,7 +203,7 @@ test("study events drive queues and the selected-wordbook dashboard", async () =
 test("upload, share-code import, recycle bin, and restore form a usable collection loop", async () => {
   const app = await server();
   try {
-    const upload = await fetch(`${app.baseUrl}/api/catalog/uploads`, { method: "POST", headers, body: JSON.stringify({ title: "我的学术词库", description: "自定义", exams: ["IELTS"], goals: ["写作"], words: [{ word: "coherent", phonetic: "", source: "user", meanings: [{ pos: "adjective", definition: "Logical and consistent." }] }] }) });
+    const upload = await fetch(`${app.baseUrl}/api/catalog/uploads`, { method: "POST", headers, body: JSON.stringify({ title: "我的学术词库", description: "自定义", exams: ["IELTS"], goals: ["写作"], visibility: "unlisted", words: [{ word: "coherent", phonetic: "", source: "user", meanings: [{ pos: "adjective", definition: "Logical and consistent." }] }] }) });
     assert.equal(upload.status, 201);
     const catalog = await upload.json() as { shareCode: string; id: string; uploaded: boolean };
     assert.equal(catalog.uploaded, true);
@@ -369,38 +382,39 @@ test("draft conflicts, word edits, and catalog publishing keep stable learner da
   const lookedUp: string[] = [];
   const app = await server({ wordLookup: { async lookup(word) { lookedUp.push(word); return dictionaryEntry(word); } } });
   try {
-    const create = await fetch(`${app.baseUrl}/api/my/wordbooks`, { method: "POST", headers, body: JSON.stringify({ title: "私有词本", words: [dictionaryEntry("resilient")] }) });
+    const accountHeaders = await register(app.baseUrl);
+    const create = await fetch(`${app.baseUrl}/api/my/wordbooks`, { method: "POST", headers: accountHeaders, body: JSON.stringify({ title: "私有词本", words: [dictionaryEntry("resilient")] }) });
     const privateBook = await create.json() as { id: string };
-    const conflict = await fetch(`${app.baseUrl}/api/my/import-drafts`, { method: "POST", headers, body: JSON.stringify({ title: "不会新建", targetWordbookId: privateBook.id, lines: [{ line: 1, word: "resilient", zhMeaning: "有韧性" }] }) });
+    const conflict = await fetch(`${app.baseUrl}/api/my/import-drafts`, { method: "POST", headers: accountHeaders, body: JSON.stringify({ title: "不会新建", targetWordbookId: privateBook.id, lines: [{ line: 1, word: "resilient", zhMeaning: "有韧性" }] }) });
     const draft = await conflict.json() as { id: string; entries: Array<{ id: string; status: string }> };
     assert.equal(draft.entries[0]!.status, "conflict");
-    const merged = await fetch(`${app.baseUrl}/api/my/import-drafts/${draft.id}/commit`, { method: "POST", headers, body: JSON.stringify({ resolutions: { [draft.entries[0]!.id]: "merge" } }) });
+    const merged = await fetch(`${app.baseUrl}/api/my/import-drafts/${draft.id}/commit`, { method: "POST", headers: accountHeaders, body: JSON.stringify({ resolutions: { [draft.entries[0]!.id]: "merge" } }) });
     assert.equal(merged.status, 200);
-    let words = await (await fetch(`${app.baseUrl}/api/my/wordbooks/${privateBook.id}/words`, { headers })).json() as Array<{ id: string; word: string; zhMeaning?: string; status: string }>;
+    let words = await (await fetch(`${app.baseUrl}/api/my/wordbooks/${privateBook.id}/words`, { headers: accountHeaders })).json() as Array<{ id: string; word: string; zhMeaning?: string; status: string }>;
     const initial = words[0]!;
     assert.equal(initial.zhMeaning, "有韧性");
-    const event = await fetch(`${app.baseUrl}/api/study/events`, { method: "POST", headers, body: JSON.stringify({ kind: "flashcard", wordbookId: privateBook.id, wordId: initial.id, verdict: "know" }) });
+    const event = await fetch(`${app.baseUrl}/api/study/events`, { method: "POST", headers: accountHeaders, body: JSON.stringify({ kind: "flashcard", wordbookId: privateBook.id, wordId: initial.id, verdict: "know" }) });
     assert.equal(event.status, 201);
-    const renamed = await fetch(`${app.baseUrl}/api/my/wordbooks/${privateBook.id}/words/${initial.id}`, { method: "PATCH", headers, body: JSON.stringify({ word: "durable" }) });
+    const renamed = await fetch(`${app.baseUrl}/api/my/wordbooks/${privateBook.id}/words/${initial.id}`, { method: "PATCH", headers: accountHeaders, body: JSON.stringify({ word: "durable" }) });
     assert.equal(renamed.status, 200);
     assert.deepEqual((await renamed.json() as { id: string; word: string }).id, initial.id);
     // One flashcard "know" leaves the word at 初识 (L1 -> legacy status "learning"); the rename keeps its id and replayed level.
-    const learningWords = await (await fetch(`${app.baseUrl}/api/my/wordbooks/${privateBook.id}/words?status=learning`, { headers })).json() as Array<{ word: string; level: number }>;
+    const learningWords = await (await fetch(`${app.baseUrl}/api/my/wordbooks/${privateBook.id}/words?status=learning`, { headers: accountHeaders })).json() as Array<{ word: string; level: number }>;
     assert.deepEqual(learningWords.map((word) => word.word), ["durable"]);
     assert.equal(learningWords[0]!.level, 1);
     assert.ok(lookedUp.includes("durable"));
 
-    const published = await fetch(`${app.baseUrl}/api/catalog/uploads`, { method: "POST", headers, body: JSON.stringify({ sourceWordbookId: privateBook.id, title: "社区快照" }) });
+    const published = await fetch(`${app.baseUrl}/api/catalog/uploads`, { method: "POST", headers: accountHeaders, body: JSON.stringify({ sourceWordbookId: privateBook.id, title: "社区快照" }) });
     const catalog = await published.json() as { id: string };
     assert.equal(published.status, 201);
-    const changed = await fetch(`${app.baseUrl}/api/my/wordbooks/${privateBook.id}/words/${initial.id}`, { method: "PATCH", headers, body: JSON.stringify({ zhMeaning: "之后的私有修改" }) });
+    const changed = await fetch(`${app.baseUrl}/api/my/wordbooks/${privateBook.id}/words/${initial.id}`, { method: "PATCH", headers: accountHeaders, body: JSON.stringify({ zhMeaning: "之后的私有修改" }) });
     assert.equal(changed.status, 200);
     const otherHeaders = { ...headers, "x-vocab-client-id": OTHER_CLIENT };
     const oldCopy = await fetch(`${app.baseUrl}/api/catalog/wordbooks/${catalog.id}/add`, { method: "POST", headers: otherHeaders });
     const oldBook = (await oldCopy.json() as { wordbook: { id: string } }).wordbook;
     const oldWords = await (await fetch(`${app.baseUrl}/api/my/wordbooks/${oldBook.id}/words`, { headers: otherHeaders })).json() as Array<{ zhMeaning?: string }>;
     assert.equal(oldWords[0]!.zhMeaning, "有韧性");
-    const refreshed = await fetch(`${app.baseUrl}/api/catalog/wordbooks/${catalog.id}`, { method: "PATCH", headers, body: JSON.stringify({ sourceWordbookId: privateBook.id }) });
+    const refreshed = await fetch(`${app.baseUrl}/api/catalog/wordbooks/${catalog.id}`, { method: "PATCH", headers: accountHeaders, body: JSON.stringify({ sourceWordbookId: privateBook.id }) });
     assert.equal(refreshed.status, 200);
     const thirdHeaders = { ...headers, "x-vocab-client-id": "client-00000000" };
     const freshCopy = await fetch(`${app.baseUrl}/api/catalog/wordbooks/${catalog.id}/add`, { method: "POST", headers: thirdHeaders });
@@ -518,8 +532,9 @@ test("purgeMyWordbook removes the book and its events at the store level", async
 test("deleting a catalog upload is owner-only and clears every client's favorite of it", async () => {
   const app = await server();
   try {
+    const accountHeaders = await register(app.baseUrl);
     const otherHeaders = { ...headers, "x-vocab-client-id": OTHER_CLIENT };
-    const upload = await fetch(`${app.baseUrl}/api/catalog/uploads`, { method: "POST", headers, body: JSON.stringify({ title: "可删上传", exams: ["IELTS"], goals: ["写作"], words: [{ word: "coherent", phonetic: "", source: "user", meanings: [{ pos: "adjective", definition: "Logical and consistent." }] }] }) });
+    const upload = await fetch(`${app.baseUrl}/api/catalog/uploads`, { method: "POST", headers: accountHeaders, body: JSON.stringify({ title: "可删上传", exams: ["IELTS"], goals: ["写作"], words: [{ word: "coherent", phonetic: "", source: "user", meanings: [{ pos: "adjective", definition: "Logical and consistent." }] }] }) });
     const catalog = await upload.json() as { id: string };
     // Another client favorites the listing and makes an independent copy of it.
     await fetch(`${app.baseUrl}/api/catalog/wordbooks/${catalog.id}/favorite`, { method: "POST", headers: otherHeaders });
@@ -531,12 +546,12 @@ test("deleting a catalog upload is owner-only and clears every client's favorite
     assert.equal((await fetch(`${app.baseUrl}/api/catalog/wordbooks/${catalog.id}`, { method: "DELETE", headers: otherHeaders })).status, 404);
 
     // The owner deletes it: gone from the catalog and from the other client's favorites.
-    assert.equal((await fetch(`${app.baseUrl}/api/catalog/wordbooks/${catalog.id}`, { method: "DELETE", headers })).status, 204);
-    assert.equal((await fetch(`${app.baseUrl}/api/catalog/wordbooks/${catalog.id}`, { headers })).status, 404);
+    assert.equal((await fetch(`${app.baseUrl}/api/catalog/wordbooks/${catalog.id}`, { method: "DELETE", headers: accountHeaders })).status, 204);
+    assert.equal((await fetch(`${app.baseUrl}/api/catalog/wordbooks/${catalog.id}`, { headers: accountHeaders })).status, 404);
     assert.deepEqual(await (await fetch(`${app.baseUrl}/api/catalog/favorites`, { headers: otherHeaders })).json(), []);
     // The independent copy the other client added survives; a second delete is a 404.
     assert.equal((await fetch(`${app.baseUrl}/api/my/wordbooks/${copiedBook.id}`, { headers: otherHeaders })).status, 200);
-    assert.equal((await fetch(`${app.baseUrl}/api/catalog/wordbooks/${catalog.id}`, { method: "DELETE", headers })).status, 404);
+    assert.equal((await fetch(`${app.baseUrl}/api/catalog/wordbooks/${catalog.id}`, { method: "DELETE", headers: accountHeaders })).status, 404);
   } finally { await app.close(); }
 });
 

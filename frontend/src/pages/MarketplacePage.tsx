@@ -2,7 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type 
 import { Link } from 'react-router-dom'
 import {
   getWorkspaceApi,
+  WorkspaceApiError,
+  type AuthUser,
   type CatalogExam,
+  type CatalogQuery,
+  type CatalogVisibility,
   type CatalogWordbook,
   type LearningGoal,
   type MyWordbook,
@@ -11,7 +15,7 @@ import { useDocumentTitle } from '../hooks/useDocumentTitle'
 
 type IconName = 'search' | 'filter' | 'plus' | 'share' | 'grid' | 'list' | 'book' | 'star' | 'people' | 'heart' | 'cloud' | 'refresh'
 type CoverTone = 'blue' | 'amber' | 'green' | 'lavender' | 'rose' | 'slate'
-type MarketplaceBook = {
+export type MarketplaceBook = {
   id: string
   title: string
   description: string
@@ -24,6 +28,11 @@ type MarketplaceBook = {
   tone: CoverTone
   shortLabel: string
   uploaded: boolean
+  added: boolean
+  shareCode: string
+  visibility?: CatalogVisibility
+  exams: string[]
+  goals: string[]
 }
 type PublishStep = 'details' | 'preview'
 type PublishForm = {
@@ -32,6 +41,7 @@ type PublishForm = {
   description: string
   exam: string
   goal: string
+  visibility: CatalogVisibility
 }
 type PublishCatalogInput = {
   sourceWordbookId: string
@@ -39,6 +49,7 @@ type PublishCatalogInput = {
   description: string
   exams: string[]
   goals: string[]
+  visibility: CatalogVisibility
 }
 type PublishingWorkspaceApi = {
   updateCatalogSnapshot?: (catalogId: string, input: PublishCatalogInput) => Promise<unknown>
@@ -47,7 +58,23 @@ type PublishingWorkspaceApi = {
 const MARKETPLACE_CATEGORIES = ['全部', 'IELTS', 'TOEFL', 'GRE', '高考', '四六级', '考研', '写作', '阅读', '听力', '口语']
 const PUBLISH_EXAMS = ['IELTS', 'TOEFL', 'GRE', '高考', '四六级', '考研']
 const PUBLISH_GOALS = ['写作', '阅读', '听力', '口语']
-const EMPTY_PUBLISH_FORM: PublishForm = { sourceWordbookId: '', title: '', description: '', exam: '', goal: '' }
+const EMPTY_PUBLISH_FORM: PublishForm = { sourceWordbookId: '', title: '', description: '', exam: '', goal: '', visibility: 'public' }
+const VISIBILITY_OPTIONS: Array<{ value: CatalogVisibility; label: string; hint: string }> = [
+  { value: 'public', label: '公开', hint: '所有人可在广场看到' },
+  { value: 'unlisted', label: '邀请码', hint: '不进列表，凭分享码导入' },
+  { value: 'private', label: '私密', hint: '仅自己可见' },
+]
+const VISIBILITY_LABELS: Record<CatalogVisibility, string> = { public: '公开', unlisted: '邀请码', private: '私密' }
+const PUBLIC_LOGIN_HINT = '公开上传需要登录账号'
+const MODAL_FOCUSABLE = 'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [href], [tabindex]:not([tabindex="-1"])'
+
+// Prefer the structured API status; retain the message fallback for older
+// injected repositories used by tests and local integrations.
+function isAuthRequiredError(error: unknown): boolean {
+  return error instanceof WorkspaceApiError
+    ? error.status === 401
+    : error instanceof Error && (error.message.includes('(401)') || error.message.includes('AUTH_REQUIRED_FOR_PUBLIC'))
+}
 
 const MARKETPLACE_ICON_PATHS: Record<IconName, ReactNode> = {
   search: <><circle cx="10.5" cy="10.5" r="5.75" /><path d="m15 15 4.25 4.25" /></>,
@@ -72,7 +99,7 @@ function BookCover({ tone, label }: { tone: CoverTone; label: string }) {
   return <div className={`book-cover cover-${tone}`} aria-hidden="true"><span>{label}</span><i /></div>
 }
 
-function catalogToMarketplace(book: CatalogWordbook, index: number): MarketplaceBook {
+export function catalogToMarketplace(book: CatalogWordbook, index: number): MarketplaceBook {
   const tones: CoverTone[] = ['blue', 'amber', 'green', 'rose', 'lavender', 'slate']
   const category = book.goals[0] ?? book.exams[0] ?? '全部'
   return {
@@ -88,7 +115,43 @@ function catalogToMarketplace(book: CatalogWordbook, index: number): Marketplace
     tone: tones[index % tones.length],
     shortLabel: (book.exams[0] ?? book.title.slice(0, 5)).toUpperCase(),
     uploaded: book.uploaded,
+    added: book.added,
+    shareCode: book.shareCode,
+    visibility: book.visibility,
+    exams: book.exams,
+    goals: book.goals,
   }
+}
+
+export function marketplaceCatalogQuery(
+  examFilters: readonly string[],
+  goalFilters: readonly string[],
+  sort: 'popular' | 'latest' | 'rating',
+): CatalogQuery {
+  return {
+    // A single filter can be narrowed server-side. With multiple selections the
+    // UI means OR, so fetch the full shelf and apply the OR locally.
+    ...(examFilters.length === 1 ? { exam: examFilters[0] as CatalogExam } : {}),
+    ...(goalFilters.length === 1 ? { goal: goalFilters[0] as LearningGoal } : {}),
+    sort: sort === 'popular' ? 'hot' : sort === 'latest' ? 'newest' : 'rating',
+  }
+}
+
+export function filterMarketplaceBooks(
+  books: readonly MarketplaceBook[],
+  query: string,
+  activeCategory: string,
+  examFilters: readonly string[],
+  goalFilters: readonly string[],
+): MarketplaceBook[] {
+  const normalized = query.trim().toLowerCase()
+  return books.filter((book) => {
+    const matchQuery = !normalized || [book.title, book.description, book.author, ...book.exams, ...book.goals].join(' ').toLowerCase().includes(normalized)
+    const matchCategory = activeCategory === '全部' || book.exams.includes(activeCategory) || book.goals.includes(activeCategory)
+    const matchExam = examFilters.length === 0 || examFilters.some((exam) => book.exams.includes(exam))
+    const matchGoal = goalFilters.length === 0 || goalFilters.some((goal) => book.goals.includes(goal))
+    return matchQuery && matchCategory && matchExam && matchGoal
+  })
 }
 
 function Toggle({ checked, onChange, label }: { checked: boolean; onChange: () => void; label: string }) {
@@ -110,10 +173,22 @@ export function MarketplacePage() {
   const [publishTarget, setPublishTarget] = useState<CatalogWordbook | null>(null)
   const [publishLoading, setPublishLoading] = useState(false)
   const [publishError, setPublishError] = useState('')
+  // null = anonymous; refreshed with the catalog so visibility controls agree
+  // with the header even before the publish dialog has been opened.
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null)
+  const isLoggedIn = authUser !== null
   const api = getWorkspaceApi()
   const [remoteCatalog, setRemoteCatalog] = useState<CatalogWordbook[] | null>(null)
+  // Owner's uploads across every visibility (public catalog omits unlisted/private);
+  // null means the endpoint was unavailable and we fall back to the public list.
+  const [uploadsCatalog, setUploadsCatalog] = useState<CatalogWordbook[] | null>(null)
+  const [favoritesCatalog, setFavoritesCatalog] = useState<CatalogWordbook[] | null>(null)
+  const [visibilityUpdatingIds, setVisibilityUpdatingIds] = useState<Set<string>>(() => new Set())
   const [syncMessage, setSyncMessage] = useState('')
   const [loadError, setLoadError] = useState('')
+  const publishReturnFocusRef = useRef<HTMLElement | null>(null)
+  const publishLoadingRef = useRef(publishLoading)
+  publishLoadingRef.current = publishLoading
 
   // Sequence counter drops out-of-order responses when filters change quickly.
   const refreshSeq = useRef(0)
@@ -122,48 +197,95 @@ export function MarketplacePage() {
   const refreshRemote = useCallback(async () => {
     if (!api) {
       setRemoteCatalog([])
+      setUploadsCatalog([])
+      setFavoritesCatalog([])
       setLoadError('未配置后端地址，无法读取单词广场。')
       return
     }
     const seq = ++refreshSeq.current
     try {
-      const catalog = await api.listCatalog({
-        exam: examFilters[0] as CatalogExam | undefined,
-        goal: goalFilters[0] as LearningGoal | undefined,
-        sort: sort === 'popular' ? 'hot' : sort === 'latest' ? 'newest' : 'rating',
-      })
+      const [catalog, uploads, favorites, user] = await Promise.all([
+        api.listCatalog(marketplaceCatalogQuery(examFilters, goalFilters, sort)),
+        // The 我的上传 rail needs every own visibility; a missing/erroring endpoint
+        // (older server) yields null and the rail falls back to the public list.
+        api.listUploads().catch(() => null),
+        // Favorites need their dedicated feed: an item can remain favorited after
+        // its owner changes it from public to unlisted.
+        api.listFavorites().catch(() => null),
+        api.me().catch(() => null),
+      ])
       if (seq !== refreshSeq.current) return
       setRemoteCatalog(catalog)
+      setUploadsCatalog(uploads)
+      setFavoritesCatalog(favorites)
+      setAuthUser(user)
       setLoadError('')
     } catch {
       if (seq !== refreshSeq.current) return
       setRemoteCatalog([])
+      setUploadsCatalog([])
+      setFavoritesCatalog([])
       setLoadError('单词广场加载失败，请确认后端服务可用后重试。')
     }
   }, [api, examFilters, goalFilters, sort])
 
   useEffect(() => { void refreshRemote() }, [refreshRemote])
 
+  useEffect(() => {
+    if (!showPublish) return
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    const dialog = () => document.querySelector<HTMLElement>('.market-publish-modal')
+    requestAnimationFrame(() => dialog()?.querySelector<HTMLElement>(MODAL_FOCUSABLE)?.focus())
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        if (!publishLoadingRef.current) {
+          setShowPublish(false)
+          setPublishError('')
+        }
+        return
+      }
+      if (event.key !== 'Tab') return
+      const focusable = Array.from(dialog()?.querySelectorAll<HTMLElement>(MODAL_FOCUSABLE) ?? [])
+      if (!focusable.length) return
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault()
+        last?.focus()
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault()
+        first?.focus()
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.body.style.overflow = previousOverflow
+      window.removeEventListener('keydown', handleKeyDown)
+      publishReturnFocusRef.current?.focus()
+    }
+  }, [showPublish])
+
   const books = useMemo(() => (remoteCatalog ?? []).map(catalogToMarketplace), [remoteCatalog])
-  const filtered = useMemo(() => {
-    const normalized = query.trim().toLowerCase()
-    const result = books.filter((book) => {
-      const matchQuery = !normalized || [book.title, book.description, book.author, book.category].join(' ').toLowerCase().includes(normalized)
-      const matchCategory = activeCategory === '全部' || book.category === activeCategory || book.exam === activeCategory
-      const matchExam = examFilters.length === 0 || examFilters.includes(book.exam)
-      const matchGoal = goalFilters.length === 0 || goalFilters.includes(book.category)
-      return matchQuery && matchCategory && matchExam && matchGoal
-    })
-    return result.sort((a, b) => {
-      if (sort === 'rating') return b.rating - a.rating
-      if (sort === 'latest') return 0
-      return b.wordCount - a.wordCount
-    })
-  }, [activeCategory, books, examFilters, goalFilters, query, sort])
+  // Preserve the server's hot/newest/rating order; filtering must never replace
+  // "热门" with an unrelated word-count ordering.
+  const filtered = useMemo(
+    () => filterMarketplaceBooks(books, query, activeCategory, examFilters, goalFilters),
+    [activeCategory, books, examFilters, goalFilters, query],
+  )
   const hasActiveFilters = Boolean(query.trim() || activeCategory !== '全部' || examFilters.length || goalFilters.length)
-  const favoriteIds = useMemo(() => new Set(remoteCatalog?.filter((book) => book.favorited).map((book) => book.id) ?? []), [remoteCatalog])
-  const myUploads = (remoteCatalog ?? []).filter((book) => book.uploaded).map(catalogToMarketplace)
-  const myFavorites = (remoteCatalog ?? []).filter((book) => book.favorited).map(catalogToMarketplace)
+  const favoriteIds = useMemo(() => {
+    const ids = new Set<string>()
+    for (const book of remoteCatalog ?? []) if (book.favorited) ids.add(book.id)
+    for (const book of uploadsCatalog ?? []) if (book.favorited) ids.add(book.id)
+    for (const book of favoritesCatalog ?? []) ids.add(book.id)
+    return ids
+  }, [favoritesCatalog, remoteCatalog, uploadsCatalog])
+  // Prefer the dedicated own-uploads feed so unlisted/private entries stay manageable;
+  // fall back to the public catalog when that endpoint is unavailable.
+  const myUploads = (uploadsCatalog ?? (remoteCatalog ?? []).filter((book) => book.uploaded)).map(catalogToMarketplace)
+  const myFavorites = (favoritesCatalog ?? (remoteCatalog ?? []).filter((book) => book.favorited)).map(catalogToMarketplace)
+  const findOwnUpload = (id: string): CatalogWordbook | null => (uploadsCatalog ?? []).find((book) => book.id === id) ?? remoteCatalog?.find((book) => book.id === id) ?? null
   const selectedSource = personalWordbooks.find((book) => book.id === publishForm.sourceWordbookId)
 
   function toggleFilter(value: string, setValue: Dispatch<SetStateAction<string[]>>) {
@@ -177,29 +299,47 @@ export function MarketplacePage() {
   }
 
   async function openPublish(target: CatalogWordbook | null = null) {
+    publishReturnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
     setShowPublish(true)
     setPublishStep('details')
     setPublishTarget(target)
     setPublishError('')
     setPersonalWordbooks([])
+    setAuthUser(null)
     setPublishLoading(true)
     if (!api) {
       setPublishError('未配置后端，无法读取个人词本。')
       setPublishLoading(false)
       return
     }
+    // Resolve login state before rendering the visibility selector; me() throws
+    // only on transport errors, which we treat as "anonymous" (catch -> null).
+    let user: AuthUser | null = null
+    try { user = await api.me() } catch { user = null }
+    setAuthUser(user)
     try {
       const available = (await api.listMyWordbooks()).filter((book) => book.wordCount > 0)
       setPersonalWordbooks(available)
-      const matchingBook = available.find((book) => book.title === target?.title) ?? available[0]
+      // Never guess an update source from a mutable display title. New uploads
+      // can safely start on the first book; existing uploads use the explicit
+      // owner-only source id when available, otherwise require a fresh choice.
+      const matchingBook = target
+        ? available.find((book) => book.id === target.sourceWordbookId)
+        : available[0]
+      // Keep an existing entry's visibility; new uploads default to 公开, falling
+      // back to 邀请码 when the user is not logged in (公开 needs an account).
+      let visibility: CatalogVisibility = target?.visibility ?? 'public'
+      if (!user && visibility === 'public') visibility = 'unlisted'
       setPublishForm({
         sourceWordbookId: matchingBook?.id ?? '',
         title: target?.title ?? matchingBook?.title ?? '',
         description: target?.description ?? matchingBook?.description ?? '',
         exam: target?.exams[0] ?? '',
         goal: target?.goals[0] ?? '',
+        visibility,
       })
       if (!available.length) setPublishError('请先在“我的单词本”创建并导入至少一个非空词本。')
+      else if (target && !matchingBook) setPublishError('为避免更新错词本，请重新选择这次快照的来源。')
     } catch {
       setPublishError('个人词本加载失败，请稍后重试。')
     } finally {
@@ -239,6 +379,7 @@ export function MarketplacePage() {
       description: publishForm.description.trim(),
       exams: publishForm.exam ? [publishForm.exam] : [],
       goals: publishForm.goal ? [publishForm.goal] : [],
+      visibility: publishForm.visibility,
     }
     setPublishLoading(true)
     setPublishError('')
@@ -253,8 +394,14 @@ export function MarketplacePage() {
       }
       setShowPublish(false)
       await refreshRemote()
-    } catch {
-      setPublishError('发布失败，请确认后端服务已更新后重试。')
+    } catch (error) {
+      if (input.visibility === 'public' && isAuthRequiredError(error)) {
+        setAuthUser(null)
+        setPublishStep('details')
+        setPublishError(PUBLIC_LOGIN_HINT)
+      } else {
+        setPublishError('发布失败，请确认后端服务已更新后重试。')
+      }
     } finally {
       setPublishLoading(false)
     }
@@ -277,9 +424,9 @@ export function MarketplacePage() {
     setSyncMessage('未配置后端，无法导入分享码。')
   }
 
-  async function toggleFavorite(book: MarketplaceBook) {
+  async function toggleFavorite(id: string) {
     if (!api) return
-    try { await api.toggleFavorite(book.id); await refreshRemote() } catch { setSyncMessage('收藏操作失败，请稍后重试。') }
+    try { await api.toggleFavorite(id); await refreshRemote() } catch { setSyncMessage('收藏操作失败，请稍后重试。') }
   }
 
   async function joinBook(book: MarketplaceBook) {
@@ -293,6 +440,46 @@ export function MarketplacePage() {
     // refreshRemote drives both the main catalog grid and the derived 我的上传/收藏 rails,
     // and carries the refreshSeq request-race guard.
     try { await api.deleteCatalogUpload(book.id); await refreshRemote(); setSyncMessage(`已从广场删除「${book.title}」。`) } catch { setSyncMessage('删除失败，请稍后重试。') }
+  }
+
+  async function copyShareCode(book: MarketplaceBook) {
+    const code = book.shareCode
+    if (!code) {
+      setSyncMessage('该上传暂无可用邀请码，请刷新后重试。')
+      return
+    }
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable')
+      await navigator.clipboard.writeText(code)
+      setSyncMessage(`邀请码已复制：${code}`)
+    } catch {
+      // Insecure contexts (and browsers without the async clipboard API) fall
+      // back to a prompt the user can copy from manually.
+      window.prompt('复制邀请码', code)
+    }
+  }
+
+  async function changeVisibility(book: MarketplaceBook, visibility: CatalogVisibility) {
+    if (!api || book.visibility === visibility || visibilityUpdatingIds.has(book.id)) return
+    if (visibility === 'public' && !isLoggedIn) {
+      setSyncMessage(PUBLIC_LOGIN_HINT)
+      return
+    }
+    setVisibilityUpdatingIds((ids) => new Set(ids).add(book.id))
+    try {
+      await api.updateCatalogSnapshot(book.id, { visibility })
+      await refreshRemote()
+      setSyncMessage(`「${book.title}」已设为${VISIBILITY_LABELS[visibility]}。`)
+    } catch (error) {
+      if (visibility === 'public' && isAuthRequiredError(error)) setSyncMessage(PUBLIC_LOGIN_HINT)
+      else setSyncMessage('可见性更新失败，请稍后重试。')
+    } finally {
+      setVisibilityUpdatingIds((ids) => {
+        const next = new Set(ids)
+        next.delete(book.id)
+        return next
+      })
+    }
   }
 
   return (
@@ -319,16 +506,45 @@ export function MarketplacePage() {
         <div className="market-content">
           {(syncMessage || loadError) && <p className="market-sync-note" role="status">{syncMessage || loadError}</p>}
           <div className="market-toolbar"><div className="category-tabs" role="tablist" aria-label="词库类别">{MARKETPLACE_CATEGORIES.map((category) => <button key={category} type="button" role="tab" aria-selected={activeCategory === category} className={activeCategory === category ? 'active' : ''} onClick={() => setActiveCategory(category)}>{category}</button>)}</div><div className="view-controls"><select value={sort} onChange={(event) => setSort(event.target.value as typeof sort)} aria-label="排序"><option value="popular">推荐排序</option><option value="latest">最新上传</option><option value="rating">评分最高</option></select><button className={view === 'grid' ? 'active' : ''} type="button" aria-label="网格视图" onClick={() => setView('grid')}><MarketplaceIcon name="grid" /></button><button className={view === 'list' ? 'active' : ''} type="button" aria-label="列表视图" onClick={() => setView('list')}><MarketplaceIcon name="list" /></button></div></div>
-          {remoteCatalog === null ? <div className="market-empty"><h2>正在加载词库</h2></div> : filtered.length ? <div className={`market-book-grid ${view === 'list' ? 'list-view' : ''}`}>{filtered.map((book) => <article className="market-book-card" key={book.id}><div className="market-card-cover"><BookCover tone={book.tone} label={book.shortLabel} /></div><div className="market-card-body"><h2>{book.title}</h2><p>{book.description}</p><small>作者：{book.author}</small><div className="market-metrics"><span><MarketplaceIcon name="book" />{book.wordCount}词</span><span><MarketplaceIcon name="star" />{book.rating}</span><span><MarketplaceIcon name="people" />{book.learners}</span></div><div className="market-card-actions"><button type="button" className={favoriteIds.has(book.id) ? 'liked' : ''} aria-label="切换收藏" onClick={() => void toggleFavorite(book)}><MarketplaceIcon name="heart" /></button>{book.uploaded ? <span className="market-upload-actions"><button type="button" className="refresh-snapshot" onClick={() => void openPublish(remoteCatalog.find((item) => item.id === book.id) ?? null)}><MarketplaceIcon name="refresh" />更新快照</button><button type="button" className="delete-upload" onClick={() => void deleteUpload(book)}>删除</button></span> : <button type="button" className="join-book" onClick={() => void joinBook(book)}>{remoteCatalog.find((item) => item.id === book.id)?.added ? '已加入词本' : '加入词本'}</button>}</div></div></article>)}</div> : <div className="market-empty"><h2>{loadError ? '单词广场加载失败' : hasActiveFilters ? '没有找到匹配的词库' : '单词广场还是空的'}</h2><p>{loadError || (hasActiveFilters ? '试试放宽筛选条件。' : '上传第一本共享词库，或使用分享码导入。')}</p>{loadError || hasActiveFilters ? <button type="button" onClick={() => void refreshRemote()}>重新加载</button> : <button type="button" onClick={() => void openPublish()}>上传第一本词库</button>}</div>}
-          <div className="market-collections"><Collection title="我的收藏" icon="star" books={myFavorites} favorites={favoriteIds} onToggleFavorite={(id) => { const book = books.find((item) => item.id === id); if (book) void toggleFavorite(book) }} /><Collection title="我的上传" icon="cloud" books={myUploads} favorites={favoriteIds} onToggleFavorite={(id) => { const book = books.find((item) => item.id === id); if (book) void toggleFavorite(book) }} onUpdate={(id) => void openPublish(remoteCatalog?.find((book) => book.id === id) ?? null)} onDelete={(id) => { const book = books.find((item) => item.id === id); if (book) void deleteUpload(book) }} /></div>
+          {remoteCatalog === null ? <div className="market-empty"><h2>正在加载词库</h2></div> : filtered.length ? <div className={`market-book-grid ${view === 'list' ? 'list-view' : ''}`}>{filtered.map((book) => <article className="market-book-card" key={book.id}><div className="market-card-cover"><BookCover tone={book.tone} label={book.shortLabel} /></div><div className="market-card-body"><h2>{book.title}</h2><p>{book.description}</p><small>作者：{book.author}</small><div className="market-metrics"><span><MarketplaceIcon name="book" />{book.wordCount}词</span><span><MarketplaceIcon name="star" />{book.rating}</span><span><MarketplaceIcon name="people" />{book.learners}</span></div>{book.uploaded && book.visibility && <div className="market-own-meta"><span className={`visibility-badge visibility-${book.visibility}`}>{VISIBILITY_LABELS[book.visibility]}</span>{book.visibility === 'unlisted' && <button type="button" className="copy-invite" onClick={() => void copyShareCode(book)}>复制邀请码</button>}</div>}<div className="market-card-actions"><button type="button" className={favoriteIds.has(book.id) ? 'liked' : ''} aria-label="切换收藏" onClick={() => void toggleFavorite(book.id)}><MarketplaceIcon name="heart" /></button>{book.uploaded ? <span className="market-upload-actions"><button type="button" className="refresh-snapshot" onClick={() => void openPublish(remoteCatalog.find((item) => item.id === book.id) ?? null)}><MarketplaceIcon name="refresh" />更新快照</button><button type="button" className="delete-upload" onClick={() => void deleteUpload(book)}>删除</button></span> : <button type="button" className="join-book" onClick={() => void joinBook(book)}>{book.added ? '已加入词本' : '加入词本'}</button>}</div></div></article>)}</div> : <div className="market-empty"><h2>{loadError ? '单词广场加载失败' : hasActiveFilters ? '没有找到匹配的词库' : '单词广场还是空的'}</h2><p>{loadError || (hasActiveFilters ? '试试放宽筛选条件。' : '上传第一本共享词库，或使用分享码导入。')}</p>{loadError || hasActiveFilters ? <button type="button" onClick={() => void refreshRemote()}>重新加载</button> : <button type="button" onClick={() => void openPublish()}>上传第一本词库</button>}</div>}
+          <div className="market-collections">
+            <Collection title="我的收藏" icon="star" books={myFavorites} favorites={favoriteIds} onToggleFavorite={(id) => void toggleFavorite(id)} />
+            <Collection
+              title="我的上传"
+              icon="cloud"
+              books={myUploads}
+              favorites={favoriteIds}
+              canPublishPublic={isLoggedIn}
+              updatingVisibilityIds={visibilityUpdatingIds}
+              onToggleFavorite={(id) => void toggleFavorite(id)}
+              onUpdate={(id) => void openPublish(findOwnUpload(id))}
+              onDelete={(id) => { const book = myUploads.find((item) => item.id === id); if (book) void deleteUpload(book) }}
+              onCopyInvite={(id) => { const book = myUploads.find((item) => item.id === id); if (book) void copyShareCode(book) }}
+              onSetVisibility={(id, visibility) => { const book = myUploads.find((item) => item.id === id); if (book) void changeVisibility(book, visibility) }}
+            />
+          </div>
         </div>
       </div>
 
-      {showPublish && <div className="market-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closePublish() }}><section className="market-modal market-publish-modal" role="dialog" aria-modal="true" aria-labelledby="publish-title"><button className="modal-close" type="button" aria-label="关闭" onClick={closePublish}>×</button>{publishLoading && !personalWordbooks.length ? <p className="publish-loading" role="status">正在读取你的个人词本…</p> : <>{publishStep === 'details' ? <><p className="marginal">{publishTarget ? '更新社区快照' : '新建共享词库'}</p><h2 id="publish-title">{publishTarget ? '更新我的上传' : '发布我的词本'}</h2><p>选择词本并填写展示信息。发布的是独立快照，之后修改个人词本不会影响已发布内容。</p><label>选择个人词本<select value={publishForm.sourceWordbookId} onChange={(event) => chooseSourceWordbook(event.target.value)} disabled={!personalWordbooks.length}><option value="">请选择非空词本</option>{personalWordbooks.map((book) => <option key={book.id} value={book.id}>{book.title}（{book.wordCount} 词）</option>)}</select></label><label>社区展示名称<input value={publishForm.title} maxLength={80} onChange={(event) => setPublishForm((current) => ({ ...current, title: event.target.value }))} placeholder="例如：7 月阅读积累" autoFocus /></label><label>简介<textarea value={publishForm.description} maxLength={240} onChange={(event) => setPublishForm((current) => ({ ...current, description: event.target.value }))} placeholder="告诉大家这本词库适合什么场景。" /></label><div className="publish-meta-fields"><label>考试类型<select value={publishForm.exam} onChange={(event) => setPublishForm((current) => ({ ...current, exam: event.target.value }))}><option value="">不设置</option>{PUBLISH_EXAMS.map((exam) => <option key={exam}>{exam}</option>)}</select></label><label>学习目标<select value={publishForm.goal} onChange={(event) => setPublishForm((current) => ({ ...current, goal: event.target.value }))}><option value="">不设置</option>{PUBLISH_GOALS.map((goal) => <option key={goal}>{goal}</option>)}</select></label></div>{publishError && <p className="publish-error" role="alert">{publishError}</p>}<div className="publish-actions"><button className="market-secondary" type="button" onClick={closePublish}>取消</button><button className="market-primary" type="button" disabled={!personalWordbooks.length} onClick={openPreview}>预览发布</button></div></> : <><p className="marginal">发布预览</p><h2 id="publish-title">确认社区快照</h2><div className="publish-preview"><BookCover tone="blue" label={(publishForm.exam || publishForm.title.slice(0, 5)).toUpperCase()} /><div><strong>{publishForm.title}</strong><span>{selectedSource?.wordCount ?? 0} 词 · {selectedSource?.title}</span><p>{publishForm.description || '暂无简介'}</p><small>{[publishForm.exam, publishForm.goal].filter(Boolean).join(' · ') || '未设置分类'}</small></div></div><p>确认后，社区会保存这本词本的当前副本。以后主动更新快照，也不会改动其他用户已加入的词本。</p>{publishError && <p className="publish-error" role="alert">{publishError}</p>}<div className="publish-actions"><button className="market-secondary" type="button" disabled={publishLoading} onClick={() => setPublishStep('details')}>返回修改</button><button className="market-primary" type="button" disabled={publishLoading} onClick={() => void submitPublish()}>{publishLoading ? '正在发布…' : publishTarget ? '更新社区快照' : '确认发布'}</button></div></>}</>}</section></div>}
+      {showPublish && <div className="market-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closePublish() }}><section className="market-modal market-publish-modal" role="dialog" aria-modal="true" aria-labelledby="publish-title"><button className="modal-close" type="button" aria-label="关闭" onClick={closePublish}>×</button>{publishLoading && !personalWordbooks.length ? <p className="publish-loading" role="status">正在读取你的个人词本…</p> : <>{publishStep === 'details' ? <><p className="marginal">{publishTarget ? '更新社区快照' : '新建共享词库'}</p><h2 id="publish-title">{publishTarget ? '更新我的上传' : '发布我的词本'}</h2><p>选择词本并填写展示信息。发布的是独立快照，之后修改个人词本不会影响已发布内容。</p><label>选择个人词本<select value={publishForm.sourceWordbookId} onChange={(event) => chooseSourceWordbook(event.target.value)} disabled={!personalWordbooks.length}><option value="">请选择非空词本</option>{personalWordbooks.map((book) => <option key={book.id} value={book.id}>{book.title}（{book.wordCount} 词）</option>)}</select></label>{publishTarget && !publishForm.sourceWordbookId && <p className="publish-source-hint">为避免覆盖错词本，请明确选择这次快照的来源。</p>}<label>社区展示名称<input value={publishForm.title} maxLength={80} onChange={(event) => setPublishForm((current) => ({ ...current, title: event.target.value }))} placeholder="例如：7 月阅读积累" autoFocus /></label><label>简介<textarea value={publishForm.description} maxLength={240} onChange={(event) => setPublishForm((current) => ({ ...current, description: event.target.value }))} placeholder="告诉大家这本词库适合什么场景。" /></label><div className="publish-meta-fields"><label>考试类型<select value={publishForm.exam} onChange={(event) => setPublishForm((current) => ({ ...current, exam: event.target.value }))}><option value="">不设置</option>{PUBLISH_EXAMS.map((exam) => <option key={exam}>{exam}</option>)}</select></label><label>学习目标<select value={publishForm.goal} onChange={(event) => setPublishForm((current) => ({ ...current, goal: event.target.value }))}><option value="">不设置</option>{PUBLISH_GOALS.map((goal) => <option key={goal}>{goal}</option>)}</select></label></div><fieldset className="publish-visibility"><legend>可见性</legend>{VISIBILITY_OPTIONS.map((option) => { const optionDisabled = option.value === 'public' && !isLoggedIn; return <label key={option.value} className={optionDisabled ? 'is-disabled' : ''}><input type="radio" name="publish-visibility" value={option.value} checked={publishForm.visibility === option.value} disabled={optionDisabled} onChange={() => setPublishForm((current) => ({ ...current, visibility: option.value }))} /><span><strong>{option.label}</strong><small>{option.hint}</small></span></label> })}{!isLoggedIn && <p className="visibility-hint">{PUBLIC_LOGIN_HINT}</p>}</fieldset>{publishError && <p className="publish-error" role="alert">{publishError}</p>}<div className="publish-actions"><button className="market-secondary" type="button" onClick={closePublish}>取消</button><button className="market-primary" type="button" disabled={!personalWordbooks.length} onClick={openPreview}>预览发布</button></div></> : <><p className="marginal">发布预览</p><h2 id="publish-title">确认社区快照</h2><div className="publish-preview"><BookCover tone="blue" label={(publishForm.exam || publishForm.title.slice(0, 5)).toUpperCase()} /><div><strong>{publishForm.title}</strong><span>{selectedSource?.wordCount ?? 0} 词 · {selectedSource?.title}</span><p>{publishForm.description || '暂无简介'}</p><small>{[publishForm.exam, publishForm.goal].filter(Boolean).join(' · ') || '未设置分类'}</small><small>可见性：{VISIBILITY_LABELS[publishForm.visibility]}</small></div></div><p>确认后，社区会保存这本词本的当前副本。以后主动更新快照，也不会改动其他用户已加入的词本。</p>{publishError && <p className="publish-error" role="alert">{publishError}</p>}<div className="publish-actions"><button className="market-secondary" type="button" disabled={publishLoading} onClick={() => setPublishStep('details')}>返回修改</button><button className="market-primary" type="button" disabled={publishLoading} onClick={() => void submitPublish()}>{publishLoading ? '正在发布…' : publishTarget ? '更新社区快照' : '确认发布'}</button></div></>}</>}</section></div>}
     </section>
   )
 }
 
-function Collection({ title, icon, books, favorites, onToggleFavorite, onUpdate, onDelete }: { title: string; icon: 'star' | 'cloud'; books: MarketplaceBook[]; favorites: Set<string>; onToggleFavorite: (id: string) => void; onUpdate?: (id: string) => void; onDelete?: (id: string) => void }) {
-  return <section className="mini-collection"><header><h2><MarketplaceIcon name={icon} />{title}</h2><Link to="/wordbook">查看全部 ›</Link></header>{books.length ? <div>{books.slice(0, 2).map((book) => <article key={book.id}><BookCover tone={book.tone} label={book.shortLabel} /><span><strong>{book.title}</strong><small>{book.wordCount || '新建'}词 ｜ {book.author}</small>{(onUpdate || onDelete) && <span className="collection-manage">{onUpdate && <button className="collection-update" type="button" onClick={() => onUpdate(book.id)}>更新快照</button>}{onDelete && <button className="collection-delete" type="button" onClick={() => onDelete(book.id)}>删除</button>}</span>}</span><button type="button" className={favorites.has(book.id) ? 'liked' : ''} aria-label="切换收藏" onClick={() => onToggleFavorite(book.id)}><MarketplaceIcon name="heart" /></button></article>)}</div> : <p className="collection-empty">还没有内容，去发现一本喜欢的词库吧。</p>}</section>
+type CollectionProps = {
+  title: string
+  icon: 'star' | 'cloud'
+  books: MarketplaceBook[]
+  favorites: Set<string>
+  canPublishPublic?: boolean
+  updatingVisibilityIds?: Set<string>
+  onToggleFavorite: (id: string) => void
+  onUpdate?: (id: string) => void
+  onDelete?: (id: string) => void
+  onCopyInvite?: (id: string) => void
+  onSetVisibility?: (id: string, visibility: CatalogVisibility) => void
+}
+
+function Collection({ title, icon, books, favorites, canPublishPublic = false, updatingVisibilityIds = new Set(), onToggleFavorite, onUpdate, onDelete, onCopyInvite, onSetVisibility }: CollectionProps) {
+  return <section className="mini-collection"><header><h2><MarketplaceIcon name={icon} />{title}</h2><Link to="/wordbook">查看全部 ›</Link></header>{books.length ? <div>{books.slice(0, 2).map((book) => <article key={book.id}><BookCover tone={book.tone} label={book.shortLabel} /><span><strong>{book.title}</strong><small>{book.wordCount || '新建'}词 ｜ {book.author}</small>{(onUpdate || onDelete || onCopyInvite || (onSetVisibility && book.visibility)) && <span className="collection-manage">{onSetVisibility && book.visibility && <select className="collection-visibility" value={book.visibility} aria-label={`修改「${book.title}」的可见性`} disabled={updatingVisibilityIds.has(book.id)} onChange={(event) => onSetVisibility(book.id, event.target.value as CatalogVisibility)}>{VISIBILITY_OPTIONS.map((option) => <option key={option.value} value={option.value} disabled={option.value === 'public' && !canPublishPublic}>{option.label}</option>)}</select>}{onCopyInvite && book.visibility === 'unlisted' && <button className="collection-copy-invite" type="button" onClick={() => onCopyInvite(book.id)}>复制邀请码</button>}{onUpdate && <button className="collection-update" type="button" onClick={() => onUpdate(book.id)}>更新快照</button>}{onDelete && <button className="collection-delete" type="button" onClick={() => onDelete(book.id)}>删除</button>}</span>}</span><button type="button" className={favorites.has(book.id) ? 'liked' : ''} aria-label="切换收藏" onClick={() => onToggleFavorite(book.id)}><MarketplaceIcon name="heart" /></button></article>)}</div> : <p className="collection-empty">还没有内容，去发现一本喜欢的词库吧。</p>}</section>
 }

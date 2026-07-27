@@ -5,6 +5,9 @@ import { getStudyClientId } from './studyApi'
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
 
 export type CatalogSort = 'recommended' | 'hot' | 'newest' | 'rating'
+/** 公开=进广场列表；邀请码=仅凭分享码导入；私密=仅自己可见。 */
+export type CatalogVisibility = 'public' | 'unlisted' | 'private'
+export type AuthUser = { username: string; clientId: string }
 export type CatalogExam = 'IELTS' | 'TOEFL' | 'GRE' | '高考' | '四六级' | '考研'
 export type LearningGoal = '写作' | '阅读' | '听力' | '口语'
 export type CatalogQuery = { q?: string; exam?: CatalogExam; goal?: LearningGoal; sort?: CatalogSort }
@@ -28,6 +31,10 @@ export type CatalogWordbook = {
   favorited: boolean
   added: boolean
   uploaded: boolean
+  /** Present on servers with community accounts; absent values render as legacy public entries. */
+  visibility?: CatalogVisibility
+  /** Owner upload feeds may expose this so snapshot updates can select the exact source wordbook. */
+  sourceWordbookId?: string
 }
 
 export type WordbookProgress = {
@@ -117,6 +124,17 @@ export type UpdateWordInput = {
 
 type WorkspaceApiOptions = { fetch?: FetchLike; timeoutMs?: number; clientId?: () => string }
 
+export class WorkspaceApiError extends Error {
+  constructor(
+    public readonly status: number,
+    public readonly code?: string,
+    message = `Backend request failed (${status}).`,
+  ) {
+    super(message)
+    this.name = 'WorkspaceApiError'
+  }
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
 }
@@ -124,6 +142,20 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function isText(value: unknown): value is string { return typeof value === 'string' }
 function isCount(value: unknown): value is number { return typeof value === 'number' && Number.isFinite(value) && value >= 0 }
 function textArray(value: unknown): string[] | null { return Array.isArray(value) && value.every(isText) ? value : null }
+
+async function responseError(response: Response): Promise<WorkspaceApiError> {
+  try {
+    const payload: unknown = await response.json()
+    if (isRecord(payload) && isRecord(payload.error)) {
+      const code = isText(payload.error.code) ? payload.error.code : undefined
+      const message = isText(payload.error.message) ? payload.error.message : undefined
+      return new WorkspaceApiError(response.status, code, message)
+    }
+  } catch {
+    // Fall back to a stable status-only error when the body is empty or malformed.
+  }
+  return new WorkspaceApiError(response.status)
+}
 
 function parseLevelCounts(value: unknown): LevelCounts | null {
   if (!isRecord(value) || !isCount(value.l0) || !isCount(value.l1) || !isCount(value.l2) || !isCount(value.l3) || !isCount(value.l4)) return null
@@ -153,7 +185,14 @@ function parseCatalog(value: unknown): CatalogWordbook | null {
   const favorited = typeof value.favorited === 'boolean' ? value.favorited : value.isFavorite
   const added = typeof value.added === 'boolean' ? value.added : value.isAdded
   if (typeof favorited !== 'boolean' || typeof added !== 'boolean' || typeof value.uploaded !== 'boolean') return null
-  return { id: value.id, title: value.title, description: value.description, author: value.author, exams, goals, rating: value.rating, uses: value.uses, createdAt: value.createdAt, shareCode: value.shareCode, wordCount: value.wordCount, favorited, added, uploaded: value.uploaded }
+  if (value.visibility !== undefined && value.visibility !== 'public' && value.visibility !== 'unlisted' && value.visibility !== 'private') return null
+  if (value.sourceWordbookId !== undefined && !isText(value.sourceWordbookId)) return null
+  return { id: value.id, title: value.title, description: value.description, author: value.author, exams, goals, rating: value.rating, uses: value.uses, createdAt: value.createdAt, shareCode: value.shareCode, wordCount: value.wordCount, favorited, added, uploaded: value.uploaded, visibility: value.visibility, sourceWordbookId: value.sourceWordbookId }
+}
+
+function parseAuthUser(value: unknown): AuthUser | null {
+  if (!isRecord(value) || !isText(value.username) || !isText(value.clientId)) return null
+  return { username: value.username, clientId: value.clientId }
 }
 
 function parseMeaning(value: unknown): WordMeaning | null {
@@ -304,9 +343,9 @@ export class WorkspaceApi {
   listUploads() { return this.list(new URL('api/catalog/uploads/mine', this.baseUrl), parseCatalog, 'uploads') }
   async toggleFavorite(id: string) { return this.json<{ favorited: boolean }>(`api/catalog/wordbooks/${encodeURIComponent(id)}/favorite`, { method: 'POST' }) }
   async addCatalog(id: string) { return this.json<{ wordbook: MyWordbook; created: boolean }>(`api/catalog/wordbooks/${encodeURIComponent(id)}/add`, { method: 'POST' }, (value) => isRecord(value) && typeof value.created === 'boolean' && parseMyWordbook(value.wordbook) ? { wordbook: parseMyWordbook(value.wordbook)!, created: value.created } : null) }
-  async upload(input: { title: string; description?: string; exams?: string[]; goals?: string[]; words: WordEntry[] }) { return this.json('api/catalog/uploads', { method: 'POST', body: JSON.stringify(input) }, parseCatalog) }
-  uploadWordbook(input: { sourceWordbookId: string; title?: string; description?: string; exams?: string[]; goals?: string[] }) { return this.json('api/catalog/uploads', { method: 'POST', body: JSON.stringify(input) }, parseCatalog) }
-  updateCatalogSnapshot(catalogId: string, input: { sourceWordbookId?: string; title?: string; description?: string; exams?: string[]; goals?: string[] }) { return this.json(`api/catalog/wordbooks/${encodeURIComponent(catalogId)}`, { method: 'PATCH', body: JSON.stringify(input) }, parseCatalog) }
+  async upload(input: { title: string; description?: string; exams?: string[]; goals?: string[]; words: WordEntry[]; visibility?: CatalogVisibility }) { return this.json('api/catalog/uploads', { method: 'POST', body: JSON.stringify(input) }, parseCatalog) }
+  uploadWordbook(input: { sourceWordbookId: string; title?: string; description?: string; exams?: string[]; goals?: string[]; visibility?: CatalogVisibility }) { return this.json('api/catalog/uploads', { method: 'POST', body: JSON.stringify(input) }, parseCatalog) }
+  updateCatalogSnapshot(catalogId: string, input: { sourceWordbookId?: string; title?: string; description?: string; exams?: string[]; goals?: string[]; visibility?: CatalogVisibility }) { return this.json(`api/catalog/wordbooks/${encodeURIComponent(catalogId)}`, { method: 'PATCH', body: JSON.stringify(input) }, parseCatalog) }
   async importShareCode(shareCode: string) { return this.json<{ wordbook: MyWordbook; created: boolean }>('api/catalog/imports', { method: 'POST', body: JSON.stringify({ shareCode }) }, (value) => isRecord(value) && typeof value.created === 'boolean' && parseMyWordbook(value.wordbook) ? { wordbook: parseMyWordbook(value.wordbook)!, created: value.created } : null) }
   listMyWordbooks(trash = false) { const url = new URL('api/my/wordbooks', this.baseUrl); if (trash) url.searchParams.set('view', 'trash'); return this.list(url, parseMyWordbook, 'wordbook list') }
   createMyWordbook(input: { title: string; description?: string; words?: WordEntry[] }) { return this.json('api/my/wordbooks', { method: 'POST', body: JSON.stringify(input) }, parseMyWordbook) }
@@ -328,7 +367,7 @@ export class WorkspaceApi {
   async addWordToWordbook(wordbookId: string, input: { word: string; zhMeaning?: string }) {
     const url = new URL(`api/my/wordbooks/${encodeURIComponent(wordbookId)}/words`, this.baseUrl)
     const response = await this.fetch(url, this.requestInit({ method: 'POST', body: JSON.stringify(input) }))
-    if (!response.ok) throw new Error(`Backend request failed (${response.status}).`)
+    if (!response.ok) throw await responseError(response)
     let payload: unknown
     try { payload = await response.json() } catch { throw new Error('Backend response is not valid JSON.') }
     const word = parseWord(isRecord(payload) ? payload.word : undefined)
@@ -339,6 +378,22 @@ export class WorkspaceApi {
   purgeMyWordbook(id: string) { return this.empty(`api/my/wordbooks/${encodeURIComponent(id)}/purge`, { method: 'DELETE' }) }
   /** Removes one of the client's own catalog uploads from the marketplace. */
   deleteCatalogUpload(id: string) { return this.empty(`api/catalog/wordbooks/${encodeURIComponent(id)}`, { method: 'DELETE' }) }
+
+  /* ── Accounts (session cookie; the server binds the account's data clientId) ── */
+  register(username: string, password: string) { return this.json('api/auth/register', { method: 'POST', body: JSON.stringify({ username, password }) }, parseAuthUser) }
+  login(username: string, password: string) { return this.json('api/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) }, parseAuthUser) }
+  logout() { return this.empty('api/auth/logout', { method: 'POST' }) }
+  /** Returns the signed-in user, or null when the session is absent/expired. */
+  async me(): Promise<AuthUser | null> {
+    const response = await this.fetch(new URL('api/auth/me', this.baseUrl), this.requestInit({}))
+    if (response.status === 401) return null
+    if (!response.ok) throw await responseError(response)
+    let payload: unknown
+    try { payload = await response.json() } catch { throw new Error('Backend response is not valid JSON.') }
+    const user = parseAuthUser(payload)
+    if (!user) throw new Error('Backend response is invalid.')
+    return user
+  }
 
   private async list<T>(url: URL, parser: (value: unknown) => T | null, label: string): Promise<T[]> {
     const payload = await this.request(url)
@@ -360,15 +415,17 @@ export class WorkspaceApi {
   }
   private async empty(path: string, init: RequestInit) {
     const response = await this.fetch(new URL(path, this.baseUrl), this.requestInit(init))
-    if (!response.ok) throw new Error(`Backend request failed (${response.status}).`)
+    if (!response.ok) throw await responseError(response)
   }
   private async request(url: URL, init: RequestInit = {}, timeoutMs = this.timeoutMs): Promise<unknown> {
     const response = await this.fetch(url, this.requestInit(init, timeoutMs))
-    if (!response.ok) throw new Error(`Backend request failed (${response.status}).`)
+    if (!response.ok) throw await responseError(response)
     try { return await response.json() } catch { throw new Error('Backend response is not valid JSON.') }
   }
-  private requestInit(init: RequestInit, timeoutMs = this.timeoutMs) {
-    return { ...init, headers: { 'X-Vocab-Client-Id': this.clientId(), 'Content-Type': 'application/json', ...init.headers }, signal: AbortSignal.timeout(timeoutMs) }
+  private requestInit(init: RequestInit, timeoutMs = this.timeoutMs): RequestInit {
+    // credentials: 'include' carries the session cookie in dev too, where the Vite
+    // origin differs from the backend origin (same-origin prod is unaffected).
+    return { ...init, credentials: 'include', headers: { 'X-Vocab-Client-Id': this.clientId(), 'Content-Type': 'application/json', ...init.headers }, signal: AbortSignal.timeout(timeoutMs) }
   }
 }
 

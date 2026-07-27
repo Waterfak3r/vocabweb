@@ -17,6 +17,7 @@ import './styles/components.css'
 import './styles/word.css'
 import './styles/marketplace.css'
 import './styles/workspace.css'
+import './styles/account.css'
 
 // A redeploy invalidates old hashed chunk names a stale tab still references;
 // reloading once picks up the new manifest instead of a dead lazy route.

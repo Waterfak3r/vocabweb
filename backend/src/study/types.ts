@@ -4,6 +4,8 @@ export type ZhMeaningSource = "user" | "dictionary";
 export type CatalogExam = "IELTS" | "TOEFL" | "GRE" | "高考" | "四六级" | "考研";
 export type LearningGoal = "写作" | "阅读" | "听力" | "口语";
 export type CatalogSort = "recommended" | "hot" | "newest" | "rating";
+/** Marketplace listing scope. Existing/legacy entries migrate to "public". */
+export type CatalogVisibility = "public" | "unlisted" | "private";
 
 export interface StudyMeaning { pos: string; definition: string; example?: string; }
 /** English dictionary fields are deliberately separate from a learner's Chinese note. */
@@ -18,11 +20,17 @@ export interface CatalogWordbook {
   id: string; title: string; description: string; author: string;
   exams: CatalogExam[]; goals: LearningGoal[]; rating: number; uses: number;
   createdAt: string; shareCode: string; words: StudyWordEntry[]; ownerClientId?: string;
+  /** Listing scope; `author` is the display name ("匿名" for anonymous uploads). */
+  visibility: CatalogVisibility;
+  /** Set when an authenticated account owns the entry; absent for anonymous/legacy uploads. */
+  authorUserId?: string;
   /** Points at the owner's private source only; `words` is always a publish-time snapshot. */
   sourceWordbookId?: string;
 }
-export type CatalogCard = Omit<CatalogWordbook, "words" | "ownerClientId" | "sourceWordbookId"> & {
+export type CatalogCard = Omit<CatalogWordbook, "words" | "ownerClientId" | "sourceWordbookId" | "authorUserId"> & {
   wordCount: number; favorited: boolean; added: boolean; uploaded: boolean;
+  /** Only exposed to the owner, so the upload UI can refresh the correct private source. */
+  sourceWordbookId?: string;
 };
 export interface MyWordbook {
   id: string; title: string; description: string; sourceCatalogId?: string;
@@ -79,12 +87,18 @@ export interface StudyDashboard {
 
 export interface CatalogQuery { q?: string; exam?: CatalogExam; goal?: LearningGoal; sort?: CatalogSort; }
 export interface CreateMyWordbookInput { title: string; description?: string; words?: StudyWordEntry[]; }
+/** The uploading account, supplied by the auth layer; drives the author display name and authorUserId. */
+export interface CatalogAuthor { userId: string; username: string; }
 /** Legacy direct upload remains supported; modern uploads reference the private wordbook. */
 export interface UploadCatalogWordbookInput extends Partial<CreateMyWordbookInput> {
   sourceWordbookId?: string; exams?: CatalogExam[]; goals?: LearningGoal[];
+  /** Defaults to "public" in the store; "public" uploads must be authenticated (enforced by the route). */
+  visibility?: CatalogVisibility; author?: CatalogAuthor;
 }
 export interface UpdateCatalogWordbookInput {
   sourceWordbookId?: string; title?: string; description?: string; exams?: CatalogExam[]; goals?: LearningGoal[];
+  /** Switching TO "public" must be authenticated (enforced by the route), which also stamps the author. */
+  visibility?: CatalogVisibility; author?: CatalogAuthor;
 }
 
 export type ImportEntryStatus = "processing" | "ready" | "invalid" | "duplicate" | "unmatched" | "conflict";
@@ -116,8 +130,23 @@ export interface UpdateWordInput {
 }
 export type UpdateWordResult = { kind: "updated"; word: StudiedWord } | { kind: "not-found" } | { kind: "duplicate" } | { kind: "lookup-failed" };
 
-/** Persistence seam: production JSON is durable; tests inject the memory store. */
+/** A registered account. `clientId` is the account's data home (the anonymous id adopted at registration). */
+export interface AccountUser { id: string; username: string; passwordHash: string; clientId: string; createdAt: string; }
+
+/** Persistence seam: production SQLite is durable; tests inject the memory store. */
 export interface StudyStore {
+  // --- Accounts & sessions ---
+  /** Case-insensitive username uniqueness; adopts `clientId` as the new account's data home. */
+  createUser(username: string, passwordHash: string, clientId: string): Promise<{ kind: "created"; user: AccountUser } | { kind: "taken" } | { kind: "client-taken" }>;
+  getUserByUsername(username: string): Promise<AccountUser | null>;
+  getUserById(id: string): Promise<AccountUser | null>;
+  getUserByClientId(clientId: string): Promise<AccountUser | null>;
+  createSession(tokenHash: string, userId: string, expiresAt: string): Promise<void>;
+  /** Returns the session's user when live; an expired session yields null and is deleted. */
+  getSession(tokenHash: string, now: Date): Promise<{ user: AccountUser; expiresAt: string } | null>;
+  deleteSession(tokenHash: string): Promise<void>;
+  /** Fold one client's data into another: append wordbooks/events/drafts, union favorites, reassign catalog ownership. No-op when ids match or the source is absent/empty. */
+  mergeClients(fromClientId: string, intoClientId: string): Promise<void>;
   listCatalog(clientId: string, query: CatalogQuery): Promise<CatalogCard[]>;
   listFavorites(clientId: string): Promise<CatalogCard[]>;
   listUploads(clientId: string): Promise<CatalogCard[]>;

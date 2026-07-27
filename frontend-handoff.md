@@ -197,9 +197,9 @@ DELETE /api/wordbook/:id       → 204（id 即规范化词形）
 
 1. **`frontend/src/data/backendWordRepository.ts`**：实现 `WordRepository`，安全拼接 `${VITE_API_BASE}/api/words/${encodeURIComponent(word)}`；404 → null；稳定错误码映射为中文 `LookupError`；200 响应经过运行时 DTO 校验。
 2. **`frontend/src/data/createRepositories.ts`**：始终保留 local-first；有 `VITE_API_BASE` 时使用「本地 52 词 → 后端」，未配置时使用「本地 52 词 → dictionaryapi.dev」。
-3. **`frontend/.env.example` / `vite-env.d.ts`**：提供并声明 `VITE_API_BASE`。本地复制为 `.env.local`，该文件不提交。
+3. **`frontend/.env.development` / `.env.example` / `vite-env.d.ts`**：提供并声明 `VITE_API_BASE`。开发默认走同源 `/api` 代理；个人覆盖可写入不提交的 `.env.local`。
 
-前端环境变量：`frontend/.env.local` 加 `VITE_API_BASE=http://localhost:3000`。
+前端环境变量：开发默认由 `frontend/.env.development` 设置 `VITE_API_BASE=/`，Vite 再把 `/api` 代理到 3000 端口。
 
 **不变量**：页面/组件只 import `domain/types.ts` 与 store/repository 接口；第二阶段单词本云同步尚未实施，当前仍是 localStorage。
 
@@ -255,7 +255,7 @@ DELETE /api/wordbook/:id       → 204（id 即规范化词形）
 
 ### 5.3 前后端联调验收
 
-1. `backend` 起 3000；`frontend/.env.local` 写 `VITE_API_BASE=http://localhost:3000`；重启 dev server。
+1. `backend` 起 3000；前端使用仓库内 `.env.development` 的 `VITE_API_BASE=/`，由 Vite 同源代理 `/api`。
 2. 查一个本地词（如 `resilient`）→ 命中本地，`source` 显示「IELTS 精选」，浏览器网络记录确认后端请求为 0。✅
 3. 查一个非本地词（如 `serendipity`）→ 走后端，词条卡来源显示「词库」；浏览器网络记录确认请求一次。✅
 4. 停掉后端再查非本地词 → 前端 error 态 + 重试按钮；本地词不受影响。
@@ -269,4 +269,4 @@ DELETE /api/wordbook/:id       → 204（id 即规范化词形）
 - 品牌：剑桥蓝 `#1B4F72` 唯一强调色；绿/锈红仅语义态；纸底 `#F3EDE3`。
 - 唯一编排动效：闪卡 3D 翻面 420ms；`prefers-reduced-motion` 必须退化为瞬时切换。
 - 文案全中文、主动短句；错误文案可执行（「重试」而非「抱歉」）。
-- v1 明确不做：账号、云同步、SM-2 间隔重复、中文释义、多词短语查询、PWA。
+- 当前未做：SM-2 间隔重复、多词短语查询、PWA；账号、匿名数据合并、云端 SQLite 同步和中文释义已落地。

@@ -1,133 +1,107 @@
 # 后端交接 Checkpoint
 
-> 每次后端工作完成后必须更新此文件，保持内容简短、准确，并与实际代码及接口一致。
+> 后端契约或持久化变更后同步更新；内容以当前代码和测试为准。
 
-## 职责边界
+## 当前能力
 
-- `frontend/` 是独立 Vite/React 前端项目；前端依赖、源码、配置和构建产物均位于该目录。
-- `backend/` 是独立 Node.js 后端项目；后端工作不得修改 `frontend/` 内的源码、配置或依赖。
-- 根目录仅保留仓库级文件与交接文档；每次完成后端工作后必须同步更新本文件。
-- 当前提供 HTTP API、WiktApi 英语词典查询，以及匿名隔离的共享词本、个人词本和学习工作台数据服务。学习数据落盘到本机 JSON；账号体系尚未实施。
+- Express 5 + TypeScript（ESM），Node.js 20+。
+- WiktApi 英语词典代理、本地中文释义补充、个人词本、导入、学习队列、熟练度阶梯与统计。
+- 账号注册/登录/退出：密码使用带随机盐的 scrypt 记录；浏览器只保存随机会话 Cookie，数据库只保存令牌 SHA-256。
+- 匿名数据会在注册或登录时合并进账号数据空间；有效会话决定实际 `clientId`，客户端请求头不能覆盖账号身份。
+- 单词社区支持公开、邀请码、私密三档可见性，并在服务端执行作者、所有者和直达访问权限。
+- 生产默认使用 SQLite 混合存储；旧 JSON 仅作为一次性迁移源。
 
-## 技术栈
-
-- Node.js 20+
-- TypeScript（ESM、严格模式）
-- Express 5、CORS、dotenv
-- Node.js 内置测试运行器；测试直接启动随机端口，无额外 HTTP 测试依赖
-
-## 目录结构
+## 关键文件
 
 ```text
-vacabweb/
-├─ frontend/          # 独立 Vite/React 前端项目
-├─ backend/           # 独立 Node.js API 项目（结构如下）
-├─ .gitignore         # 仓库级忽略规则
-└─ checkpoint.md      # 后端交接与当前状态
-
 backend/
 ├─ src/
-│  ├─ app.ts                  # Express 应用、路由与统一错误响应
-│  ├─ config.ts               # 环境变量读取与校验
-│  ├─ server.ts               # 进程组合根和端口监听
-│  ├─ http/rate-limit.ts      # 查词路由单进程 per-IP 限流
-│  ├─ providers/wiktapi.ts    # WiktApi 客户端、运行时校验与 DTO 映射
+│  ├─ app.ts                    # 路由、身份解析、CORS、Cookie、限流、错误响应
+│  ├─ auth.ts                   # scrypt、会话令牌与 Cookie 工具
+│  ├─ config.ts                 # 环境变量读取与边界校验
+│  ├─ server.ts                 # 生产组合根，默认 SqliteStudyStore
 │  ├─ study/
-│  │  ├─ types.ts             # 广场、个人词本、学习事件与工作台契约
-│  │  ├─ validation.ts        # HTTP 输入校验与规范化
-│  │  └─ store.ts             # 可注入 store；内存测试与 JSON 原子持久化实现
-│  └─ words/
-│     ├─ normalize.ts         # 查询规范化与合法性校验
-│     ├─ types.ts             # WordEntry 契约及 provider 错误
-│     └─ word-service.ts      # 有界 TTL 成功缓存及并发去重
-├─ test/
-│  ├─ app.test.ts             # API 契约与回归测试
-│  ├─ config.test.ts          # 配置测试
-│  ├─ wiktapi.test.ts         # provider 与 mapper 测试
-│  ├─ word-service.test.ts    # 缓存及并发去重测试
-│  └─ study.test.ts           # 广场、词本、工作台及 JSON 持久化回归
-├─ .env.example
-├─ package.json
-├─ tsconfig.json
-└─ tsconfig.build.json
+│  │  ├─ ladder.ts              # 状态迁移、熟练度与 DTO 纯函数
+│  │  ├─ sqlite-store.ts        # SQLite schema、旧 JSON 导入、按行增量持久化
+│  │  ├─ store.ts               # 领域操作、内存与 JSON 兼容 store
+│  │  ├─ types.ts               # 账号、社区、词本和学习契约
+│  │  └─ validation.ts          # HTTP 输入校验与规范化
+│  └─ words/                    # 查询规范化、provider 与缓存
+└─ test/
+   ├─ auth-community.test.ts    # 认证、合并、授权与三档可见性
+   ├─ auth-crypto.test.ts       # 密码、令牌与 Cookie
+   ├─ sqlite-store.test.ts      # 迁移、增量写和关系约束
+   └─ study.test.ts             # 词本、学习与社区主回归
 ```
 
-## 现有接口契约
+## 身份与权限契约
 
-- `GET /api/health`
-  - `200`: `{ "status": "ok", "service": "vacabweb-backend" }`
-- `GET /api/words/:word`
-  - `200`: `{ word, phonetic, audioUrl?, meanings, source: "backend" }`
-  - `400 INVALID_WORD`：空词、非法词形或非法 URL 编码
-  - `404 WORD_NOT_FOUND`：WiktApi 无此词或没有有效英文释义
-  - `429 RATE_LIMITED`：超过当前进程的 per-IP 查词限额
-  - `502 UPSTREAM_ERROR`：上游网络或非成功 HTTP 响应
-  - `502 UPSTREAM_PARSE_ERROR`：上游响应无法解析或结构不合法
-  - `504 UPSTREAM_TIMEOUT`：上游请求超时
-- 词本/学习接口均要求 `X-Vocab-Client-Id` 请求头。前端首次以 `crypto.randomUUID()` 生成并保存在 localStorage；它只做匿名命名空间隔离，并非鉴权。
-  - 新匿名客户端首次访问个人空间时自动初始化 6 本默认词本（主词本为 `my-writing-task-2` / IELTS Writing Task 2，含可学习词条），并默认收藏 IELTS 核心词汇与高考3500；因此队列、学习事件和工作台无需依赖前端本地示例数据。
-  - `GET /api/catalog/wordbooks?q=&exam=&goal=&sort=`：广场搜索、筛选和 recommended/hot/newest/rating 排序；内置 7 本与广场对应的种子词本；详情为 `GET /api/catalog/wordbooks/:id`；`GET /api/catalog/favorites` 和 `GET /api/catalog/uploads/mine` 分别提供我的收藏与上传。
-  - `POST /api/catalog/wordbooks/:id/favorite` 收藏切换；`POST /api/catalog/wordbooks/:id/add` 加入我的词本。
-  - `POST /api/catalog/uploads` 上传 `{ title, description?, exams?, goals?, words? }`；`POST /api/catalog/imports` 以 `{ shareCode }` 导入。
-  - `GET|POST /api/my/wordbooks`（回收站为 `?view=trash`）；`GET|DELETE /api/my/wordbooks/:id`；`POST /api/my/wordbooks/:id/restore`。
-  - `GET /api/my/wordbooks/:id/words?status=new|learning|review|mastered` 返回词本队列。
-  - `POST /api/study/events`：`new`、`flashcard` 或 `dictation` 均带 `wordbookId` 与 `word`；后两者分别带 `verdict` 或 `correct`。
-  - `GET /api/study/dashboard/:wordbookId`：选中词本的进度、今日计划、最近活动、七日历、周统计与连续天数。
-- 未匹配的路径
-  - `404`: `{ "error": { "code": "NOT_FOUND", "message": "Route not found" } }`
-- 非法 JSON 请求体
-  - `400`: `{ "error": { "code": "INVALID_JSON", "message": "Request body contains invalid JSON" } }`
-- 不允许的 CORS 来源
-  - `403`: `{ "error": { "code": "CORS_ORIGIN_DENIED", "message": "Origin is not allowed" } }`
-- 未处理异常
-  - `500`: `{ "error": { "code": "INTERNAL_ERROR", "message": "An unexpected error occurred" } }`
+- 匿名 API 需要合法的 `X-Vocab-Client-Id`。它只是匿名数据分区标识，不是账号凭据。
+- 当会话有效时，服务端始终使用会话账号的 `clientId`；请求头中的其他值不会切换数据空间。
+- 已归属账号的 `clientId` 在没有会话时返回 `401 AUTH_REQUIRED`，避免退出后或泄漏 ID 时继续访问账号数据。
+- `POST /api/auth/register`
+  - 用户名 2–20 位字母、数字、下划线、连字符或中文；密码 8–72 位。
+  - `201 { username, clientId }`；用户名或匿名空间冲突为 `409`。
+- `POST /api/auth/login`
+  - `200 { username, clientId }`；错误凭据为 `401`；跨账号数据空间或活跃会话切号为 `409`。
+  - 仅未归属账号的匿名空间可合并；重复登录不重复导入。
+- `POST /api/auth/logout`：幂等返回 `204`，撤销当前会话并清 Cookie。
+- `GET /api/auth/me`：有效会话返回账号 DTO，否则 `401`。
+
+## 社区可见性
+
+- `public`：进入广场列表，可按 ID 查看/收藏/加入；发布或切换到公开必须登录。
+- `unlisted`：不进入广场，不能按 ID 直达加入，只能通过分享码导入；已收藏后转为邀请码的条目仍可在收藏中看到并取消。
+- `private`：只在所有者的“我的上传”中可见；分享码也不能导入。
+- 上传作者由有效会话注入，客户端请求体中的 `author` 不会进入解析结果。
+- 非所有者更新或删除统一返回 `404`，避免资源枚举。
+- 所有者上传 DTO 可返回 `sourceWordbookId`，公共卡片不暴露私有源词本。
+
+## SQLite 持久化
+
+- 默认路径：`DATABASE_FILE=./data/study-state.sqlite`。
+- `users`、`sessions`、`catalog` 使用关系表和唯一约束；每个匿名/账号数据空间在 `clients` 中占一行 JSON。
+- WAL、外键、busy timeout 已启用。BaseStore 在一次领域变更前后做 diff，SQLite 只 upsert/delete 变化行。
+- `DATA_FILE=./data/study-state.json` 是旧版导入源。数据库为空且尚无迁移标记时导入一次；之后修改旧 JSON 不会覆盖 SQLite。
+- 备份运行中的数据库时必须使用 SQLite 在线备份方式；简单文件复制应在服务停止后进行，并包含 WAL。
 
 ## 环境变量
 
-- `PORT`：监听端口，默认 `3000`，必须是 `1-65535` 的整数。
-- `FRONTEND_ORIGIN`：允许跨域访问的前端来源，默认 `http://localhost:5173,http://127.0.0.1:5173`；多个来源用英文逗号分隔。
-- `WIKTAPI_BASE_URL`：WiktApi 英语单词端点，默认 `https://api.wiktapi.dev/v1/en/word`。
-- `WIKTAPI_TIMEOUT_MS`：上游超时，默认且最大 `5000`。
-- `WORD_CACHE_TTL_MS` / `WORD_CACHE_MAX_ENTRIES`：成功响应缓存 TTL 与容量，默认 `3600000` / `1000`。
-- `WORD_RATE_LIMIT_WINDOW_MS` / `WORD_RATE_LIMIT_MAX_REQUESTS`：查词限流窗口与次数，默认 `60000` / `60`。
-- `DATA_FILE`：匿名词本与学习数据 JSON 路径，默认 `./data/study-state.json`；写入串行执行并用同目录临时文件原子替换。
-- 读取既有 v2 `DATA_FILE` 时会非破坏性补齐缺失的内置 catalog 种子（同 ID 的已有记录、用户上传和客户端数据保持不变），并立即原子写回升级后的文件。
-- 本地配置从 `.env.example` 复制到 `.env`；`.env` 不提交版本库。
+- `PORT=3000`
+- `DATABASE_FILE=./data/study-state.sqlite`
+- `DATA_FILE=./data/study-state.json`
+- `STATIC_DIR`：生产前端构建目录；为空则只提供 API。
+- `FRONTEND_ORIGIN`：额外允许的浏览器来源，逗号分隔；同源生产请求自动允许。
+- `TRUST_PROXY=0`：反向代理跳数，必须按真实拓扑配置。
+- `LOGIN_RATE_LIMIT_WINDOW_MS=900000`
+- `LOGIN_RATE_LIMIT_MAX_REQUESTS=10`
+- `WORD_RATE_LIMIT_WINDOW_MS=60000`
+- `WORD_RATE_LIMIT_MAX_REQUESTS=60`
+- 其余词典与缓存变量见 `backend/.env.example`。
 
-## 运行与验证
+## 验证
 
-在 `backend/` 目录执行：
+在仓库根目录执行：
 
-```powershell
-npm install
-npm run dev
-npm run typecheck
-npm test
+```bash
 npm run build
-npm start
+npm test
 ```
 
-## 关键决定
+单包检查：
 
-- 前后端依赖与构建完全分离，后端拥有独立 `package.json`。
-- `app.ts` 不监听端口，便于自动化测试；只有 `server.ts` 启动服务。
-- API 错误统一使用 `{ error: { code, message } }`，不向客户端泄露堆栈。
-- JSON 请求体限制为 `100kb`；CORS 来源通过环境变量显式配置。
-- 查询词按前端契约执行 trim、连续空白折叠和小写化；仅允许英文字母主体及内部连字符/撇号。
-- WiktApi 使用 `?lang=en`；并行请求 `/definitions`（义项/POS 权威、必需）与完整词条（IPA/HTTPS MP3、可降级），共享最多 5 秒总预算。
-- 运行时校验所有上游结构，聚合英文词性/释义并全局截断至 8 条。
-- `phonetic` 非空时统一为 `/.../`；`audioUrl` 只输出 HTTPS 音频。
-- 仅成功词条进入有界 TTL 进程内缓存；相同词的并发请求共享一次上游调用。
-- 限流仅作用于查词路由，是单进程方案；未配置反向代理信任。
+```bash
+npm run typecheck --prefix backend
+npm test --prefix backend
+npm run typecheck --prefix frontend
+npm test --prefix frontend
+```
 
-## 已知问题
+当前后端回归覆盖 91 项，前端覆盖 57 项；根目录另有真实浏览器账号/社区流程脚本。
 
-- 缓存与限流均为单进程内存状态，多实例部署时不会共享。
-- JSON store 仅适于单机/开发期；多实例、跨进程写入和高容量目录需迁移到数据库或共享存储。
-- `X-Vocab-Client-Id` 不构成身份认证；清理浏览器存储或换客户端会得到新的匿名空间。共享上传还没有审核/权限管理。
-- 部署到反向代理后，需要按实际代理拓扑审慎配置 Express `trust proxy`，否则客户端 IP 限流可能不准确。
+## 已知边界
 
-## 下一步
-
-- 前端按 `X-Vocab-Client-Id` 接入词本广场、我的词本和学习工作台；原 localStorage 单词本可迁移为首个个人词本。
-- 确定部署拓扑后升级为数据库、增加真实认证/作者权限、共享缓存/限流与生产日志。
+- 登录、查词和变更限流是单进程内存状态，多实例部署应换成共享限流。
+- SQLite 适合单机或单写进程；不要让多个容器并发挂载同一个普通文件卷写入。
+- 当前账号是用户名 + 密码 MVP，尚无邮箱验证、找回密码、改密、注销账号与后台审核。
+- 用户上传社区内容尚无举报/审核系统；公开部署前应补运营规则与内容治理。
