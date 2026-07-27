@@ -5,6 +5,16 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="description" content="墨水词典 · Vocab IELTS — 为 IELTS 学习者准备的纸上词库：查词、单词本、单词卡与听写。" />
     <meta name="theme-color" content="#f3ede3" />
+    <script>
+      // Pre-paint theme restore: keeps returning dark-mode users from flashing light.
+      try {
+        var rawTheme = localStorage.getItem('vocab-ielts:theme:v1')
+        if (rawTheme === 'dark' || JSON.parse(rawTheme) === 'dark') {
+          document.documentElement.dataset.theme = 'dark'
+          document.querySelector('meta[name="theme-color"]').setAttribute('content', '#0c1622')
+        }
+      } catch (e) {}
+    </script>
     <title>墨水词典 · Vocab IELTS</title>
   </head>
   <body>

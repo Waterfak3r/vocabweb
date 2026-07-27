@@ -1,8 +1,12 @@
 /* 墨水词典 · Marginalia — design tokens */
 :root {
+  color-scheme: light;
+
   /* Paper & ink */
   --bg: #fdf9f4;
+  --bg-glow: radial-gradient(circle at 50% -15%, #fffefa 0, rgba(255, 254, 250, 0.72) 34%, transparent 64%);
   --surface: rgba(255, 253, 250, 0.88);
+  --surface-solid: #fffdfa;
   --ink: #0d2238;
   --muted: #687381;
   --rule: #e7ded2;
@@ -10,8 +14,11 @@
   /* Cambridge blue — the only brand accent */
   --accent: #0d385b;
   --accent-hover: #092c49;
+  --accent-strong: #0d385b;
   --accent-soft: #e5eef4;
+  --on-accent: #fdf9f4;
   --gold: #af9064;
+  --gold-strong: #7a5f33;
   --gold-soft: #f4ede2;
 
   /* Semantic — result states only, never brand */
@@ -19,6 +26,12 @@
   --success-soft: #dce8e1;
   --danger: #8b3a2f;
   --danger-soft: #f0ddd7;
+
+  /* Controls */
+  --input-bg: #ffffff;
+  --input-border: #c5ccd4;
+  --hover-bg: #f7f5f1;
+  --track: #ece7de;
 
   /* Type */
   --font-serif: 'Source Serif 4 Variable', 'Source Serif 4', 'Noto Serif SC', 'Songti SC', 'SimSun', serif;
@@ -39,10 +52,46 @@
   --radius-md: 8px;
   --radius-lg: 12px;
   --shadow-soft: 0 2px 8px rgba(39, 31, 20, 0.05), 0 10px 24px rgba(39, 31, 20, 0.025);
+  --shadow-modal: 0 1.4rem 4rem rgba(13, 39, 60, 0.24);
 
   /* Reading measure */
   --page-width: 96.25rem;
 
   /* Motion */
   --ease-paper: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Ink dark — the same desk at night, lamplight on dark navy */
+[data-theme='dark'] {
+  color-scheme: dark;
+
+  --bg: #0c1622;
+  --bg-glow: radial-gradient(circle at 50% -15%, #152a40 0, rgba(21, 42, 64, 0.55) 34%, transparent 64%);
+  --surface: rgba(23, 38, 55, 0.88);
+  --surface-solid: #172638;
+  --ink: #eae5d9;
+  --muted: #95a4b4;
+  --rule: #2b4059;
+
+  --accent: #35709f;
+  --accent-hover: #4785b5;
+  --accent-strong: #8fbde6;
+  --accent-soft: #1a3049;
+  --on-accent: #f4f7fa;
+  --gold: #c9ac7c;
+  --gold-strong: #d6ba8a;
+  --gold-soft: #2e2718;
+
+  --success: #68ab8b;
+  --success-soft: #1c3028;
+  --danger: #d07a64;
+  --danger-soft: #3a2118;
+
+  --input-bg: #101e2d;
+  --input-border: #33506b;
+  --hover-bg: #1b3047;
+  --track: #27394e;
+
+  --shadow-soft: 0 2px 8px rgba(0, 0, 0, 0.45), 0 10px 24px rgba(0, 0, 0, 0.35);
+  --shadow-modal: 0 1.4rem 4rem rgba(0, 0, 0, 0.55);
 }

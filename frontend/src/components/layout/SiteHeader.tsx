@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 
 import { NavLink } from 'react-router-dom'
 import { AuthDialog, type AuthMode } from '../account/AuthDialog'
 import { useAuth } from '../../hooks/useAuth'
+import { useTheme } from '../../hooks/useTheme'
 
 const NAVIGATION = [
   { to: '/', label: '查词', icon: 'search', end: true },
@@ -54,6 +55,7 @@ export function SiteHeader() {
   const accountMenuRef = useRef<HTMLDivElement>(null)
   const accountTriggerRef = useRef<HTMLButtonElement>(null)
   const { user, loading, login, register, logout } = useAuth()
+  const { theme, toggleTheme } = useTheme()
 
   function openAuth(mode: AuthMode) {
     setLogoutError('')
@@ -142,6 +144,25 @@ export function SiteHeader() {
             {label}
           </NavLink>
         ))}
+        <button
+          type="button"
+          className="nav-link theme-toggle"
+          aria-label={theme === 'dark' ? '切换到白天模式' : '切换到黑夜模式'}
+          aria-pressed={theme === 'dark'}
+          title={theme === 'dark' ? '切换到白天模式' : '切换到黑夜模式'}
+          onClick={toggleTheme}
+        >
+          <svg className="nav-icon" viewBox="0 0 24 24" aria-hidden="true">
+            {theme === 'dark' ? (
+              <>
+                <circle cx="12" cy="12" r="4.5" />
+                <path d="M12 2.5v2.5M12 19v2.5M2.5 12h2.5M19 12h2.5M5 5l1.8 1.8M17.2 17.2 19 19M19 5l-1.8 1.8M6.8 17.2 5 19" />
+              </>
+            ) : (
+              <path d="M20.4 14.5A8.5 8.5 0 0 1 9.5 3.6a8.5 8.5 0 1 0 10.9 10.9Z" />
+            )}
+          </svg>
+        </button>
         <div ref={accountMenuRef} className="account-menu">
           <button
             ref={accountTriggerRef}

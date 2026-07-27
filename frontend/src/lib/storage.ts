@@ -37,6 +37,29 @@ export function readStorage<T>(
   }
 }
 
+/**
+ * Read a plain string written by writeStorage/writeStorageString.
+ * parseStorageJson rejects bare strings (it expects Zustand object payloads),
+ * so string-valued keys need this single-level parse instead.
+ */
+export function readStorageString(
+  key: string,
+  storage: StorageLike = window.localStorage,
+): string | null {
+  try {
+    const raw = storage.getItem(key)
+    if (raw === null) return null
+    try {
+      const parsed: unknown = JSON.parse(raw)
+      return typeof parsed === 'string' ? parsed : null
+    } catch {
+      return raw
+    }
+  } catch {
+    return null
+  }
+}
+
 /** Returns false when the value could not be persisted (quota, privacy mode). */
 export function writeStorage(
   key: string,

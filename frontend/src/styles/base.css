@@ -1,8 +1,6 @@
 /* Base typography and elements */
 body {
-  background:
-    radial-gradient(circle at 50% -15%, #fffefa 0, rgba(255, 254, 250, 0.72) 34%, transparent 64%),
-    var(--bg);
+  background: var(--bg-glow), var(--bg);
   color: var(--ink);
   font-family: var(--font-sans);
   font-size: var(--text-base);
@@ -29,7 +27,7 @@ h3 {
 }
 
 a {
-  color: var(--accent);
+  color: var(--accent-strong);
   text-decoration: none;
 }
 

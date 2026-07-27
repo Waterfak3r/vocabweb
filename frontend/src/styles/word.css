@@ -34,7 +34,6 @@
   padding: 0.2rem 0.65rem;
   border-radius: 999px;
   background: var(--gold-soft);
-  color: #9a7650;
   font-size: var(--text-xs);
   font-weight: 500;
   color: var(--muted);
@@ -118,7 +117,7 @@
   border-top-right-radius: var(--radius-sm);
   border-bottom-right-radius: var(--radius-sm);
   background: var(--accent);
-  color: white;
+  color: var(--on-accent);
   font-size: 0.9rem;
   cursor: pointer;
   transition: filter 120ms ease-out;
@@ -126,6 +125,13 @@
 
 .collect-chevron:hover:not(:disabled) {
   filter: brightness(1.06);
+}
+
+/* Once the word is saved the left half goes quiet, so the chevron follows it. */
+.collect-split:has(.btn-ghost) .collect-chevron {
+  border-color: var(--rule);
+  background: transparent;
+  color: var(--muted);
 }
 
 .collect-chevron:disabled {
@@ -214,7 +220,7 @@
 }
 
 .collect-menu-new {
-  color: var(--accent);
+  color: var(--accent-strong);
   font-weight: 600;
 }
 
@@ -389,7 +395,7 @@
   margin-top: 0.85rem;
   font-size: 1.2rem;
   font-weight: 500;
-  color: #9d784f;
+  color: var(--gold-strong);
   letter-spacing: 0.04em;
 }
 
@@ -402,7 +408,7 @@
 .book-sketch {
   width: min(25rem, 36vw);
   margin: -0.15rem 0.45rem 0 0;
-  color: #ded3c4;
+  color: var(--rule);
   opacity: 0.72;
 }
 
@@ -486,8 +492,8 @@
 .home-result .marginal {
   padding: 0.2rem 0.6rem;
   border-radius: 999px;
-  background: #edf1f3;
-  color: #476176;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
   font-size: var(--text-sm);
   letter-spacing: 0;
 }
@@ -533,7 +539,7 @@
   aspect-ratio: 1;
   place-items: center;
   border-radius: 50%;
-  background: conic-gradient(var(--accent) var(--progress), #ece7de 0);
+  background: conic-gradient(var(--accent) var(--progress), var(--track) 0);
 }
 
 .progress-ring::before {
@@ -561,8 +567,8 @@
   place-content: center;
   border: 5px solid var(--accent);
   border-radius: 50%;
-  background: radial-gradient(circle at 50% 50%, rgba(255, 255, 255, 0.48), transparent 70%);
-  color: var(--accent);
+  background: radial-gradient(circle at 50% 50%, color-mix(in srgb, var(--surface-solid) 48%, transparent), transparent 70%);
+  color: var(--accent-strong);
   text-align: center;
 }
 
@@ -643,7 +649,7 @@
 }
 
 .study-steps a:hover {
-  color: var(--accent);
+  color: var(--accent-strong);
 }
 
 .study-steps li:not(:last-child)::after {
@@ -651,7 +657,7 @@
   top: 2.2rem;
   left: 1.05rem;
   height: 0.6rem;
-  border-left: 2px dotted #abc0ce;
+  border-left: 2px dotted var(--rule);
   content: '';
 }
 
@@ -662,7 +668,7 @@
   place-items: center;
   border-radius: 50%;
   background: var(--accent);
-  color: white;
+  color: var(--on-accent);
 }
 
 .study-step-icon svg {
@@ -763,7 +769,7 @@
 }
 
 .dictation-score strong {
-  color: var(--accent);
+  color: var(--accent-strong);
   font-size: 1.3em;
 }
 

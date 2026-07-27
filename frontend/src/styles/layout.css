@@ -53,7 +53,7 @@
   font-size: 2.55rem;
   font-weight: 700;
   line-height: 0.9;
-  color: var(--accent);
+  color: var(--accent-strong);
 }
 
 .brand-name {
@@ -117,10 +117,17 @@
 
 .account-menu { position: relative; }
 
-.account-trigger {
+.account-trigger,
+.theme-toggle {
   border: 0;
   background: transparent;
   cursor: pointer;
+  font-family: inherit;
+}
+
+/* Icon-only control: pad sideways so the tap target clears 24px. */
+.theme-toggle {
+  padding-inline: 0.35rem;
 }
 
 .nav-chevron {
@@ -143,7 +150,7 @@
   padding: 0.45rem;
   border: 1px solid var(--rule);
   border-radius: var(--radius-md);
-  background: #fffdfa;
+  background: var(--surface-solid);
   box-shadow: var(--shadow-soft);
 }
 
@@ -167,16 +174,16 @@
 .page-loading {
   margin: 4rem auto;
   text-align: center;
-  color: var(--muted, #687381);
+  color: var(--muted);
 }
 
 .storage-warning {
   width: min(var(--page-width), calc(100% - 2.5rem));
   margin: 0.9rem auto 0;
   padding: 0.6rem 0.9rem;
-  border: 1px solid var(--danger, #8b3a2f);
+  border: 1px solid var(--danger);
   border-radius: 0.4rem;
-  color: var(--danger, #8b3a2f);
+  color: var(--danger);
   font-size: 0.9rem;
 }
 
@@ -216,7 +223,7 @@
 .site-footer span {
   width: 1.1rem;
   height: 1px;
-  background: #aeb4b7;
+  background: var(--rule);
 }
 
 /* The marketplace and wordbook references end with their content cards. */
@@ -266,10 +273,15 @@
 
   .main-nav {
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    /* The icon-only theme toggle takes just its glyph, leaving the labels their width. */
+    grid-template-columns: repeat(3, minmax(0, 1fr)) auto minmax(0, 1fr);
     gap: 0.15rem;
     max-width: 100%;
   }
+
+  /* Keeps the toggle's tap target past the 24px minimum without eating a label column. */
+  .theme-toggle { padding-inline: 0.35rem; }
+
 
   .nav-link {
     min-width: 0;
@@ -286,6 +298,8 @@
 }
 
 @media (max-width: 390px) {
-  .nav-link { font-size: 0.78rem; }
+  .nav-link { font-size: 0.74rem; }
   .nav-icon { display: none; }
+  /* The theme toggle is icon-only, so it keeps its glyph where labels drop theirs. */
+  .theme-toggle .nav-icon { display: block; }
 }
