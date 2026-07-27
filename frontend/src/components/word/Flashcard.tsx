@@ -8,6 +8,7 @@ export type FlashcardProps = {
   item: WordbookItem
   flipped: boolean
   onFlip: () => void
+  onMastered?: () => void
   preferences?: StudyDisplayPreferences
 }
 
@@ -36,6 +37,7 @@ export function Flashcard({
   item,
   flipped,
   onFlip,
+  onMastered,
   preferences = {
     meaningPreference: 'zh',
     showExamples: true,
@@ -67,6 +69,18 @@ export function Flashcard({
           </span>
         </span>
       </button>
+
+      {onMastered && flipped && (
+        <button
+          type="button"
+          className={styles.mastered}
+          aria-label={`将 ${item.word} 标为已熟并移出学习`}
+          title="已熟，移出学习"
+          onClick={onMastered}
+        >
+          熟
+        </button>
+      )}
 
       <div className={styles.cardActions}>
         <PronounceButton word={item.word} audioUrl={item.audioUrl} />

@@ -22,6 +22,7 @@ import {
   DEFAULT_STUDY_PREFERENCES,
   readStudyPreferences,
   writeStudyPreferences,
+  type DictationDisplayPreferences,
   type StudyDisplayPreferences,
   type StudyModeKey,
   type WordbookStudyPreferences,
@@ -620,7 +621,7 @@ function StudySettingsDialog({ section, preferences, wordCount, onChange, onClos
     ...preferences,
     plan: { ...preferences.plan, [key]: Math.max(0, Math.min(999, Math.round(value || 0))) },
   })
-  const updateMode = (key: keyof StudyDisplayPreferences | 'underlineMistakes', value: boolean | 'zh' | 'en') => {
+  const updateMode = (key: keyof DictationDisplayPreferences, value: boolean | 'zh' | 'en') => {
     if (section === 'plan') return
     onChange({
       ...preferences,
@@ -644,9 +645,14 @@ function StudySettingsDialog({ section, preferences, wordCount, onChange, onClos
           <button type="button" className={modePreferences.meaningPreference === 'zh' ? 'selected' : ''} onClick={() => updateMode('meaningPreference', 'zh')}>中文释义优先</button>
           <button type="button" className={modePreferences.meaningPreference === 'en' ? 'selected' : ''} onClick={() => updateMode('meaningPreference', 'en')}>英英释义优先</button>
         </div><small>所选语言缺失时会自动回退，保证始终有释义可看。</small></fieldset>
-        <SettingToggle label="显示例句" detail="在答案或卡片背面展示词典例句" checked={modePreferences.showExamples} onChange={(value) => updateMode('showExamples', value)} />
+        {(section !== 'dictation' || preferences.modes.dictation.showMeaning) && <SettingToggle label="显示例句" detail="在答案或卡片背面展示词典例句" checked={modePreferences.showExamples} onChange={(value) => updateMode('showExamples', value)} />}
         <SettingToggle label="显示音标" detail="在词头或答案中展示音标" checked={modePreferences.showPhonetic} onChange={(value) => updateMode('showPhonetic', value)} />
-        {section === 'dictation' && <SettingToggle label="标出错字母" detail="用红色下划线标记输入中位置错误的字母" checked={preferences.modes.dictation.underlineMistakes} onChange={(value) => updateMode('underlineMistakes', value)} />}
+        {section === 'dictation' && <>
+          <SettingToggle label="自动播放发音" detail="进入每道新题时自动播放一次" checked={preferences.modes.dictation.autoPlayAudio} onChange={(value) => updateMode('autoPlayAudio', value)} />
+          <SettingToggle label="显示释义" detail="答题前和判题后显示所选语言的释义" checked={preferences.modes.dictation.showMeaning} onChange={(value) => updateMode('showMeaning', value)} />
+          <SettingToggle label="显示字符位数" detail="用空心方框提示答案长度，保留连字符和撇号" checked={preferences.modes.dictation.showCharacterMask} onChange={(value) => updateMode('showCharacterMask', value)} />
+          <SettingToggle label="标出错字母" detail="用红色下划线标记输入中位置错误的字母" checked={preferences.modes.dictation.underlineMistakes} onChange={(value) => updateMode('underlineMistakes', value)} />
+        </>}
       </div>}
       <footer><Button onClick={onClose}>完成</Button></footer>
     </section>
@@ -657,7 +663,7 @@ function SettingToggle({ label, detail, checked, onChange }: { label: string; de
   return <label className="study-setting-toggle"><span><strong>{label}</strong><small>{detail}</small></span><input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} /><i aria-hidden="true" /></label>
 }
 
-function StudySessionDialog({ book, mode, preferences, reviewAheadCount = 0, onContinueAhead, onClose }: { book: WorkspaceBook; mode: StudyMode; preferences: StudyDisplayPreferences & { underlineMistakes?: boolean }; reviewAheadCount?: number; onContinueAhead?: () => void; onClose: () => void }) {
+function StudySessionDialog({ book, mode, preferences, reviewAheadCount = 0, onContinueAhead, onClose }: { book: WorkspaceBook; mode: StudyMode; preferences: StudyDisplayPreferences & Partial<DictationDisplayPreferences>; reviewAheadCount?: number; onContinueAhead?: () => void; onClose: () => void }) {
   useEffect(() => {
     const previousOverflow = document.body.style.overflow
     document.body.style.overflow = 'hidden'
@@ -679,7 +685,7 @@ function StudySessionDialog({ book, mode, preferences, reviewAheadCount = 0, onC
   </div>
 }
 
-function WordbookStudyMode({ book, mode, preferences, reportEnabled, reviewAheadCount = 0, onContinueAhead, onExit }: { book: WorkspaceBook; mode: StudyMode; preferences: StudyDisplayPreferences & { underlineMistakes?: boolean }; reportEnabled: boolean; reviewAheadCount?: number; onContinueAhead?: () => void; onExit: () => void }) {
+function WordbookStudyMode({ book, mode, preferences, reportEnabled, reviewAheadCount = 0, onContinueAhead, onExit }: { book: WorkspaceBook; mode: StudyMode; preferences: StudyDisplayPreferences & Partial<DictationDisplayPreferences>; reportEnabled: boolean; reviewAheadCount?: number; onContinueAhead?: () => void; onExit: () => void }) {
   const api = getWorkspaceApi()
   const reportVerdict = useCallback((word: string, verdict: 'know' | 'unknown') => {
     if (!reportEnabled || !api) return
@@ -698,7 +704,15 @@ function WordbookStudyMode({ book, mode, preferences, reportEnabled, reviewAhead
   }, [api, book.id, reportEnabled])
   const flashcards = useFlashcardSession(book.entries, reportVerdict, reportMastered)
   const dictation = useDictationSession(book.entries, reportGrade)
-  const { pronounce } = usePronounce(dictation.current?.word ?? '', dictation.current?.audioUrl, .78)
+  const { pronounce, stop } = usePronounce(dictation.current?.word ?? '', dictation.current?.audioUrl, .78)
+  useEffect(() => {
+    if (mode !== 'dictation' || !preferences.autoPlayAudio || dictation.phase !== 'prompt' || !dictation.current) return
+    const timer = window.setTimeout(pronounce, 0)
+    return () => {
+      window.clearTimeout(timer)
+      stop()
+    }
+  }, [dictation.current, dictation.phase, mode, preferences.autoPlayAudio, pronounce, stop])
 
   const modeTitle = mode === 'new' ? '新词学习' : mode === 'review' ? '复习巩固' : '听写训练'
   const emptyBody = mode === 'review'
@@ -709,11 +723,11 @@ function WordbookStudyMode({ book, mode, preferences, reportEnabled, reviewAhead
   if (book.entries.length === 0) return <section className="workspace-study"><StudyHeader book={book} mode={mode} onExit={onExit} /><EmptyState title={`暂无可用于${modeTitle}的单词`} body={emptyBody} action={<Button onClick={onExit}>关闭窗口</Button>} /></section>
 
   if (mode !== 'dictation') {
-    return <section className="workspace-study"><StudyHeader book={book} mode={mode} onExit={onExit} />{flashcards.done ? <div className="workspace-session-summary"><p>本轮{modeTitle}完成</p><h2>掌握 <strong>{flashcards.knownCount}</strong> 词，共 {flashcards.totalCount} 词</h2><p>{flashcards.unknownCount ? `${flashcards.unknownCount} 个词已标记为不熟，可稍后继续复习。` : '这一轮表现很好，继续保持。'}</p><div><Button onClick={flashcards.restart}>再来一轮</Button>{mode === 'review' && onContinueAhead && reviewAheadCount > 0 && <Button onClick={onContinueAhead}>继续复习未到期的 {reviewAheadCount} 词</Button>}<Button variant="secondary" onClick={onExit}>关闭窗口</Button></div></div> :<><div className="workspace-study-progress"><span>{modeTitle}</span><strong>{flashcards.reviewedCount} / {flashcards.totalCount}</strong></div>{flashcards.current && <Flashcard item={flashcards.current} flipped={flashcards.flipped} onFlip={flashcards.flip} preferences={preferences} />}<FlashcardControls flipped={flashcards.flipped} onFlip={flashcards.flip} onKnow={flashcards.markKnown} onUnknown={flashcards.markUnknown} disableVerdicts={!flashcards.flipped} onMastered={flashcards.markMastered} /></>}</section>
+    return <section className="workspace-study"><StudyHeader book={book} mode={mode} onExit={onExit} />{flashcards.done ? <div className="workspace-session-summary"><p>本轮{modeTitle}完成</p><h2>认识 <strong>{flashcards.knownCount}</strong> 词，共 {flashcards.totalCount} 词</h2><p>{flashcards.unknownCount ? `${flashcards.unknownCount} 个词已标记为不认识，可稍后继续复习。` : '这一轮表现很好，继续保持。'}</p><div><Button onClick={flashcards.restart}>再来一轮</Button>{mode === 'review' && onContinueAhead && reviewAheadCount > 0 && <Button onClick={onContinueAhead}>继续复习未到期的 {reviewAheadCount} 词</Button>}<Button variant="secondary" onClick={onExit}>关闭窗口</Button></div></div> :<><div className="workspace-study-progress"><span>{modeTitle}</span><strong>{flashcards.reviewedCount} / {flashcards.totalCount}</strong></div>{flashcards.current && <Flashcard item={flashcards.current} flipped={flashcards.flipped} onFlip={flashcards.flip} onMastered={flashcards.markMastered} preferences={preferences} />}<FlashcardControls flipped={flashcards.flipped} onFlip={flashcards.flip} onKnow={flashcards.markKnown} onUnknown={flashcards.markUnknown} disableVerdicts={!flashcards.flipped} /></>}</section>
   }
 
   const lastAnswer = dictation.answers[dictation.answers.length - 1]
-  return <section className="workspace-study"><StudyHeader book={book} mode={mode} onExit={onExit} />{dictation.phase === 'summary' ? <div className="workspace-session-summary"><DictationSummary total={dictation.deck.length} correct={dictation.correctCount} wrong={dictation.wrongDeck} onRetryAll={dictation.retryAll} onRetryWrong={dictation.retryWrong} /><Button variant="secondary" onClick={onExit}>关闭窗口</Button></div> : <><div className="workspace-study-progress"><span>听写训练</span><strong>{dictation.index + 1} / {dictation.deck.length}</strong></div>{dictation.current && <DictationPrompt item={dictation.current} answer={dictation.answer} onAnswerChange={dictation.setAnswer} onSubmit={dictation.submit} onNext={dictation.next} onPlay={pronounce} phase={dictation.phase} grade={dictation.phase === 'feedback' ? lastAnswer?.grade ?? null : null} error={dictation.inputError} isLast={dictation.isLast} preferences={preferences} />}</>}</section>
+  return <section className="workspace-study"><StudyHeader book={book} mode={mode} onExit={onExit} />{dictation.phase === 'summary' ? <div className="workspace-session-summary"><DictationSummary total={dictation.deck.length} correct={dictation.correctCount} wrong={dictation.wrongDeck} onRetryAll={dictation.retryAll} onRetryWrong={dictation.retryWrong} /><Button variant="secondary" onClick={onExit}>关闭窗口</Button></div> : <><div className="workspace-study-progress"><span>听写训练</span><strong>{dictation.index + 1} / {dictation.deck.length}</strong></div>{dictation.current && <DictationPrompt item={dictation.current} answer={dictation.answer} onAnswerChange={dictation.setAnswer} onSubmit={dictation.submit} onNext={dictation.next} onPlay={pronounce} phase={dictation.phase} grade={dictation.phase === 'feedback' ? lastAnswer?.grade ?? null : null} error={dictation.inputError} isLast={dictation.isLast} preferences={preferences as DictationDisplayPreferences} />}</>}</section>
 }
 
 function StudyHeader({ book, mode, onExit }: { book: WorkspaceBook; mode: StudyMode; onExit: () => void }) {

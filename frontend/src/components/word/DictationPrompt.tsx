@@ -1,5 +1,5 @@
 import { useEffect, useRef, type FormEvent } from 'react'
-import type { StudyDisplayPreferences } from '../../data/studyPreferences'
+import type { DictationDisplayPreferences } from '../../data/studyPreferences'
 import type { DictationGrade, WordbookItem } from '../../domain/types'
 import { Button } from '../ui/Button'
 import { TextField } from '../ui/TextField'
@@ -18,9 +18,7 @@ export type DictationPromptProps = {
   grade: DictationGrade | null
   error?: string
   isLast: boolean
-  preferences?: StudyDisplayPreferences & {
-    underlineMistakes?: boolean
-  }
+  preferences?: DictationDisplayPreferences
 }
 
 export function spellingCharacters(given: string, expected: string) {
@@ -28,6 +26,10 @@ export function spellingCharacters(given: string, expected: string) {
     character,
     incorrect: character.toLocaleLowerCase() !== Array.from(expected)[index]?.toLocaleLowerCase(),
   }))
+}
+
+export function characterMask(word: string) {
+  return Array.from(word).map((character) => /[a-z]/i.test(character) ? '□' : character).join('')
 }
 
 export function DictationPrompt({
@@ -44,8 +46,11 @@ export function DictationPrompt({
   preferences = {
     meaningPreference: 'zh',
     showExamples: true,
-    showPhonetic: true,
+    showPhonetic: false,
     underlineMistakes: true,
+    autoPlayAudio: true,
+    showMeaning: false,
+    showCharacterMask: true,
   },
 }: DictationPromptProps) {
   const inputRef = useRef<HTMLInputElement>(null)
@@ -77,6 +82,22 @@ export function DictationPrompt({
             再播一次
           </Button>
         </div>
+        {(preferences.showPhonetic || preferences.showMeaning) && (
+          <div className="dictation-prompt-hints">
+            {preferences.showPhonetic && item.phonetic && <p className="dictation-answer-phonetic">{item.phonetic}</p>}
+            {preferences.showMeaning && (
+              <MeaningList
+                meanings={preferredMeanings(item, preferences.meaningPreference)}
+                showExamples={preferences.showExamples}
+              />
+            )}
+          </div>
+        )}
+        {phase === 'prompt' && preferences.showCharacterMask && (
+          <p className="dictation-character-mask" aria-label={`答案由 ${Array.from(item.word).filter((character) => /[a-z]/i.test(character)).length} 个英文字母组成`}>
+            {characterMask(item.word)}
+          </p>
+        )}
       </div>
 
       <TextField
@@ -122,13 +143,13 @@ export function DictationPrompt({
               </p>
             </>
           )}
-          <div className="dictation-answer-details">
+          {(preferences.showPhonetic || preferences.showMeaning) && <div className="dictation-answer-details">
             {preferences.showPhonetic && item.phonetic && <p className="dictation-answer-phonetic">{item.phonetic}</p>}
-            <MeaningList
+            {preferences.showMeaning && <MeaningList
               meanings={preferredMeanings(item, preferences.meaningPreference)}
               showExamples={preferences.showExamples}
-            />
-          </div>
+            />}
+          </div>}
           <div className="dictation-actions">
             <Button type="submit">{isLast ? '看结果' : '下一题'}</Button>
           </div>

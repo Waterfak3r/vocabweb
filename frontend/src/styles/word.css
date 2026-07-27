@@ -347,6 +347,54 @@
   gap: 1rem;
 }
 
+.study-verdicts {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  align-items: center;
+  gap: clamp(3rem, 15vw, 10rem);
+}
+.study-verdict {
+  display: grid;
+  justify-items: center;
+  gap: 0.7rem;
+  min-height: 4.7rem;
+  padding: 0.55rem 1rem;
+  color: var(--ink);
+  font-family: var(--font-serif);
+  font-size: clamp(1.45rem, 3vw, 2rem);
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  transition: color 180ms ease, transform 180ms ease, opacity 180ms ease;
+}
+.study-verdict i {
+  width: 2rem;
+  height: 0.32rem;
+  border-radius: 99px;
+  background: currentColor;
+  transition: width 180ms ease;
+}
+.study-verdict.known { color: #1d9e8d; }
+.study-verdict.unknown { color: #cc4f5e; }
+.study-verdict:hover:not(:disabled) { transform: translateY(-2px); }
+.study-verdict:hover:not(:disabled) i { width: 3rem; }
+.study-verdict:active:not(:disabled) { transform: translateY(1px) scale(0.98); }
+.study-verdict:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 0.45rem; }
+.study-verdict:disabled { cursor: not-allowed; filter: grayscale(0.75); opacity: 0.28; }
+.study-flip {
+  position: absolute;
+  left: 50%;
+  min-width: 5.5rem;
+  padding: 0.55rem 0.8rem;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 0.82rem;
+  transform: translateX(-50%);
+}
+.study-flip:hover { border-color: var(--accent); color: var(--accent-strong); }
+
 /* ── Home ────────────────────────────────── */
 
 .home-lede {
@@ -711,6 +759,26 @@
   gap: 0.6rem;
 }
 
+.dictation-prompt-hints {
+  display: grid;
+  gap: 0.5rem;
+  max-width: 42rem;
+  padding: 0.75rem 0.85rem;
+  border-left: 2px solid var(--accent);
+  background: var(--hover-bg);
+  font-size: var(--text-sm);
+}
+
+.dictation-character-mask {
+  overflow-wrap: anywhere;
+  color: color-mix(in srgb, var(--ink) 72%, var(--muted));
+  font-family: var(--font-mono);
+  font-size: clamp(1.2rem, 3vw, 1.75rem);
+  font-weight: 500;
+  letter-spacing: 0.16em;
+  line-height: 1.4;
+}
+
 .dictation-actions {
   display: flex;
   justify-content: flex-end;
@@ -816,13 +884,8 @@
 }
 
 @media (max-width: 480px) {
-  .study-actions {
-    flex-direction: column;
-  }
-
-  .study-actions .btn {
-    width: 100%;
-  }
+  .study-verdicts { grid-template-columns: 1fr 1fr; gap: 4.5rem; }
+  .study-verdict { padding-inline: 0.25rem; }
 
   .dictation {
     padding: 1.25rem 1rem;

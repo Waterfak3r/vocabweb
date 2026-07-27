@@ -10,8 +10,7 @@ import { useStudySummary } from '../hooks/useStudySummary'
 import { wordOfTheDay } from '../data/ieltsWords'
 import { selectWordbookItems, useWordbook } from '../data/wordbookStore'
 import type { WordEntry } from '../domain/types'
-
-const QUICK_CHIPS = ['ubiquitous', 'exacerbate', 'paradigm', 'viable', 'scrutinise', 'inevitable']
+import { getEngagementApi, type PopularSearch } from '../data/engagementApi'
 
 type StudyStepIconName = 'search' | 'bookmark' | 'practice'
 
@@ -44,15 +43,38 @@ export function HomePage() {
 
   const [inputValue, setInputValue] = useState('')
   const [inputError, setInputError] = useState('')
+  const [popular, setPopular] = useState<PopularSearch[]>([])
+  const [popularState, setPopularState] = useState<'loading' | 'ready' | 'unavailable'>('loading')
   const inputRef = useRef<HTMLInputElement>(null)
   const resultRef = useRef<HTMLDivElement>(null)
 
   const today = wordOfTheDay()
   const wordbookItems = useWordbook(selectWordbookItems)
   const { summary, source: summarySource, isRefreshing, refresh } = useStudySummary(wordbookItems)
+  const loadPopular = useCallback(async () => {
+    const engagementApi = getEngagementApi()
+    if (!engagementApi) {
+      setPopular([])
+      setPopularState('unavailable')
+      return
+    }
+    try {
+      setPopular(await engagementApi.listPopularSearches(7, 8))
+      setPopularState('ready')
+    } catch {
+      setPopular([])
+      setPopularState('unavailable')
+    }
+  }, [])
   const reportLookup = useCallback(
-    (_entry: WordEntry) => { void refresh() },
-    [refresh],
+    (entry: WordEntry) => {
+      void refresh()
+      const engagementApi = getEngagementApi()
+      if (engagementApi) {
+        void engagementApi.reportSearch(entry.word).then(loadPopular).catch(() => undefined)
+      }
+    },
+    [loadPopular, refresh],
   )
   const { state, lookup } = useWordLookup(undefined, reportLookup)
   const savedCount = summary.wordbookTotal
@@ -65,6 +87,10 @@ export function HomePage() {
       resultRef.current?.focus({ preventScroll: false })
     }
   }, [state])
+
+  useEffect(() => {
+    void loadPopular()
+  }, [loadPopular])
 
   function runLookup(raw: string) {
     const error = lookup(raw)
@@ -159,13 +185,14 @@ export function HomePage() {
           </Button>
         </form>
 
-        <div className="chip-row" aria-label="IELTS 高频词，点一下即查">
-          <span className="chip-label" aria-hidden="true">♨&nbsp; 热门搜索</span>
-          {QUICK_CHIPS.map((word) => (
+        <div className="chip-row" aria-label="近 7 天热门搜索">
+          <span className="chip-label" aria-hidden="true">♨&nbsp; 近 7 天热门</span>
+          {popular.map(({ word, count }) => (
             <button
               key={word}
               type="button"
               className="chip"
+              title={`近 7 天搜索 ${count} 次`}
               onClick={() => {
                 setInputValue(word)
                 runLookup(word)
@@ -174,6 +201,9 @@ export function HomePage() {
               {word}
             </button>
           ))}
+          {popularState === 'loading' && <span className="chip-note" role="status">正在读取…</span>}
+          {popularState === 'ready' && popular.length === 0 && <span className="chip-note">近 7 天暂无搜索记录</span>}
+          {popularState === 'unavailable' && <span className="chip-note">热门搜索暂不可用</span>}
         </div>
       </div>
 

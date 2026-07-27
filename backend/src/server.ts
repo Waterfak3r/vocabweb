@@ -1,6 +1,7 @@
 import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { FixedWindowRateLimiter } from "./http/rate-limit.js";
+import { SqliteEngagementStore } from "./engagement/store.js";
 import { WiktApiProvider } from "./providers/wiktapi.js";
 import { SqliteStudyStore } from "./study/sqlite-store.js";
 import { WordService } from "./words/word-service.js";
@@ -23,12 +24,14 @@ const loginRateLimiter = new FixedWindowRateLimiter({
   maxRequests: config.loginRateLimitMaxRequests,
 });
 const studyStore = new SqliteStudyStore(config.databaseFile, { legacyJsonFile: config.dataFile });
+const engagementStore = new SqliteEngagementStore(config.databaseFile);
 const app = createApp({
   frontendOrigins: config.frontendOrigins,
   wordLookup,
   wordRateLimiter,
   loginRateLimiter,
   studyStore,
+  engagementStore,
   ...(config.trustProxy ? { trustProxy: config.trustProxy } : {}),
   ...(config.staticDir ? { staticDir: config.staticDir } : {}),
 });

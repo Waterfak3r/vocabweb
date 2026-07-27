@@ -351,3 +351,8 @@
   font-size: var(--text-sm);
   font-weight: 600;
 }
+
+.chip-note {
+  color: var(--muted);
+  font-size: var(--text-sm);
+}

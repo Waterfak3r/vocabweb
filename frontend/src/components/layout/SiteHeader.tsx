@@ -3,6 +3,7 @@ import { NavLink } from 'react-router-dom'
 import { AuthDialog, type AuthMode } from '../account/AuthDialog'
 import { useAuth } from '../../hooks/useAuth'
 import { useTheme } from '../../hooks/useTheme'
+import { FeedbackDialog } from './FeedbackDialog'
 
 const NAVIGATION = [
   { to: '/', label: '查词', icon: 'search', end: true },
@@ -38,6 +39,18 @@ function NavIcon({ name }: { name: string }) {
         <path d="M5.25 20a6.75 6.75 0 0 1 13.5 0" />
       </>
     ),
+    feedback: (
+      <>
+        <path d="M5 5.5h14v10H10l-4.5 3v-3H5z" />
+        <path d="M8.5 9h7M8.5 12h4.5" />
+      </>
+    ),
+    donation: (
+      <>
+        <path d="M12 20s-7-4.2-7-9.3A3.7 3.7 0 0 1 11.7 8 3.7 3.7 0 0 1 19 10.7C19 15.8 12 20 12 20Z" />
+        <path d="M12 8v7M9.5 10.5h5" />
+      </>
+    ),
   }
 
   return (
@@ -52,10 +65,17 @@ export function SiteHeader() {
   const [authMode, setAuthMode] = useState<AuthMode | null>(null)
   const [logoutError, setLogoutError] = useState('')
   const [loggingOut, setLoggingOut] = useState(false)
+  const [feedbackOpen, setFeedbackOpen] = useState(false)
+  const [donationOpen, setDonationOpen] = useState(false)
+  const [donationImageFailed, setDonationImageFailed] = useState(false)
   const accountMenuRef = useRef<HTMLDivElement>(null)
   const accountTriggerRef = useRef<HTMLButtonElement>(null)
+  const feedbackTriggerRef = useRef<HTMLButtonElement>(null)
+  const donationMenuRef = useRef<HTMLDivElement>(null)
+  const donationTriggerRef = useRef<HTMLButtonElement>(null)
   const { user, loading, login, register, logout } = useAuth()
   const { theme, toggleTheme } = useTheme()
+  const donationImageUrl = import.meta.env.VITE_DONATION_IMAGE_URL?.trim()
 
   function openAuth(mode: AuthMode) {
     setLogoutError('')
@@ -80,6 +100,25 @@ export function SiteHeader() {
       window.removeEventListener('keydown', closeOnEscape)
     }
   }, [accountOpen])
+
+  useEffect(() => {
+    if (!donationOpen) return
+    const closeOutside = (event: PointerEvent) => {
+      if (!donationMenuRef.current?.contains(event.target as Node)) {
+        setDonationOpen(false)
+        donationTriggerRef.current?.blur()
+      }
+    }
+    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key === 'Escape') setDonationOpen(false)
+    }
+    document.addEventListener('pointerdown', closeOutside)
+    window.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('pointerdown', closeOutside)
+      window.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [donationOpen])
 
   function focusMenuItem(position: 'first' | 'last') {
     requestAnimationFrame(() => {
@@ -144,6 +183,39 @@ export function SiteHeader() {
             {label}
           </NavLink>
         ))}
+        <button
+          ref={feedbackTriggerRef}
+          type="button"
+          className="nav-link nav-action"
+          onClick={() => setFeedbackOpen(true)}
+        >
+          <NavIcon name="feedback" />
+          留言
+        </button>
+        <div ref={donationMenuRef} className={`donation-menu${donationOpen ? ' open' : ''}`}>
+          <button
+            ref={donationTriggerRef}
+            type="button"
+            className="nav-link nav-action donation-trigger"
+            aria-expanded={donationOpen}
+            aria-haspopup="dialog"
+            onClick={() => setDonationOpen((open) => !open)}
+          >
+            <NavIcon name="donation" />
+            打赏
+          </button>
+          <div className="donation-popover" role="dialog" aria-label="打赏">
+            <p>感谢支持</p>
+            {donationImageUrl && !donationImageFailed ? (
+              <img src={donationImageUrl} alt="打赏二维码" onError={() => setDonationImageFailed(true)} />
+            ) : (
+              <div className="donation-placeholder" role="img" aria-label="打赏码待配置">
+                <span aria-hidden="true">赏</span>
+                <small>打赏码待配置</small>
+              </div>
+            )}
+          </div>
+        </div>
         <button
           type="button"
           className="nav-link theme-toggle"
@@ -220,6 +292,9 @@ export function SiteHeader() {
           register={register}
           returnFocus={accountTriggerRef.current}
         />
+      )}
+      {feedbackOpen && (
+        <FeedbackDialog onClose={() => setFeedbackOpen(false)} returnFocus={feedbackTriggerRef.current} />
       )}
     </header>
   )

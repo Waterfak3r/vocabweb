@@ -9,6 +9,13 @@ export type StudyDisplayPreferences = {
   showPhonetic: boolean
 }
 
+export type DictationDisplayPreferences = StudyDisplayPreferences & {
+  underlineMistakes: boolean
+  autoPlayAudio: boolean
+  showMeaning: boolean
+  showCharacterMask: boolean
+}
+
 export type WordbookStudyPreferences = {
   plan: {
     newWords: number
@@ -17,9 +24,7 @@ export type WordbookStudyPreferences = {
   modes: {
     new: StudyDisplayPreferences
     review: StudyDisplayPreferences
-    dictation: StudyDisplayPreferences & {
-      underlineMistakes: boolean
-    }
+    dictation: DictationDisplayPreferences
   }
 }
 
@@ -44,8 +49,11 @@ export const DEFAULT_STUDY_PREFERENCES: WordbookStudyPreferences = {
     dictation: {
       meaningPreference: 'zh',
       showExamples: true,
-      showPhonetic: true,
+      showPhonetic: false,
       underlineMistakes: true,
+      autoPlayAudio: true,
+      showMeaning: false,
+      showCharacterMask: true,
     },
   },
 }
@@ -99,6 +107,18 @@ export function normalizeStudyPreferences(value: unknown): WordbookStudyPreferen
           && typeof modes.dictation.underlineMistakes === 'boolean'
           ? modes.dictation.underlineMistakes
           : DEFAULT_STUDY_PREFERENCES.modes.dictation.underlineMistakes,
+        autoPlayAudio: isRecord(modes.dictation)
+          && typeof modes.dictation.autoPlayAudio === 'boolean'
+          ? modes.dictation.autoPlayAudio
+          : DEFAULT_STUDY_PREFERENCES.modes.dictation.autoPlayAudio,
+        showMeaning: isRecord(modes.dictation)
+          && typeof modes.dictation.showMeaning === 'boolean'
+          ? modes.dictation.showMeaning
+          : DEFAULT_STUDY_PREFERENCES.modes.dictation.showMeaning,
+        showCharacterMask: isRecord(modes.dictation)
+          && typeof modes.dictation.showCharacterMask === 'boolean'
+          ? modes.dictation.showCharacterMask
+          : DEFAULT_STUDY_PREFERENCES.modes.dictation.showCharacterMask,
       },
     },
   }
@@ -140,4 +160,3 @@ export function writeStudyPreferences(
     console.warn('学习偏好未能保存到本地存储', error)
   }
 }
-

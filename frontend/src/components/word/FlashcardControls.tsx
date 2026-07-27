@@ -1,5 +1,3 @@
-import { Button } from '../ui/Button'
-
 export type FlashcardControlsProps = {
   flipped: boolean
   onFlip: () => void
@@ -7,8 +5,6 @@ export type FlashcardControlsProps = {
   onUnknown: () => void
   /** True until the card has been flipped — enforces recall */
   disableVerdicts: boolean
-  /** 标熟: drops the card from the queue for good. Absent in local mode — button not rendered. */
-  onMastered?: () => void
 }
 
 export function FlashcardControls({
@@ -17,26 +13,22 @@ export function FlashcardControls({
   onKnow,
   onUnknown,
   disableVerdicts,
-  onMastered,
 }: FlashcardControlsProps) {
   return (
-    <div className="study-actions">
-      <Button variant="danger" onClick={onUnknown} disabled={disableVerdicts}>
-        不熟
-      </Button>
+    <div className="study-actions study-verdicts">
+      <button className="study-verdict unknown" type="button" onClick={onUnknown} disabled={disableVerdicts}>
+        <span>不认识</span>
+        <i aria-hidden="true" />
+      </button>
       {!flipped && (
-        <Button variant="secondary" onClick={onFlip}>
+        <button className="study-flip" type="button" onClick={onFlip}>
           翻面
-        </Button>
+        </button>
       )}
-      <Button variant="primary" onClick={onKnow} disabled={disableVerdicts}>
-        掌握
-      </Button>
-      {onMastered && flipped && (
-        <Button variant="ghost" size="sm" onClick={onMastered}>
-          已熟，移出学习
-        </Button>
-      )}
+      <button className="study-verdict known" type="button" onClick={onKnow} disabled={disableVerdicts}>
+        <span>认识</span>
+        <i aria-hidden="true" />
+      </button>
     </div>
   )
 }

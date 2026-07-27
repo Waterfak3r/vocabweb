@@ -24,6 +24,12 @@ describe('study preferences', () => {
       plan: { newWords: 0, dictation: 3 },
       modes: { new: { meaningPreference: 'zh', showExamples: false, showPhonetic: true } },
     })
+    expect(normalizeStudyPreferences({ modes: { dictation: {} } }).modes.dictation).toMatchObject({
+      autoPlayAudio: true,
+      showPhonetic: false,
+      showMeaning: false,
+      showCharacterMask: true,
+    })
   })
 
   it('keeps settings isolated per wordbook', () => {

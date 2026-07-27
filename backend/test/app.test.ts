@@ -5,6 +5,7 @@ import { test } from "node:test";
 import { createApp, type CreateAppOptions } from "../src/app.js";
 import { FixedWindowRateLimiter } from "../src/http/rate-limit.js";
 import { WordProviderError, type WordEntry } from "../src/words/types.js";
+import { MemoryEngagementStore } from "../src/engagement/store.js";
 
 interface TestServer {
   baseUrl: string;
@@ -51,6 +52,44 @@ test("GET /api/health returns service status", async () => {
       status: "ok",
       service: "vacabweb-backend",
     });
+  } finally {
+    await server.close();
+  }
+});
+
+test("search reporting and feedback expose stable public API contracts", async () => {
+  const engagementStore = new MemoryEngagementStore();
+  const server = await startServer({ engagementStore });
+  try {
+    for (const word of ["Resilient", "resilient", "feasible"]) {
+      const response = await fetch(`${server.baseUrl}/api/searches`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ word }),
+      });
+      assert.equal(response.status, 204);
+    }
+    const popular = await fetch(`${server.baseUrl}/api/searches/popular?days=7&limit=8`);
+    assert.equal(popular.status, 200);
+    assert.deepEqual(await popular.json(), [
+      { word: "resilient", count: 2 },
+      { word: "feasible", count: 1 },
+    ]);
+
+    const feedback = await fetch(`${server.baseUrl}/api/feedback`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ type: "bug", message: "  卡片按钮错位  ", contact: "tester", page: "/wordbook" }),
+    });
+    assert.equal(feedback.status, 201);
+    assert.equal(engagementStore.feedback[0]?.message, "卡片按钮错位");
+
+    const invalid = await fetch(`${server.baseUrl}/api/feedback`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ type: "unknown", message: "" }),
+    });
+    assert.equal(invalid.status, 400);
   } finally {
     await server.close();
   }

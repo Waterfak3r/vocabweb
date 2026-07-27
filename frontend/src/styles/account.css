@@ -84,6 +84,51 @@
   font-weight: 400;
 }
 
+.feedback-dialog {
+  position: relative;
+  width: min(30rem, 100%);
+  max-height: calc(100vh - 3rem);
+  overflow: auto;
+  border: 1px solid var(--rule);
+  border-radius: 1rem;
+  background: var(--surface-solid);
+  box-shadow: var(--shadow-modal);
+}
+.feedback-dialog > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 1.15rem 1.3rem;
+  border-bottom: 1px solid var(--rule);
+}
+.feedback-dialog > header p { color: var(--accent-strong); font-size: 0.75rem; font-weight: 700; }
+.feedback-dialog > header h2 { margin-top: 0.2rem; font-family: var(--font-serif); font-size: 1.45rem; }
+.feedback-dialog form { display: grid; gap: 0.7rem; padding: 1.25rem 1.3rem 1.4rem; }
+.feedback-dialog form label { display: grid; gap: 0.35rem; color: var(--ink); font-size: 0.8rem; font-weight: 700; }
+.feedback-dialog form label small { display: inline; color: var(--muted); font-weight: 400; }
+.feedback-dialog input,
+.feedback-dialog select,
+.feedback-dialog textarea {
+  width: 100%;
+  padding: 0.65rem 0.7rem;
+  border: 1px solid var(--input-border);
+  border-radius: 0.45rem;
+  background: var(--input-bg);
+  color: var(--ink);
+  font: inherit;
+  font-weight: 400;
+}
+.feedback-dialog textarea { resize: vertical; line-height: 1.6; }
+.feedback-dialog input:focus-visible,
+.feedback-dialog select:focus-visible,
+.feedback-dialog textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent); }
+.feedback-count { margin-top: -0.45rem; color: var(--muted); font-size: 0.7rem; text-align: right; }
+.feedback-success { display: grid; justify-items: center; gap: 0.55rem; padding: 2.5rem 1.5rem 1.6rem; text-align: center; }
+.feedback-success > span { display: grid; width: 3rem; height: 3rem; place-items: center; border-radius: 50%; background: var(--success-soft); color: var(--success); font-size: 1.4rem; }
+.feedback-success h3 { font-family: var(--font-serif); font-size: 1.35rem; }
+.feedback-success p { color: var(--muted); font-size: 0.85rem; }
+.feedback-success .auth-submit { width: 100%; margin-top: 1rem; }
+
 .auth-dialog form input:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
@@ -129,4 +174,6 @@
 @media (max-width: 640px) {
   .auth-backdrop { align-items: end; padding: 0; }
   .auth-dialog { width: 100%; max-height: 92vh; border-radius: 1rem 1rem 0 0; }
+  .feedback-backdrop { align-items: end; padding: 0; }
+  .feedback-dialog { width: 100%; max-height: 92vh; border-radius: 1rem 1rem 0 0; }
 }

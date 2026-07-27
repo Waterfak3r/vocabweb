@@ -68,7 +68,7 @@
   position: relative;
   display: flex;
   align-items: stretch;
-  gap: 2.15rem;
+  gap: clamp(0.7rem, 1.55vw, 1.55rem);
   align-self: stretch;
 }
 
@@ -118,12 +118,59 @@
 .account-menu { position: relative; }
 
 .account-trigger,
-.theme-toggle {
+.theme-toggle,
+.nav-action {
   border: 0;
   background: transparent;
   cursor: pointer;
   font-family: inherit;
 }
+
+.donation-menu { position: relative; display: flex; }
+.donation-trigger { height: 100%; }
+.donation-popover {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 0.55rem);
+  right: 50%;
+  width: 12.5rem;
+  padding: 0.7rem;
+  border: 1px solid var(--rule);
+  border-radius: 0.75rem;
+  background: var(--surface-solid);
+  box-shadow: var(--shadow-soft);
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(50%, -0.45rem);
+  transform-origin: top center;
+  transition: opacity 180ms ease, transform 180ms ease;
+}
+.donation-menu:hover .donation-popover,
+.donation-menu:focus-within .donation-popover,
+.donation-menu.open .donation-popover {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translate(50%, 0);
+}
+.donation-popover > p {
+  margin-bottom: 0.55rem;
+  color: var(--muted);
+  font-size: 0.75rem;
+  text-align: center;
+}
+.donation-popover img,
+.donation-placeholder {
+  display: grid;
+  width: 100%;
+  aspect-ratio: 1;
+  place-items: center;
+  border-radius: 0.5rem;
+  background: var(--hover-bg);
+  object-fit: contain;
+}
+.donation-placeholder { align-content: center; gap: 0.5rem; border: 1px dashed var(--rule); }
+.donation-placeholder span { color: var(--accent-strong); font-family: var(--font-serif); font-size: 3.2rem; }
+.donation-placeholder small { color: var(--muted); font-size: 0.72rem; }
 
 /* Icon-only control: pad sideways so the tap target clears 24px. */
 .theme-toggle {
@@ -250,6 +297,12 @@
     flex-wrap: wrap;
   }
 
+  .donation-menu { position: static; }
+  .donation-popover { right: 0.8rem; left: auto; transform: translateY(-0.45rem); }
+  .donation-menu:hover .donation-popover { opacity: 0; pointer-events: none; transform: translateY(-0.45rem); }
+  .donation-menu.open .donation-popover,
+  .donation-menu:focus-within .donation-popover { opacity: 1; pointer-events: auto; transform: translateY(0); }
+
   .account-popover { right: 0; }
 
   .nav-link {
@@ -273,9 +326,8 @@
 
   .main-nav {
     display: grid;
-    /* The icon-only theme toggle takes just its glyph, leaving the labels their width. */
-    grid-template-columns: repeat(3, minmax(0, 1fr)) auto minmax(0, 1fr);
-    gap: 0.15rem;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 0.15rem 0.3rem;
     max-width: 100%;
   }
 
@@ -291,7 +343,8 @@
     white-space: nowrap;
   }
 
-  .account-menu { min-width: 0; }
+  .account-menu,
+  .donation-menu { min-width: 0; justify-content: center; }
   .account-popover { min-width: 9rem; }
 
   .nav-icon { width: 1rem; height: 1rem; flex: 0 0 auto; }

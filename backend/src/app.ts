@@ -1,6 +1,7 @@
 import path from "node:path";
 import cors from "cors";
 import express, { type ErrorRequestHandler, type RequestHandler } from "express";
+import { MemoryEngagementStore, type EngagementStore, type FeedbackInput, type FeedbackType } from "./engagement/store.js";
 import {
   clearSessionCookie, createSessionToken, hashPassword, hashSessionToken, parseAuthCredentials,
   readSessionToken, sessionCookie, sessionExpiresAt, verifyPassword,
@@ -22,6 +23,7 @@ export interface CreateAppOptions {
   mutationRateLimiter?: RateLimiter;
   loginRateLimiter?: RateLimiter;
   studyStore?: StudyStore;
+  engagementStore?: EngagementStore;
   localChineseLookup?: LocalChineseLookup;
   /** Express "trust proxy" hop count; set to the number of reverse proxies in front of the app. */
   trustProxy?: number;
@@ -97,6 +99,7 @@ export function createApp(options: CreateAppOptions = {}) {
     options.loginRateLimiter ??
     new FixedWindowRateLimiter({ windowMs: 15 * 60_000, maxRequests: 10 });
   const studyStore = options.studyStore ?? new JsonFileStudyStore("./data/study-state.json");
+  const engagementStore = options.engagementStore ?? new MemoryEngagementStore();
   const localChineseLookup = options.localChineseLookup ?? new CsvLocalChineseDictionary();
   // Missing usernames still pay the same scrypt verification cost as real users.
   const dummyPasswordHash = hashPassword(createSessionToken().token);
@@ -334,6 +337,60 @@ export function createApp(options: CreateAppOptions = {}) {
 
   app.get("/api/health", (_request, response) => {
     response.status(200).json({ status: "ok", service: "vacabweb-backend" });
+  });
+
+  app.post("/api/searches", async (request, response, next) => {
+    const word = typeof request.body?.word === "string" ? normalizeWord(request.body.word) : "";
+    if (!isValidWordQuery(word)) {
+      response.status(400).json(apiError("INVALID_WORD", "Word query is invalid"));
+      return;
+    }
+    try {
+      await engagementStore.recordSearch(word);
+      response.status(204).end();
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/searches/popular", async (request, response, next) => {
+    const days = request.query.days === undefined ? 7 : Number(request.query.days);
+    const limit = request.query.limit === undefined ? 8 : Number(request.query.limit);
+    if (!Number.isInteger(days) || days < 1 || days > 30 || !Number.isInteger(limit) || limit < 1 || limit > 20) {
+      response.status(400).json(apiError("INVALID_POPULAR_QUERY", "Popular search query is invalid"));
+      return;
+    }
+    try {
+      const since = new Date(Date.now() - days * 86_400_000);
+      response.status(200).json(await engagementStore.listPopularSearches(since, limit));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/feedback", async (request, response, next) => {
+    const allowedTypes: FeedbackType[] = ["suggestion", "bug", "other"];
+    const type = typeof request.body?.type === "string" ? request.body.type : "";
+    const message = typeof request.body?.message === "string" ? request.body.message.trim() : "";
+    const contact = typeof request.body?.contact === "string" ? request.body.contact.trim() : "";
+    const page = typeof request.body?.page === "string" ? request.body.page.trim() : "";
+    if (!allowedTypes.includes(type as FeedbackType)
+      || message.length < 1 || message.length > 1000
+      || contact.length > 200 || page.length > 300) {
+      response.status(400).json(apiError("INVALID_FEEDBACK", "Feedback is invalid"));
+      return;
+    }
+    const input: FeedbackInput = {
+      type: type as FeedbackType,
+      message,
+      ...(contact ? { contact } : {}),
+      ...(page ? { page } : {}),
+    };
+    try {
+      response.status(201).json(await engagementStore.createFeedback(input));
+    } catch (error) {
+      next(error);
+    }
   });
 
   app.get(["/api/words", "/api/words/"], enforceWordRateLimit, (_request, response) => {
