@@ -143,11 +143,23 @@ jobs:
           cd "$deploy_path"
           trap 'docker logout ghcr.io >/dev/null 2>&1 || true' EXIT
           printf 'VACABWEB_IMAGE=%s:%s\n' "$image_name" "$commit_sha" > .deploy.env
-          docker compose --env-file .env --env-file .deploy.env pull vacabweb
-          docker compose --env-file .env --env-file .deploy.env up \
+          docker compose -f docker-compose.yml --env-file .env --env-file .deploy.env \
+            pull vacabweb
+          docker compose -f docker-compose.yml --env-file .env --env-file .deploy.env up \
             -d \
             --no-build \
+            --force-recreate \
             --wait \
             --wait-timeout 120 \
             vacabweb
+          published_address="$(
+            docker compose -f docker-compose.yml --env-file .env --env-file .deploy.env \
+              port vacabweb 3000
+          )"
+          case "$published_address" in
+            127.0.0.1:*) ;;
+            *) echo "Unexpected published address: $published_address" >&2; exit 1 ;;
+          esac
+          curl --fail --silent --show-error \
+            "http://$published_address/api/health/ready" >/dev/null
           REMOTE
