@@ -2,17 +2,23 @@ import { describe, expect, it } from 'vitest'
 import { MAX_IMPORT_ENTRIES, parseWordbookText, validateImportFile, validateImportText } from './wordbookImport'
 
 describe('wordbook import parser', () => {
-  it('keeps the first token as English and all remaining text as the Chinese meaning', () => {
-    expect(parseWordbookText('resilient 有韧性的；能快速恢复的\ncontribute').entries).toEqual([
-      { line: 1, raw: 'resilient 有韧性的；能快速恢复的', word: 'resilient', zhMeaning: '有韧性的；能快速恢复的', status: 'ready' },
+  it('parses one-to-five CSV columns and preserves phrases', () => {
+    expect(parseWordbookText('a lot of,phrase,a large amount,许多,We had a lot of time.\ncontribute').entries).toEqual([
+      { line: 1, raw: 'a lot of,phrase,a large amount,许多,We had a lot of time.', word: 'a lot of', pos: 'phrase', enDefinition: 'a large amount', zhMeaning: '许多', example: 'We had a lot of time.', status: 'ready' },
       { line: 2, raw: 'contribute', word: 'contribute', status: 'ready' },
     ])
   })
 
-  it('understands Markdown lists and flags invalid and duplicate rows without dropping them', () => {
-    const parsed = parseWordbookText('- achieve 达到\n* achieve 达成\n123 not a word')
+  it('understands quoted commas and flags invalid and duplicate rows without dropping them', () => {
+    const parsed = parseWordbookText('achieve,verb,\"reach, gain\",达到\nachieve,verb,accomplish,达成\n123,unknown,not a word')
     expect(parsed.acceptedCount).toBe(1)
     expect(parsed.entries.map((entry) => entry.status)).toEqual(['ready', 'duplicate', 'invalid'])
+    expect(parsed.entries[0]?.enDefinition).toBe('reach, gain')
+  })
+
+  it('rejects the legacy whitespace format and malformed or over-wide CSV rows', () => {
+    const parsed = parseWordbookText('resilient 有韧性的\nword,\"unterminated\nword,noun,definition,释义,example,extra')
+    expect(parsed.entries.map((entry) => entry.status)).toEqual(['invalid', 'invalid', 'invalid'])
   })
 
   it('calculates continuation draft batches from accepted words only', () => {
@@ -24,7 +30,8 @@ describe('wordbook import parser', () => {
   })
 
   it('enforces the allowed extensions and one megabyte cap', () => {
-    expect(validateImportFile({ name: 'words.csv', size: 1 })).toContain('TXT')
+    expect(validateImportFile({ name: 'words.csv', size: 1 })).toBeNull()
+    expect(validateImportFile({ name: 'words.xlsx', size: 1 })).toContain('CSV')
     expect(validateImportFile({ name: 'words.docx', size: 1024 * 1024 + 1 })).toContain('1MB')
     expect(validateImportFile({ name: 'words.md', size: 1024 })).toBeNull()
     expect(validateImportText('中'.repeat(400_000))).toContain('1MB')

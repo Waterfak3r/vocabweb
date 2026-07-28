@@ -7,11 +7,11 @@ describe('word normalization', () => {
     expect(wordbookId(' Resilient ')).toBe('resilient')
   })
 
-  it('accepts supported lemmas and rejects phrases or non-letters', () => {
+  it('accepts supported words and phrases while rejecting non-letters', () => {
     expect(isValidWordQuery('well-known')).toBe(true)
     expect(isValidWordQuery("don't")).toBe(true)
     expect(isValidWordQuery('rock’n’roll')).toBe(true)
-    expect(isValidWordQuery('hello world')).toBe(false)
+    expect(isValidWordQuery('hello world')).toBe(true)
     expect(isValidWordQuery('word2')).toBe(false)
     expect(isValidWordQuery('')).toBe(false)
   })

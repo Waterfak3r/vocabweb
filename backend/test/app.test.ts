@@ -224,7 +224,6 @@ test("invalid and empty word queries return 400 without calling the lookup", asy
     for (const path of [
       "/api/words",
       "/api/words/",
-      "/api/words/hello%20world",
       "/api/words/test123",
       "/api/words/hello%2Fworld",
     ]) {
@@ -246,6 +245,23 @@ test("invalid and empty word queries return 400 without calling the lookup", asy
     });
 
     assert.equal(calls, 0);
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /api/words/:word accepts normalized phrases", async () => {
+  const server = await startServer({
+    wordLookup: {
+      async lookup(word) {
+        return { word, phonetic: "", meanings: [{ pos: "phrase", definition: "a large amount" }], source: "backend" };
+      },
+    },
+  });
+  try {
+    const response = await fetch(`${server.baseUrl}/api/words/a%20%20lot%20of`);
+    assert.equal(response.status, 200);
+    assert.equal((await response.json() as { word: string }).word, "a lot of");
   } finally {
     await server.close();
   }

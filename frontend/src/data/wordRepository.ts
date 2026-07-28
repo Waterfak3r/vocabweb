@@ -5,7 +5,7 @@ import type { LookupErrorCode, WordEntry } from '../domain/types'
  * The composition root selects our backend or the development fallback.
  */
 export interface WordRepository {
-  /** Resolve a single English lemma. "Not found" resolves to null — never throws. */
+  /** Resolve one normalized English word or phrase. "Not found" resolves to null — never throws. */
   lookup(word: string): Promise<WordEntry | null>
 }
 

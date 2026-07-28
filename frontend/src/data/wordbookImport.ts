@@ -8,7 +8,10 @@ export type ParsedImportEntry = {
   line: number
   raw: string
   word: string
+  pos?: string
+  enDefinition?: string
   zhMeaning?: string
+  example?: string
   status: ImportEntryStatus
   reason?: string
 }
@@ -21,8 +24,7 @@ export type ParsedImport = {
 
 export type ImportTextFile = Pick<File, 'name' | 'size' | 'arrayBuffer' | 'text'>
 
-const WORD = /^[A-Za-z]+(?:[-'’][A-Za-z]+)*$/
-const SUPPORTED_FILE = /\.(?:txt|md|markdown|docx)$/i
+const SUPPORTED_FILE = /\.(?:csv|txt|md|markdown|docx)$/i
 const DOCX_FILE = /\.docx$/i
 
 function markdownLine(line: string) {
@@ -36,20 +38,71 @@ function parseLine(raw: string, line: number): ParsedImportEntry | null {
   const cleaned = markdownLine(raw)
   if (!cleaned) return null
 
-  const firstSpace = cleaned.search(/\s/)
-  const word = (firstSpace < 0 ? cleaned : cleaned.slice(0, firstSpace)).trim()
-  const zhMeaning = (firstSpace < 0 ? '' : cleaned.slice(firstSpace).trim()) || undefined
-  if (!WORD.test(word)) {
-    return { line, raw, word, zhMeaning, status: 'invalid', reason: '首列必须是英文单词。' }
+  const parsed = parseCsvRow(cleaned)
+  if (typeof parsed === 'string') {
+    return { line, raw, word: '', status: 'invalid', reason: parsed }
   }
-  return { line, raw, word: word.toLowerCase(), zhMeaning, status: 'ready' }
+  if (parsed.length > 5) {
+    return { line, raw, word: parsed[0]?.trim() ?? '', status: 'invalid', reason: '每行最多包含五列。' }
+  }
+  const [rawWord = '', rawPos = '', rawEnDefinition = '', rawZhMeaning = '', rawExample = ''] = parsed
+  const word = normalizeWord(rawWord)
+  const pos = rawPos.trim() || undefined
+  const enDefinition = rawEnDefinition.trim() || undefined
+  const zhMeaning = rawZhMeaning.trim() || undefined
+  const example = rawExample.trim() || undefined
+  const base = { line, raw, word, ...(pos ? { pos } : {}), ...(enDefinition ? { enDefinition } : {}), ...(zhMeaning ? { zhMeaning } : {}), ...(example ? { example } : {}) }
+  if (!isValidWordQuery(word)) {
+    return { ...base, status: 'invalid', reason: '首列必须是合法的英文单词或词组。' }
+  }
+  if ((pos?.length ?? 0) > 80 || (enDefinition?.length ?? 0) > 1500 || (zhMeaning?.length ?? 0) > 1000 || (example?.length ?? 0) > 1500) {
+    return { ...base, status: 'invalid', reason: '字段内容过长，请缩短后重试。' }
+  }
+  return { ...base, status: 'ready' }
 }
 
 /**
- * Parses the portable line format used by paste, TXT and Markdown imports.
- * The first space-delimited token is always the English word; the remaining
- * text (including spaces) remains the learner's Chinese definition.
+ * Parses one RFC-4180-style CSV record. Imports deliberately do not support
+ * embedded newlines inside quoted fields because each source line is one word.
  */
+function parseCsvRow(value: string): string[] | string {
+  const fields: string[] = []
+  let field = ''
+  let quoted = false
+  let closedQuote = false
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index]!
+    if (quoted) {
+      if (character === '"' && value[index + 1] === '"') {
+        field += '"'
+        index += 1
+      } else if (character === '"') {
+        quoted = false
+        closedQuote = true
+      } else {
+        field += character
+      }
+      continue
+    }
+    if (character === ',' && !quoted) {
+      fields.push(field)
+      field = ''
+      closedQuote = false
+      continue
+    }
+    if (character === '"' && !field.trim() && !closedQuote) {
+      field = ''
+      quoted = true
+      continue
+    }
+    if (closedQuote && !/\s/.test(character)) return '双引号字段结束后只能出现逗号。'
+    field += character
+  }
+  if (quoted) return '双引号字段没有正确结束。'
+  fields.push(field)
+  return fields
+}
+
 export function parseWordbookText(content: string): ParsedImport {
   const seen = new Set<string>()
   const entries: ParsedImportEntry[] = []
@@ -74,7 +127,7 @@ export function parseWordbookText(content: string): ParsedImport {
 }
 
 export function validateImportFile(file: Pick<File, 'name' | 'size'>): string | null {
-  if (!SUPPORTED_FILE.test(file.name)) return '请选择 TXT、Markdown 或 DOCX 文件。'
+  if (!SUPPORTED_FILE.test(file.name)) return '请选择 CSV、TXT、Markdown 或 DOCX 文件。'
   if (file.size > MAX_IMPORT_FILE_BYTES) return '单个文件不能超过 1MB。'
   return null
 }
@@ -93,8 +146,7 @@ function textFromHtml(html: string) {
       for (const row of Array.from(element.querySelectorAll('tr'))) {
         const cells = Array.from(row.querySelectorAll('th, td'))
           .map((cell) => cell.textContent?.replace(/\s+/g, ' ').trim() ?? '')
-          .filter(Boolean)
-        if (cells.length) lines.push(cells.join('\t'))
+        if (cells.some(Boolean)) lines.push(cells.map((cell) => `"${cell.replace(/"/g, '""')}"`).join(','))
       }
       continue
     }
@@ -122,3 +174,4 @@ export async function readImportFile(file: ImportTextFile): Promise<string> {
   const result = await mammoth.convertToHtml({ arrayBuffer: await file.arrayBuffer() })
   return textFromHtml(result.value)
 }
+import { isValidWordQuery, normalizeWord } from '../domain/normalize'

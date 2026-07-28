@@ -76,9 +76,9 @@ test("new clients start with an empty collection and catalog; uploaded wordbooks
     assert.deepEqual((await filteredCatalog.json() as Array<{ id: string }>).map((card) => card.id), [id]);
 
     const favorite = await fetch(`${app.baseUrl}/api/catalog/wordbooks/${id}/favorite`, { method: "POST", headers: accountHeaders });
-    assert.deepEqual(await favorite.json(), { favorited: true });
+    assert.deepEqual(await favorite.json(), { favorited: true, favoriteCount: 1 });
     const favoriteAgain = await fetch(`${app.baseUrl}/api/catalog/wordbooks/${id}/favorite`, { method: "POST", headers: accountHeaders });
-    assert.deepEqual(await favoriteAgain.json(), { favorited: false });
+    assert.deepEqual(await favoriteAgain.json(), { favorited: false, favoriteCount: 0 });
     const added = await fetch(`${app.baseUrl}/api/catalog/wordbooks/${id}/add`, { method: "POST", headers: accountHeaders });
     assert.equal(added.status, 201);
     const first = await added.json() as { wordbook: { id: string; wordCount: number }; created: boolean };
@@ -87,11 +87,22 @@ test("new clients start with an empty collection and catalog; uploaded wordbooks
     const repeated = await fetch(`${app.baseUrl}/api/catalog/wordbooks/${id}/add`, { method: "POST", headers: accountHeaders });
     assert.equal(repeated.status, 200);
     assert.equal((await repeated.json() as { created: boolean }).created, false);
+    const detailAfterRepeat = await fetch(`${app.baseUrl}/api/catalog/wordbooks/${id}`, { headers: accountHeaders });
+    const detail = await detailAfterRepeat.json() as { uses: number; favoriteCount: number; words: unknown[] };
+    assert.equal(detail.uses, 1);
+    assert.equal(detail.favoriteCount, 0);
+    assert.equal(detail.words.length, 2);
+    const otherAdd = await fetch(`${app.baseUrl}/api/catalog/wordbooks/${id}/add`, {
+      method: "POST",
+      headers: { "x-vocab-client-id": OTHER_CLIENT, "content-type": "application/json" },
+    });
+    assert.equal(otherAdd.status, 201);
+    assert.equal((await (await fetch(`${app.baseUrl}/api/catalog/wordbooks/${id}`, { headers: accountHeaders })).json() as { uses: number }).uses, 2);
 
     const mine = await fetch(`${app.baseUrl}/api/my/wordbooks`, { headers: accountHeaders });
     assert.equal((await mine.json() as unknown[]).length, 1);
     const isolated = await fetch(`${app.baseUrl}/api/my/wordbooks`, { headers: { "x-vocab-client-id": OTHER_CLIENT } });
-    assert.deepEqual(await isolated.json(), []);
+    assert.equal((await isolated.json() as unknown[]).length, 1);
   } finally { await app.close(); }
 });
 
@@ -141,7 +152,7 @@ test("a new anonymous client can create a wordbook and starts with no learning a
     assert.equal(event.status, 201);
     const dashboard = await fetch(`${app.baseUrl}/api/study/dashboard/${primary.id}`, { headers });
     assert.equal(dashboard.status, 200);
-    assert.equal((await dashboard.json() as { todayPlan: { review: { completed: number } } }).todayPlan.review.completed, 1);
+    assert.equal((await dashboard.json() as { todayPlan: { review: { completed: number } } }).todayPlan.review.completed, 0);
   } finally { await app.close(); }
 });
 
@@ -193,7 +204,7 @@ test("study events drive queues and the selected-wordbook dashboard", async () =
     assert.equal(data.wordbook.progress.learning, 2);
     assert.equal(data.wordbook.progress.levels.l1, 2);
     assert.equal(data.wordbook.progress.mastered, 0);
-    assert.equal(data.todayPlan.review.completed, 1);
+    assert.equal(data.todayPlan.review.completed, 0);
     assert.equal(data.todayPlan.dictation.completed, 1);
     assert.equal(data.recentActivity.length, 2);
     assert.equal(data.calendar.length, 7);
@@ -228,7 +239,7 @@ test("JSON store persists mutations with a complete atomic document", async () =
     await Promise.all([first.createMyWordbook(CLIENT, { title: "A" }), first.createMyWordbook(CLIENT, { title: "B" })]);
     assert.ok(created.id);
     const raw = await readFile(file, "utf8");
-    assert.match(raw, /"version": 3/);
+    assert.match(raw, /"version": 4/);
     const reloaded = new JsonFileStudyStore(file);
     assert.equal((await reloaded.listMyWordbooks(CLIENT, false)).length, 3);
   } finally { await rm(directory, { recursive: true, force: true }); }
@@ -246,7 +257,7 @@ test("JSON store preserves a deliberately empty persisted state without restorin
     assert.deepEqual(JSON.parse(await readFile(file, "utf8")), { version: 2, catalog: [], clients: {} });
     await store.createMyWordbook(CLIENT, { title: "First", words: [] });
     const persisted = JSON.parse(await readFile(file, "utf8")) as { version: number; catalog: unknown[]; clients: Record<string, { wordbooks: unknown[] }> };
-    assert.equal(persisted.version, 3);
+    assert.equal(persisted.version, 4);
     assert.deepEqual(persisted.catalog, []);
     assert.equal(persisted.clients[CLIENT]?.wordbooks.length, 1);
   } finally { await rm(directory, { recursive: true, force: true }); }
@@ -301,7 +312,7 @@ test("import drafts preserve Chinese input, batch 501 valid words, and append la
     const words = Array.from({ length: 501 }, (_, index) => alphabeticWord(index));
     const response = await fetch(`${app.baseUrl}/api/my/import-drafts`, {
       method: "POST", headers,
-      body: JSON.stringify({ title: "分批导入", lines: [{ line: 1, word: "resilient", zhMeaning: "坚韧的" }, { line: 2, word: "fallback" }, ...words.map((word, index) => ({ line: index + 3, word }))] }),
+      body: JSON.stringify({ title: "分批导入", lines: [{ line: 1, word: "resilient", pos: "adjective", enDefinition: "Able to recover, even under pressure.", zhMeaning: "坚韧的", example: "A resilient team recovered.", }, { line: 2, word: "fallback" }, ...words.map((word, index) => ({ line: index + 3, word }))] }),
     });
     assert.equal(response.status, 201);
     const first = await response.json() as { id: string; entries: unknown[]; batchIndex: number; totalBatches: number };
@@ -310,12 +321,14 @@ test("import drafts preserve Chinese input, batch 501 valid words, and append la
     assert.equal(first.entries.length, 500);
     const drafts = await (await fetch(`${app.baseUrl}/api/my/import-drafts`, { headers })).json() as Array<{
       id: string; batchIndex: number; targetWordbookId?: string;
-      entries: Array<{ word: string; entry: { zhMeaning?: string; zhMeaningSource?: string } }>;
+      entries: Array<{ word: string; entry: { zhMeaning?: string; zhMeaningSource?: string; source: string; meanings: Array<{ pos: string; definition: string; example?: string }> } }>;
     }>;
     assert.equal(drafts.length, 2);
     const custom = drafts.flatMap((draft) => draft.entries).find((entry) => entry.word === "resilient")!;
     assert.deepEqual(custom.entry.zhMeaning, "坚韧的");
     assert.equal(custom.entry.zhMeaningSource, "user");
+    assert.equal(custom.entry.source, "user");
+    assert.deepEqual(custom.entry.meanings, [{ pos: "adjective", definition: "Able to recover, even under pressure.", example: "A resilient team recovered." }]);
     const fallback = drafts.flatMap((draft) => draft.entries).find((entry) => entry.word === "fallback")!;
     assert.equal(fallback.entry.zhMeaning, "本地中文释义");
     assert.equal(fallback.entry.zhMeaningSource, "dictionary");
@@ -330,6 +343,70 @@ test("import drafts preserve Chinese input, batch 501 valid words, and append la
     assert.equal(complete.wordCount, 503);
     const linked = await (await fetch(`${app.baseUrl}/api/my/import-drafts/${next.id}`, { headers })).json() as { targetWordbookId: string };
     assert.equal(linked.targetWordbookId, firstBook.id);
+  } finally { await app.close(); }
+});
+
+test("phrase lookup falls back to the current client's most recently updated private wordbook", async () => {
+  const app = await server({ wordLookup: { async lookup() { return null; } } });
+  try {
+    const create = async (title: string, definition: string) => {
+      const response = await fetch(`${app.baseUrl}/api/my/wordbooks`, {
+        method: "POST", headers,
+        body: JSON.stringify({ title, words: [{ word: "a lot of", phonetic: "", source: "user", meanings: [{ pos: "phrase", definition }] }] }),
+      });
+      return await response.json() as { id: string };
+    };
+    await create("较早词本", "older definition");
+    await new Promise<void>((resolve) => setTimeout(resolve, 2));
+    await create("最近词本", "newer definition");
+    const own = await fetch(`${app.baseUrl}/api/words/a%20lot%20of`, { headers });
+    assert.equal(own.status, 200);
+    assert.equal((await own.json() as { meanings: Array<{ definition: string }> }).meanings[0]!.definition, "newer definition");
+    assert.equal(own.headers.get("cache-control"), "private, no-store");
+    const other = await fetch(`${app.baseUrl}/api/words/a%20lot%20of`, { headers: { ...headers, "x-vocab-client-id": OTHER_CLIENT } });
+    assert.equal(other.status, 404);
+  } finally { await app.close(); }
+});
+
+test("overwrite commits an entire import group atomically while retaining matching word progress", async () => {
+  const app = await server({ wordLookup: { async lookup(word) { return dictionaryEntry(word); } } });
+  try {
+    const created = await fetch(`${app.baseUrl}/api/my/wordbooks`, {
+      method: "POST", headers,
+      body: JSON.stringify({ title: "待覆盖", words: [dictionaryEntry("alpha"), dictionaryEntry("beta")] }),
+    });
+    const book = await created.json() as { id: string };
+    const before = await (await fetch(`${app.baseUrl}/api/my/wordbooks/${book.id}/words`, { headers })).json() as Array<{ id: string; word: string }>;
+    const alpha = before.find((word) => word.word === "alpha")!;
+    const beta = before.find((word) => word.word === "beta")!;
+    await fetch(`${app.baseUrl}/api/study/events`, { method: "POST", headers, body: JSON.stringify({ kind: "flashcard", wordbookId: book.id, wordId: alpha.id, verdict: "know" }) });
+    await fetch(`${app.baseUrl}/api/study/events`, { method: "POST", headers, body: JSON.stringify({ kind: "flashcard", wordbookId: book.id, wordId: beta.id, verdict: "know" }) });
+
+    const extra = Array.from({ length: 500 }, (_, index) => alphabeticWord(index));
+    const createdDraft = await fetch(`${app.baseUrl}/api/my/import-drafts`, {
+      method: "POST", headers,
+      body: JSON.stringify({
+        title: "待覆盖", targetWordbookId: book.id,
+        lines: [{ line: 1, word: "alpha", enDefinition: "Custom alpha." }, ...extra.map((word, index) => ({ line: index + 2, word }))],
+      }),
+    });
+    const first = await createdDraft.json() as { id: string; groupId: string };
+    await eventually(
+      async () => await (await fetch(`${app.baseUrl}/api/my/import-drafts`, { headers })).json() as Array<{ groupId: string; status: string }>,
+      (drafts) => drafts.filter((draft) => draft.groupId === first.groupId).every((draft) => draft.status === "pending"),
+    );
+    const committed = await fetch(`${app.baseUrl}/api/my/import-drafts/${first.id}/commit`, {
+      method: "POST", headers, body: JSON.stringify({ mode: "overwrite" }),
+    });
+    assert.equal(committed.status, 200);
+    assert.equal((await committed.json() as { wordCount: number }).wordCount, 501);
+    const after = await (await fetch(`${app.baseUrl}/api/my/wordbooks/${book.id}/words`, { headers })).json() as Array<{ id: string; word: string; level: number; meanings: Array<{ definition: string }> }>;
+    assert.equal(after.find((word) => word.word === "alpha")!.id, alpha.id);
+    assert.equal(after.find((word) => word.word === "alpha")!.level, 1);
+    assert.equal(after.find((word) => word.word === "alpha")!.meanings[0]!.definition, "Custom alpha.");
+    assert.equal(after.some((word) => word.word === "beta"), false);
+    const dashboard = await (await fetch(`${app.baseUrl}/api/study/dashboard/${book.id}`, { headers })).json() as { recentActivity: Array<{ wordId: string }> };
+    assert.equal(dashboard.recentActivity.some((event) => event.wordId === beta.id), false);
   } finally { await app.close(); }
 });
 
@@ -438,7 +515,7 @@ test("v2 state migrates word IDs and old learning events without dropping progre
     // Reads keep the migrated state in memory only; the first mutation persists it.
     await store.createMyWordbook(CLIENT, { title: "Trigger", words: [] });
     const persisted = JSON.parse(await readFile(file, "utf8")) as { version: number; clients: Record<string, { wordbooks: Array<{ words: Array<{ id?: string }> }>; events: Array<{ wordId?: string }> }> };
-    assert.equal(persisted.version, 3);
+    assert.equal(persisted.version, 4);
     assert.ok(persisted.clients[CLIENT]!.wordbooks[0]!.words[0]!.id);
     assert.equal(persisted.clients[CLIENT]!.events[0]!.wordId, persisted.clients[CLIENT]!.wordbooks[0]!.words[0]!.id);
   } finally { await rm(directory, { recursive: true, force: true }); }
@@ -842,4 +919,25 @@ test("store dashboard: mark events stay out of week/calendar/streak yet surface 
   const marks = dashboard.recentActivity.filter((entry) => entry.kind === "mark");
   assert.equal(marks.length, 1);
   assert.equal((marks[0] as { level: number }).level, 4);
+});
+
+test("store dashboard counts distinct words and keeps due-review totals stable", async () => {
+  let clock = new Date("2026-01-01T12:00:00.000Z");
+  const store = new InMemoryStudyStore({ now: () => clock });
+  const book = await store.createMyWordbook(CLIENT, {
+    title: "Distinct",
+    words: [{ word: "resilient", phonetic: "", meanings: [], source: "user" }],
+  });
+  const [word] = (await store.listWords(CLIENT, book.id))!;
+  await store.recordEvent(CLIENT, { kind: "mark", wordbookId: book.id, wordId: word!.id, level: 1 });
+  clock = new Date("2026-01-03T12:00:00.000Z");
+  await store.recordEvent(CLIENT, { kind: "flashcard", wordbookId: book.id, wordId: word!.id, verdict: "know" });
+  await store.recordEvent(CLIENT, { kind: "flashcard", wordbookId: book.id, wordId: word!.id, verdict: "know" });
+  await store.recordEvent(CLIENT, { kind: "dictation", wordbookId: book.id, wordId: word!.id, correct: true });
+  await store.recordEvent(CLIENT, { kind: "dictation", wordbookId: book.id, wordId: word!.id, correct: true });
+  const dashboard = (await store.getDashboard(CLIENT, book.id))!;
+  assert.deepEqual(dashboard.todayPlan.review, { target: 1, completed: 1 });
+  assert.equal(dashboard.todayPlan.dictation.completed, 1);
+  assert.deepEqual(dashboard.week, { newCount: 0, reviewCount: 1, dictationCount: 1, total: 1 });
+  assert.equal(dashboard.calendar.at(-1)?.count, 1);
 });

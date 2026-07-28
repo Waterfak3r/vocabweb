@@ -33,7 +33,7 @@ function parseBackendError(value: unknown): BackendError | null {
 function mapBackendError(status: number, error: BackendError | null): LookupError {
   switch (error?.code) {
     case 'INVALID_WORD':
-      return new LookupError('invalid-query', '只接受单个英文单词，可含连字符或撇号。')
+      return new LookupError('invalid-query', '只接受英文单词或词组，可含空格、连字符或撇号。')
     case 'UPSTREAM_TIMEOUT':
       return new LookupError('network', '词典响应超时，请重试。')
     case 'UPSTREAM_PARSE_ERROR':

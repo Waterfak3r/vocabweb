@@ -5,8 +5,8 @@ import { Button } from '../ui/Button'
 import styles from './ImportWordbookDialog.module.css'
 
 type ImportDraftApi = {
-  createImportDraft: (input: { title: string; description?: string; lines: ImportDraftLine[] }) => Promise<ImportDraft>
-  commitImportDraft: (id: string, resolutions?: Record<string, ImportConflictResolution>) => Promise<MyWordbook>
+  createImportDraft: (input: { title: string; description?: string; targetWordbookId?: string; lines: ImportDraftLine[] }) => Promise<ImportDraft>
+  commitImportDraft: (id: string, resolutions?: Record<string, ImportConflictResolution>, mode?: 'append' | 'overwrite') => Promise<MyWordbook>
   listImportDrafts: () => Promise<ImportDraft[]>
   getImportDraft: (id: string) => Promise<ImportDraft>
   processImportDraft: (id: string) => Promise<ImportDraft>
@@ -20,6 +20,8 @@ export type ImportWordbookDialogProps = {
   onCreated: (wordbook: MyWordbook) => void
   initialTitle?: string
   initialDescription?: string
+  targetWordbookId?: string
+  targetWords?: string[]
 }
 
 type Step = 'details' | 'source' | 'preview'
@@ -57,13 +59,19 @@ export function draftMatchProgress(entries: readonly Pick<ImportDraftEntry, 'sta
   return { total, completed, percent: total ? Math.round((completed / total) * 100) : 0 }
 }
 
+export function nextImportDraft(drafts: readonly ImportDraft[], current: Pick<ImportDraft, 'id' | 'groupId'>) {
+  return drafts
+    .filter((item) => item.groupId === current.groupId && item.status !== 'committed' && item.id !== current.id)
+    .sort((left, right) => left.batchIndex - right.batchIndex)[0]
+}
+
 /**
  * Shared three-step import window. Pages only own opening it and redirecting
  * after onCreated; all file reading, preview, draft creation and conflict
  * decisions remain here so creation and future community flows stay identical.
  */
-export function ImportWordbookDialog({ open, api, onClose, onCreated, initialTitle = '', initialDescription = '' }: ImportWordbookDialogProps) {
-  const [step, setStep] = useState<Step>('details')
+export function ImportWordbookDialog({ open, api, onClose, onCreated, initialTitle = '', initialDescription = '', targetWordbookId, targetWords = [] }: ImportWordbookDialogProps) {
+  const [step, setStep] = useState<Step>(targetWordbookId ? 'source' : 'details')
   const [title, setTitle] = useState(initialTitle)
   const [description, setDescription] = useState(initialDescription)
   const [content, setContent] = useState('')
@@ -73,6 +81,15 @@ export function ImportWordbookDialog({ open, api, onClose, onCreated, initialTit
   const [decisions, setDecisions] = useState<Record<string, ImportConflictResolution>>({})
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const [commitMode, setCommitMode] = useState<'append' | 'overwrite'>('append')
+  const [overwriteImpact, setOverwriteImpact] = useState<{ imported: number; removed: number } | null>(null)
+
+  useEffect(() => {
+    if (!open) return
+    setTitle(initialTitle)
+    setDescription(initialDescription)
+    setStep(targetWordbookId ? 'source' : 'details')
+  }, [initialDescription, initialTitle, open, targetWordbookId])
 
   useEffect(() => {
     if (!open) return
@@ -96,9 +113,9 @@ export function ImportWordbookDialog({ open, api, onClose, onCreated, initialTit
 
   useEffect(() => {
     if (open) return
-    setStep('details'); setContent(''); setParsed(null); setDraft(null); setSavedDrafts([]); setDecisions({}); setError(''); setBusy(false)
+    setStep(targetWordbookId ? 'source' : 'details'); setContent(''); setParsed(null); setDraft(null); setSavedDrafts([]); setDecisions({}); setError(''); setBusy(false); setCommitMode('append'); setOverwriteImpact(null)
     setTitle(initialTitle); setDescription(initialDescription)
-  }, [initialDescription, initialTitle, open])
+  }, [initialDescription, initialTitle, open, targetWordbookId])
 
   useEffect(() => {
     if (!open || !api || draft?.status !== 'processing') return
@@ -162,12 +179,19 @@ export function ImportWordbookDialog({ open, api, onClose, onCreated, initialTit
     }
     const nextParsed = parseWordbookText(content)
     setParsed(nextParsed); setDraft(null); setDecisions({})
-    if (nextParsed.acceptedCount === 0) { setError('没有找到可导入的英文单词，请按“一行一个单词”的格式检查。'); return }
+    if (nextParsed.acceptedCount === 0) { setError('没有找到可导入的英文词条，请按“五列 CSV、每行一个词条”的格式检查。'); return }
     if (!api) { setError('当前未连接词本服务，暂时不能保存导入草稿。'); return }
 
     setBusy(true); setError('')
     try {
-      const nextDraft = await api.createImportDraft({ title: title.trim(), description: description.trim() || undefined, lines: nextParsed.entries.filter((entry) => entry.status === 'ready').map(({ line, word, zhMeaning }) => ({ line, word, zhMeaning })) })
+      const nextDraft = await api.createImportDraft({
+        title: title.trim(), description: description.trim() || undefined,
+        ...(targetWordbookId ? { targetWordbookId } : {}),
+        lines: nextParsed.entries.filter((entry) => entry.status === 'ready').map(({ line, word, pos, enDefinition, zhMeaning, example }) => ({
+          line, word, ...(pos ? { pos } : {}), ...(enDefinition ? { enDefinition } : {}),
+          ...(zhMeaning ? { zhMeaning } : {}), ...(example ? { example } : {}),
+        })),
+      })
       setDraft(nextDraft)
       setStep('preview')
     } catch (cause) {
@@ -179,16 +203,60 @@ export function ImportWordbookDialog({ open, api, onClose, onCreated, initialTit
     setDecisions((current) => ({ ...current, [decisionKey(entry)]: decision }))
   }
 
-  async function commit() {
+  async function commit(mode: 'append' | 'overwrite' = commitMode) {
     if (!api || !draft) return
     setBusy(true); setError('')
     try {
-      const wordbook = await api.commitImportDraft(draft.id, decisions)
-      onCreated(wordbook)
-      onClose()
+      const wordbook = await api.commitImportDraft(draft.id, decisions, mode)
+      if (mode === 'overwrite') {
+        onCreated(wordbook)
+        onClose()
+        return
+      }
+      const group = await api.listImportDrafts()
+      const next = nextImportDraft(group, draft)
+      if (next) {
+        setDraft(next)
+        setSavedDrafts(group.filter((item) => item.status !== 'committed'))
+        setParsed(null)
+        setDecisions({})
+        setStep('preview')
+      } else {
+        onCreated(wordbook)
+        onClose()
+      }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '创建单词本失败，请重试。')
     } finally { setBusy(false) }
+  }
+
+  async function requestCommit() {
+    if (!api || !draft || commitMode === 'append') {
+      await commit('append')
+      return
+    }
+    setBusy(true); setError('')
+    try {
+      const drafts = await api.listImportDrafts()
+      const group = drafts.filter((item) => item.groupId === draft.groupId)
+      if (group.length !== draft.totalBatches) {
+        setError('部分导入批次已经缺失，不能执行整体覆盖；请重新解析源文件。')
+        return
+      }
+      if (group.some((item) => item.status === 'processing')) {
+        setError('整批内容仍在匹配词典，请稍候再确认覆盖。')
+        return
+      }
+      const accepted = group.flatMap((item) => item.entries)
+        .filter((entry) => entry.status === 'ready' || entry.status === 'unmatched' || entry.status === 'conflict')
+      const importedWords = new Set(accepted.map((entry) => entry.word))
+      const retained = new Set(targetWords.map((word) => word.trim().toLowerCase()).filter((word) => importedWords.has(word)))
+      setOverwriteImpact({ imported: importedWords.size, removed: Math.max(0, targetWords.length - retained.size) })
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '无法核对整批覆盖范围，请重试。')
+    } finally {
+      setBusy(false)
+    }
   }
 
   function continueDraft(item: ImportDraft) {
@@ -225,7 +293,7 @@ export function ImportWordbookDialog({ open, api, onClose, onCreated, initialTit
     <div className={styles.backdrop} role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) onClose() }}>
       <section className={styles.dialog} role="dialog" aria-modal="true" aria-labelledby="wordbook-import-title">
         <header className={styles.header}>
-          <h2 className={styles.title} id="wordbook-import-title">{draft?.targetWordbookId ? '继续导入草稿' : '新建单词本'}</h2>
+          <h2 className={styles.title} id="wordbook-import-title">{targetWordbookId || draft?.targetWordbookId ? '补充上传单词' : '新建单词本'}</h2>
           <button className={styles.close} type="button" aria-label="关闭" disabled={busy} onClick={onClose}>×</button>
         </header>
         <div className={styles.body}>
@@ -258,13 +326,13 @@ export function ImportWordbookDialog({ open, api, onClose, onCreated, initialTit
           {step === 'source' && <>
             <div className={styles.field}>
               <label htmlFor="import-content">粘贴单词</label>
-              <textarea id="import-content" value={content} onChange={(event) => { setContent(event.target.value); setParsed(null); setDraft(null) }} placeholder={'resilient 有韧性的；能快速恢复的\ncontribute 做贡献'} />
-              <span className={styles.hint}>每行“英文单词 中文释义”；中文释义可省略。一次最多导入 {MAX_IMPORT_ENTRIES} 个有效词，更多内容会按批保存为草稿。</span>
+              <textarea id="import-content" value={content} onChange={(event) => { setContent(event.target.value); setParsed(null); setDraft(null) }} placeholder={'a lot of,phrase,a large amount,许多,We had a lot of time.\nresilient,adjective,,有韧性的'} />
+              <span className={styles.hint}>每行 CSV：词条, 词性, 英文释义, 中文释义, 例句。后四列可留空；字段内含逗号时请用双引号包裹。一次最多导入 {MAX_IMPORT_ENTRIES} 个有效词，更多内容会分批处理。</span>
             </div>
             <div className={styles.upload}>
               <strong>或选择文件</strong>
-              <span className={styles.hint}>支持 TXT、Markdown、DOCX，单个文件不超过 1MB。</span>
-              <input type="file" accept=".txt,.md,.markdown,.docx,text/plain,text/markdown,application/vnd.openxmlformats-officedocument.wordprocessingml.document" disabled={busy} onChange={(event) => { void chooseFile(event.target.files?.[0]) }} />
+              <span className={styles.hint}>支持 CSV、TXT、Markdown、DOCX，单个文件不超过 1MB。</span>
+              <input type="file" accept=".csv,.txt,.md,.markdown,.docx,text/csv,text/plain,text/markdown,application/vnd.openxmlformats-officedocument.wordprocessingml.document" disabled={busy} onChange={(event) => { void chooseFile(event.target.files?.[0]) }} />
             </div>
           </>}
 
@@ -282,21 +350,38 @@ export function ImportWordbookDialog({ open, api, onClose, onCreated, initialTit
               {conflictCount > 0 && <span className={styles.pill}>与词本冲突 {conflictCount} 词</span>}
               {continuationCount > 1 && <span className={styles.pill}>将生成 {continuationCount - 1} 个后续草稿</span>}
             </div>
-            <p className={styles.hint}>你提供的中文释义会被保留；系统只补全音标、发音和英文释义。返回上一步可改正格式无效或重复的行。</p>
+            <p className={styles.hint}>你填写的词性、释义和例句优先，空缺字段由词典补齐。返回上一步可改正格式无效或重复的行。</p>
+            {draft?.targetWordbookId && <fieldset className={styles.commitMode}>
+              <legend>写入方式</legend>
+              <label className={commitMode === 'append' ? styles.modeActive : ''}>
+                <input type="radio" name="import-mode" checked={commitMode === 'append'} onChange={() => setCommitMode('append')} />
+                <span><strong>追加到单词本</strong><small>保留原词条，并处理重复词条冲突。</small></span>
+              </label>
+              <label className={`${styles.overwriteMode} ${commitMode === 'overwrite' ? styles.modeActive : ''}`}>
+                <input type="radio" name="import-mode" checked={commitMode === 'overwrite'} onChange={() => setCommitMode('overwrite')} />
+                <span><strong><span aria-hidden="true">⚠</span> 覆盖原单词本</strong><small>本次有效内容将成为词本的完整内容；同词条保留学习进度。</small></span>
+              </label>
+            </fieldset>}
             <table className={styles.table}>
-              <thead><tr><th>行</th><th>单词</th><th>中文释义</th><th>状态</th><th>处理</th></tr></thead>
+              <thead><tr><th>行</th><th>词条</th><th>词性 / 英文释义 / 例句</th><th>中文释义</th><th>状态</th><th>处理</th></tr></thead>
               <tbody>
                 {entries.map((entry) => {
                   const key = decisionKey(entry)
                   const decision = decisions[key] ?? entry.resolution
                   return <tr key={key}>
-                    <td>{entry.line}</td><td>{entry.word}</td><td>{entry.zhMeaning || '—'}</td>
+                    <td>{entry.line}</td><td>{entry.word}</td>
+                    <td>
+                      <strong>{entry.pos || entry.entry?.meanings[0]?.pos || '—'}</strong>
+                      {(entry.enDefinition || entry.entry?.meanings[0]?.definition) && <div>{entry.enDefinition || entry.entry?.meanings[0]?.definition}</div>}
+                      {(entry.example || entry.entry?.meanings[0]?.example) && <div className={styles.muted}>{entry.example || entry.entry?.meanings[0]?.example}</div>}
+                    </td>
+                    <td>{entry.zhMeaning || entry.entry?.zhMeaning || '—'}</td>
                     <td><span className={`${styles.status} ${statusClass(entry.status)}`}>{statusLabel[entry.status]}</span>{entry.reason && <div className={styles.muted}>{entry.reason}</div>}</td>
                     <td>
-                      {entry.status === 'conflict' && <div className={styles.actions}>
+                      {commitMode === 'append' && entry.status === 'conflict' && <div className={styles.actions}>
                         {(['keep', 'replace', 'merge'] as const).map((choice) => <button type="button" className={`${styles.choice} ${decision === choice ? styles.choiceActive : ''}`} onClick={() => setDecision(entry, choice)} key={choice}>{choice === 'keep' ? '保留原词' : choice === 'replace' ? '覆盖原词' : '合并释义'}</button>)}
                       </div>}
-                      {entry.status === 'unmatched' && <div className={styles.actions}>
+                      {commitMode === 'append' && entry.status === 'unmatched' && <div className={styles.actions}>
                         <button type="button" className={`${styles.choice} ${decision !== 'discard' ? styles.choiceActive : ''}`} onClick={() => setDecision(entry, 'keep')}>保留</button>
                         <button type="button" className={`${styles.choice} ${decision === 'discard' ? styles.choiceActive : ''}`} onClick={() => setDecision(entry, 'discard')}>移除</button>
                       </div>}
@@ -312,9 +397,18 @@ export function ImportWordbookDialog({ open, api, onClose, onCreated, initialTit
           {step !== 'details' && !isProcessing && <Button variant="secondary" disabled={busy} onClick={() => { setError(''); setStep(step === 'preview' ? 'source' : 'details') }}>上一步</Button>}
           {step === 'details' && <Button disabled={busy} onClick={nextDetails}>下一步</Button>}
           {step === 'source' && <Button disabled={busy} onClick={() => { void createDraft() }}>{busy ? '正在匹配词典…' : '解析并预览'}</Button>}
-          {step === 'preview' && !isProcessing && <Button disabled={busy || !draft || draft.status !== 'pending'} onClick={() => { void commit() }}>{busy ? '正在保存…' : draft?.targetWordbookId ? '追加到单词本' : '创建单词本'}</Button>}
+          {step === 'preview' && !isProcessing && <Button disabled={busy || !draft || draft.status !== 'pending'} onClick={() => { void requestCommit() }}>{busy ? '正在保存…' : draft?.targetWordbookId ? commitMode === 'overwrite' ? '确认覆盖范围' : '追加到单词本' : '创建单词本'}</Button>}
         </footer>
       </section>
+      {overwriteImpact && <div className={styles.confirmBackdrop} role="presentation">
+        <section className={styles.confirmDialog} role="alertdialog" aria-modal="true" aria-labelledby="overwrite-confirm-title" aria-describedby="overwrite-confirm-body">
+          <span className={styles.dangerIcon} aria-hidden="true">⚠</span>
+          <h3 id="overwrite-confirm-title">确定覆盖原单词本？</h3>
+          <p id="overwrite-confirm-body">原词本共 {targetWords.length} 词，本次将写入 {overwriteImpact.imported} 个有效词条，并移除约 {overwriteImpact.removed} 个未保留词条。同名词条会沿用原学习进度。</p>
+          <p className={styles.dangerText}>此操作无法恢复，也不会自动更新已发布到单词广场的快照。</p>
+          <div><Button variant="secondary" autoFocus disabled={busy} onClick={() => setOverwriteImpact(null)}>取消</Button><Button variant="danger" disabled={busy} onClick={() => { setOverwriteImpact(null); void commit('overwrite') }}>{busy ? '正在覆盖…' : '确认覆盖'}</Button></div>
+        </section>
+      </div>}
     </div>
   )
 }

@@ -126,7 +126,7 @@ describe('BackendWordRepository', () => {
 
     await expect(repository.lookup('missing')).resolves.toBeNull()
     await expect(repository.lookup('two words')).resolves.toBeNull()
-    expect(fetch).toHaveBeenCalledTimes(1)
+    expect(fetch).toHaveBeenCalledTimes(2)
   })
 
   it('accepts bilingual metadata and a Chinese-only local hit', async () => {

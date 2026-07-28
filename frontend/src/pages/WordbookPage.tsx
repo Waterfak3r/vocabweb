@@ -233,6 +233,8 @@ export function WordbookPage() {
   const [reviewScope, setReviewScope] = useState<'due' | 'ahead'>('due')
   const [settingsSection, setSettingsSection] = useState<SettingsSection | null>(null)
   const [showImporter, setShowImporter] = useState(false)
+  const [importTargetId, setImportTargetId] = useState<string | undefined>()
+  const [recycleCandidate, setRecycleCandidate] = useState<WorkspaceBook | null>(null)
   const [showWordManager, setShowWordManager] = useState(false)
   const [wordSaving, setWordSaving] = useState(false)
   const [preferences, setPreferences] = useState<WordbookStudyPreferences>(
@@ -246,7 +248,7 @@ export function WordbookPage() {
       setBooks([])
       setLoading(false)
       setNotice('未配置后端地址，无法读取单词本。')
-      return
+      return false
     }
     try {
       const [remote, favorites, uploads] = await Promise.all([
@@ -260,9 +262,10 @@ export function WordbookPage() {
       setUploadCatalog(uploads)
       setSelectedId((current) => preferId ?? (mapped.some((book) => book.id === current) ? current : mapped[0]?.id ?? ''))
       setNotice('')
+      return true
     } catch {
-      setBooks([])
       setNotice('单词本加载失败，请确认后端服务可用后重试。')
+      return false
     } finally {
       setLoading(false)
     }
@@ -270,31 +273,38 @@ export function WordbookPage() {
 
   useEffect(() => { void refreshMyWordbooks() }, [refreshMyWordbooks])
 
-  const refreshSelectedBook = useCallback(async () => {
+  useEffect(() => {
+    if (!recycleCandidate) return
+    const close = (event: KeyboardEvent) => { if (event.key === 'Escape') setRecycleCandidate(null) }
+    window.addEventListener('keydown', close)
+    return () => window.removeEventListener('keydown', close)
+  }, [recycleCandidate])
+
+  const refreshSelectedBook = useCallback(async (requestedWordbookId?: string) => {
     const requestId = ++dashboardRequest.current
-    const wordbookId = selectedBook?.id
+    const wordbookId = requestedWordbookId ?? selectedBook?.id
     if (!api || !wordbookId) {
       setDashboard(null)
       setRemoteEntries(null)
       setDashboardLoading(false)
-      return
+      return false
     }
     setDashboard(null)
-    setRemoteEntries(null)
     setDashboardLoading(true)
     try {
       const [nextDashboard, words] = await Promise.all([
         api.getDashboard(wordbookId),
         api.listWords(wordbookId),
       ])
-      if (dashboardRequest.current !== requestId) return
+      if (dashboardRequest.current !== requestId) return false
       setDashboard(nextDashboard)
       setRemoteEntries(words)
+      return true
     } catch {
-      if (dashboardRequest.current !== requestId) return
+      if (dashboardRequest.current !== requestId) return false
       setDashboard(null)
-      setRemoteEntries(null)
       setNotice('词本详情加载失败，请稍后重试。')
+      return false
     } finally {
       if (dashboardRequest.current === requestId) setDashboardLoading(false)
     }
@@ -323,15 +333,25 @@ export function WordbookPage() {
   }
 
   function createBook() {
+    setImportTargetId(undefined)
+    setShowImporter(true)
+  }
+
+  function supplementBook() {
+    if (!selectedBook) return
+    setImportTargetId(selectedBook.id)
     setShowImporter(true)
   }
 
   async function finishImport(created: MyWordbook) {
     const existed = books.some((book) => book.id === created.id)
-    await refreshMyWordbooks(created.id)
-    setNotice(existed
-      ? `已将当前草稿追加到「${created.title}」。`
-      : `已创建「${created.title}」，其余批次已保存为导入草稿。`)
+    const [listSynced, detailSynced] = await Promise.all([
+      refreshMyWordbooks(created.id),
+      refreshSelectedBook(created.id),
+    ])
+    setNotice(listSynced && detailSynced
+      ? existed ? `已更新「${created.title}」。` : `已创建「${created.title}」。`
+      : `已保存「${created.title}」，部分统计同步失败，请稍后重试。`)
   }
 
   async function saveManagedWord(id: string, patch: WordbookWordPatch) {
@@ -369,20 +389,34 @@ export function WordbookPage() {
   async function batchManagedWords(action: BatchWordAction, ids: string[]): Promise<BatchWordResult> {
     if (!api || !selectedBook) throw new Error('Workspace API unavailable')
     const result = await api.batchWords(selectedBook.id, action, ids)
-    await Promise.all([refreshSelectedBook(), refreshMyWordbooks(selectedBook.id)])
+    if (action === 'delete') {
+      const removed = new Set(result.succeededIds)
+      setRemoteEntries((current) => current?.filter((entry) => !removed.has(entry.id)) ?? current)
+    }
+    const [detailsSynced, listSynced] = await Promise.all([
+      refreshSelectedBook(selectedBook.id),
+      refreshMyWordbooks(selectedBook.id),
+    ])
     const label = action === 'refresh-meanings' ? '释义更新' : action === 'mark-mastered' ? '批量标熟' : '批量删除'
-    setNotice(`${label}完成：成功 ${result.succeededIds.length} 个${result.failed.length ? `，失败 ${result.failed.length} 个` : ''}。`)
+    setNotice(detailsSynced && listSynced
+      ? `${label}完成：成功 ${result.succeededIds.length} 个${result.failed.length ? `，失败 ${result.failed.length} 个` : ''}。`
+      : `${label}已完成，但最新统计同步失败，请稍后重试。`)
     return result
   }
 
-  async function moveToRecycle(id: string) {
-    const book = books.find((item) => item.id === id)
+  function moveToRecycle(id: string) {
+    setRecycleCandidate(books.find((item) => item.id === id) ?? null)
+  }
+
+  async function confirmMoveToRecycle() {
+    const book = recycleCandidate
     if (!book) return
     if (!api) return
     try {
-      await api.deleteMyWordbook(id)
+      await api.deleteMyWordbook(book.id)
+      setRecycleCandidate(null)
       await refreshMyWordbooks()
-      setNotice('词本已移入回收站。')
+      setNotice('')
     } catch {
       setNotice('删除失败，当前词本未发生变化。')
     }
@@ -405,7 +439,7 @@ export function WordbookPage() {
       await api.restoreMyWordbook(book.id)
       setRemoteTrash((items) => items.filter((item) => item.id !== book.id))
       await refreshMyWordbooks(book.id)
-      setNotice(`已恢复「${book.title}」。`)
+      setNotice('')
     } catch {
       setNotice('恢复失败，请稍后重试。')
     }
@@ -473,9 +507,8 @@ export function WordbookPage() {
   const reviewAheadCount = reviewAheadEntries.length
   const planCounts = {
     new: Math.min(preferences.plan.newWords, progress.unstudied + completedNew),
-    // 复习巩固 follows the due deck; keep today's completed tally as the floor so the
-    // progress bar stays full once everything that was due has been cleared.
-    review: Math.max(reviewDueCount, completedReview),
+    // Keep today's due-review target stable while due words leave the deck.
+    review: reviewDueCount + completedReview,
     dictation: Math.min(preferences.plan.dictation, Math.max(completedDictation, dictationEligibleCount)),
   }
   // L3 words whose 7-day window has elapsed — a correct dictation promotes them to L4 (精通).
@@ -539,7 +572,7 @@ export function WordbookPage() {
         {notice && <p className="workspace-notice" role="status">{notice}</p>}
         <section className="workspace-overview">
           <WorkspaceCover tone={selectedBook.tone} label={selectedBook.shortLabel} />
-          <div className="workspace-overview-main"><div className="workspace-title-row"><h1 id="workspace-title">{selectedBook.title}</h1></div><p>{wordCount} 个单词　|　创建于 {new Date(selectedBook.createdAt).toLocaleDateString('zh-CN')}　|　最后更新：{new Date(selectedBook.updatedAt).toLocaleString('zh-CN')}</p><div className="workspace-progress-label"><span>学习进度</span><strong>{progress.percent}%</strong></div><div className="workspace-progress" role="progressbar" aria-label="词本学习进度" aria-valuenow={progress.percent} aria-valuemin={0} aria-valuemax={100}><i style={{ width: `${progress.percent}%` }} /></div><div className="workspace-summary-stats levels-5"><span>未学习<strong>{progress.levels.l0}</strong></span><span>初识<strong className="blue">{progress.levels.l1}</strong></span><span>熟悉<strong className="orange">{progress.levels.l2}</strong></span><span>掌握<strong className="green">{progress.levels.l3}</strong></span><span>精通<strong className="violet">{progress.levels.l4}</strong></span></div></div><div className="overview-actions"><button type="button" className="overview-plan-settings" onClick={() => setSettingsSection('plan')}><WorkspaceIcon name="settings" />学习计划</button><button type="button" disabled={!wordCount || dashboardLoading} onClick={() => setShowWordManager(true)}><WorkspaceIcon name="edit" />浏览词条</button></div><button type="button" className="overview-recycle" onClick={() => void moveToRecycle(selectedBook.id)}><WorkspaceIcon name="trash" />移入回收站</button>
+          <div className="workspace-overview-main"><div className="workspace-title-row"><h1 id="workspace-title">{selectedBook.title}</h1></div><p>{wordCount} 个单词　|　创建于 {new Date(selectedBook.createdAt).toLocaleDateString('zh-CN')}　|　最后更新：{new Date(selectedBook.updatedAt).toLocaleString('zh-CN')}</p><div className="workspace-progress-label"><span>学习进度</span><strong>{progress.percent}%</strong></div><div className="workspace-progress" role="progressbar" aria-label="词本学习进度" aria-valuenow={progress.percent} aria-valuemin={0} aria-valuemax={100}><i style={{ width: `${progress.percent}%` }} /></div><div className="workspace-summary-stats levels-5"><span>未学习<strong>{progress.levels.l0}</strong></span><span>初识<strong className="blue">{progress.levels.l1}</strong></span><span>熟悉<strong className="orange">{progress.levels.l2}</strong></span><span>掌握<strong className="green">{progress.levels.l3}</strong></span><span>精通<strong className="violet">{progress.levels.l4}</strong></span></div></div><div className="overview-actions"><button type="button" className="overview-plan-settings" onClick={() => setSettingsSection('plan')}><WorkspaceIcon name="settings" />学习计划</button><button type="button" disabled={!wordCount || dashboardLoading} onClick={() => setShowWordManager(true)}><WorkspaceIcon name="edit" />浏览词条</button><button type="button" onClick={supplementBook}><WorkspaceIcon name="plus" />补充上传</button></div><button type="button" className="overview-recycle" onClick={() => moveToRecycle(selectedBook.id)}><WorkspaceIcon name="trash" />移入回收站</button>
         </section>
 
         <section className="workspace-plan"><header><h2>今日学习计划</h2><button type="button" onClick={() => setSettingsSection('plan')}><WorkspaceIcon name="settings" />调整计划</button></header><div className="plan-cards"><PlanCard icon="book" title="新词学习" count={planCounts.new} available={entriesForMode('new').length} loading={entriesLoading} completed={completedNew} detail="学习新词，建立印象" button="开始学习" onClick={() => openStudy('new')} onSettings={() => setSettingsSection('new')} /><PlanCard icon="repeat" title="复习巩固" count={planCounts.review} available={reviewDueCount} aheadAvailable={reviewAheadCount} aheadButton="提前复习" loading={entriesLoading} completed={completedReview} detail={reviewDetail} button="开始复习" onClick={() => openStudy('review')} onSettings={() => setSettingsSection('review')} /><PlanCard icon="headphones" title="听写训练" count={planCounts.dictation} available={entriesForMode('dictation').length} loading={entriesLoading} completed={completedDictation} detail={dictationDetail} button="开始听写" onClick={() => openStudy('dictation')} onSettings={() => setSettingsSection('dictation')} /></div></section>
@@ -579,9 +612,20 @@ export function WordbookPage() {
       <ImportWordbookDialog
         open={showImporter}
         api={api}
-        onClose={() => setShowImporter(false)}
+        onClose={() => { setShowImporter(false); setImportTargetId(undefined) }}
         onCreated={(created) => { void finishImport(created) }}
+        initialTitle={importTargetId ? selectedBook.title : ''}
+        initialDescription={importTargetId ? selectedBook.description : ''}
+        targetWordbookId={importTargetId}
+        targetWords={importTargetId ? activeBook.entries.map((entry) => entry.word) : []}
       />
+      {recycleCandidate && <div className="workspace-modal-backdrop" role="presentation" onMouseDown={() => setRecycleCandidate(null)}>
+        <section className="recycle-confirm-dialog" role="alertdialog" aria-modal="true" aria-labelledby="recycle-confirm-title" aria-describedby="recycle-confirm-body" onMouseDown={(event) => event.stopPropagation()}>
+          <h2 id="recycle-confirm-title">移入回收站？</h2>
+          <p id="recycle-confirm-body">「{recycleCandidate.title}」将从学习词本中移除，之后仍可在回收站恢复。</p>
+          <div><Button variant="secondary" autoFocus onClick={() => setRecycleCandidate(null)}>取消</Button><Button onClick={() => void confirmMoveToRecycle()}>确认移入</Button></div>
+        </section>
+      </div>}
       {showWordManager && <WordManagerDialog
         title={selectedBook.title}
         entries={activeBook.entries}
@@ -627,10 +671,11 @@ function RecentStudy({ activities, entries, loading, onContinue }: { activities:
 
 function WeeklyStudyData({ week, loading }: { week: StudyDashboard['week'] | undefined; loading: boolean }) {
   const counts = week ? { new: week.newCount, review: week.reviewCount, dictation: week.dictationCount } : null
-  const total = counts ? counts.new + counts.review + counts.dictation : 0
-  const newStop = total ? counts!.new / total * 100 : 0
-  const reviewStop = total ? newStop + counts!.review / total * 100 : 0
-  const donutStyle = total ? {
+  const total = week?.total ?? 0
+  const categoryTotal = counts ? counts.new + counts.review + counts.dictation : 0
+  const newStop = categoryTotal ? counts!.new / categoryTotal * 100 : 0
+  const reviewStop = categoryTotal ? newStop + counts!.review / categoryTotal * 100 : 0
+  const donutStyle = categoryTotal ? {
     '--week-new-stop': `${newStop}%`,
     '--week-review-stop': `${reviewStop}%`,
   } as CSSProperties : undefined

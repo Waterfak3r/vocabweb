@@ -7,17 +7,15 @@ export function normalizeWord(raw: string): string {
   return raw.trim().replace(/\s+/g, ' ').replace(/[’ʼ]/g, "'").toLowerCase()
 }
 
-/**
- * A single English lemma: letters, with optional internal
- * hyphens and apostrophes (e.g. "well-known", "don't").
- */
-const WORD_QUERY_PATTERN = /^[a-z]+(?:['’][a-z]+)*(?:-[a-z]+(?:['’][a-z]+)*)*$/
+const WORD_TOKEN = "[a-z]+(?:['’][a-z]+)*(?:-[a-z]+(?:['’][a-z]+)*)*"
+const WORD_QUERY_PATTERN = new RegExp(`^${WORD_TOKEN}(?: ${WORD_TOKEN})*$`)
+export const MAX_WORD_QUERY_LENGTH = 160
 
 export function isValidWordQuery(query: string): boolean {
-  return WORD_QUERY_PATTERN.test(query)
+  return query.length <= MAX_WORD_QUERY_LENGTH && WORD_QUERY_PATTERN.test(query)
 }
 
-/** Wordbook id = normalized lemma (v1 single-lemma uniqueness). */
+/** Wordbook id = normalized lemma or phrase. */
 export function wordbookId(word: string): string {
   return normalizeWord(word)
 }

@@ -6,6 +6,7 @@ import { AppShell } from './components/layout/AppShell'
 // actually visited instead of shipping all three pages up front.
 const HomePage = lazy(() => import('./pages/HomePage').then((m) => ({ default: m.HomePage })))
 const MarketplacePage = lazy(() => import('./pages/MarketplacePage').then((m) => ({ default: m.MarketplacePage })))
+const MarketplaceDetailPage = lazy(() => import('./pages/MarketplaceDetailPage').then((m) => ({ default: m.MarketplaceDetailPage })))
 const WordbookPage = lazy(() => import('./pages/WordbookPage').then((m) => ({ default: m.WordbookPage })))
 const MessagesPage = lazy(() => import('./pages/MessagesPage').then((m) => ({ default: m.MessagesPage })))
 const SourcesPage = lazy(() => import('./pages/SourcesPage').then((m) => ({ default: m.SourcesPage })))
@@ -42,6 +43,7 @@ function App() {
         <Route element={<AppShell />}>
           <Route index element={<HomePage />} />
           <Route path="marketplace" element={<MarketplacePage />} />
+          <Route path="marketplace/:id" element={<MarketplaceDetailPage />} />
           <Route path="wordbook" element={<WordbookPage />} />
           <Route path="messages" element={<MessagesPage />} />
           <Route path="sources" element={<SourcesPage />} />

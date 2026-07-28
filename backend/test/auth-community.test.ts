@@ -201,7 +201,7 @@ test("community visibility keeps public direct, unlisted share-only, and private
     assert.deepEqual((await retainedFavorite.json() as Array<{ id: string }>).map((book) => book.id), [publicBook.id]);
     assert.deepEqual(await (await fetch(`${app.baseUrl}/api/catalog/wordbooks/${publicBook.id}/favorite`, {
       method: "POST", headers: jsonHeaders(ANON_CLIENT),
-    })).json(), { favorited: false });
+    })).json(), { favorited: false, favoriteCount: 0 });
     const anonymousMakePublic = await fetch(`${app.baseUrl}/api/catalog/wordbooks/${unlistedBook.id}`, {
       method: "PATCH", headers: jsonHeaders(ALICE_CLIENT),
       body: JSON.stringify({ visibility: "public" }),

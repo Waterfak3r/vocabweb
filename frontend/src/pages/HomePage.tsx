@@ -136,7 +136,7 @@ export function HomePage() {
         <form className="search-form" onSubmit={handleSubmit} noValidate>
           <div className={`field ${inputError ? 'field-error-state' : ''}`}>
             <label className="field-label" htmlFor="word-query">
-              英文单词
+              英文单词或词组
             </label>
             <input
               ref={inputRef}
@@ -147,7 +147,7 @@ export function HomePage() {
               autoComplete="off"
               autoCapitalize="off"
               spellCheck={false}
-              placeholder="例如 resilient"
+              placeholder="例如 resilient 或 a lot of"
               value={inputValue}
               aria-invalid={Boolean(inputError)}
               aria-describedby={inputError ? 'word-query-error' : 'word-query-hint'}
@@ -176,7 +176,7 @@ export function HomePage() {
               </p>
             ) : (
               <p className="field-hint" id="word-query-hint">
-                回车查询，可含连字符或撇号
+                回车查询，可含空格、连字符或撇号
               </p>
             )}
           </div>
@@ -231,8 +231,8 @@ export function HomePage() {
 
           {state.status === 'empty' && (
             <EmptyState
-              title="词库里没有这个词"
-              body={`没有找到「${state.query}」。检查拼写，或换一个词试试。`}
+              title="词库里没有这个词条"
+              body={`没有找到「${state.query}」。检查拼写，或换一个单词或词组试试。`}
             />
           )}
 

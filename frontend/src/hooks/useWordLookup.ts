@@ -27,8 +27,8 @@ export function useWordLookup(
     (raw: string): string | null => {
       const query = normalizeWord(raw)
 
-      if (!query) return '先输入一个英文单词。'
-      if (!isValidWordQuery(query)) return '只接受单个英文单词，可含连字符或撇号。'
+      if (!query) return '先输入一个英文单词或词组。'
+      if (!isValidWordQuery(query)) return '只接受英文单词或词组，可含空格、连字符或撇号。'
 
       const requestId = ++requestRef.current
       setState({ status: 'loading', query })

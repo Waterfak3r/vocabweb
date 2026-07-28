@@ -1,4 +1,6 @@
-const WORD_QUERY_PATTERN = /^[a-z]+(?:['’][a-z]+)*(?:-[a-z]+(?:['’][a-z]+)*)*$/;
+const WORD_TOKEN = "[a-z]+(?:['’][a-z]+)*(?:-[a-z]+(?:['’][a-z]+)*)*";
+const WORD_QUERY_PATTERN = new RegExp(`^${WORD_TOKEN}(?: ${WORD_TOKEN})*$`);
+export const MAX_WORD_QUERY_LENGTH = 160;
 
 export function normalizeWord(raw: string): string {
   // Word processors auto-convert to curly apostrophes; fold them so
@@ -7,5 +9,5 @@ export function normalizeWord(raw: string): string {
 }
 
 export function isValidWordQuery(query: string): boolean {
-  return WORD_QUERY_PATTERN.test(query);
+  return query.length <= MAX_WORD_QUERY_LENGTH && WORD_QUERY_PATTERN.test(query);
 }

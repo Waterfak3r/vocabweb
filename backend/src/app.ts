@@ -170,10 +170,37 @@ export function createApp(options: CreateAppOptions = {}) {
     if (!zhMeaning) {
       try { zhMeaning = await localChineseLookup.lookup(normalized); } catch { /* Local dictionaries are optional. */ }
     }
-    const entry: StudyWordEntry = matched
-      ? { ...matched, ...(line.zhMeaning ? { zhMeaning: line.zhMeaning, zhMeaningSource: "user" as const } : zhMeaning ? { zhMeaning, zhMeaningSource: "dictionary" as const } : {}) }
-      : { word: normalized, phonetic: "", meanings: [], source: "user", ...(line.zhMeaning ? { zhMeaning: line.zhMeaning, zhMeaningSource: "user" as const } : zhMeaning ? { zhMeaning, zhMeaningSource: "dictionary" as const } : {}) };
-    return { line: line.line, word: normalized, ...(line.zhMeaning ? { zhMeaning: line.zhMeaning } : {}), status: matched ? "ready" : lookupFailed ? "processing" : "unmatched", ...(matched ? {} : { reason: lookupFailed ? "词典服务暂不可用，可稍后继续匹配" : "未找到词典释义" }), entry };
+    if (!line.enDefinition && (line.pos || line.example) && !matched?.meanings[0]) {
+      return { ...line, word: normalized, status: "invalid", reason: "填写词性或例句时需要同时提供英文释义" };
+    }
+    let meanings = matched?.meanings ?? [];
+    if (line.enDefinition) {
+      const fallback = meanings[0];
+      meanings = [{
+        pos: line.pos || fallback?.pos || "unknown",
+        definition: line.enDefinition,
+        ...((line.example || fallback?.example) ? { example: line.example || fallback?.example } : {}),
+      }];
+    } else if ((line.pos || line.example) && meanings[0]) {
+      meanings = meanings.map((meaning, index) => index === 0 ? {
+        ...meaning,
+        ...(line.pos ? { pos: line.pos } : {}),
+        ...(line.example ? { example: line.example } : {}),
+      } : meaning);
+    }
+    const entry: StudyWordEntry = {
+      ...(matched ?? { word: normalized, phonetic: "", source: "user" as const }),
+      word: normalized,
+      meanings,
+      ...(line.enDefinition || line.pos || line.example ? { source: "user" as const } : {}),
+      ...(line.zhMeaning ? { zhMeaning: line.zhMeaning, zhMeaningSource: "user" as const } : zhMeaning ? { zhMeaning, zhMeaningSource: "dictionary" as const } : {}),
+    };
+    return {
+      ...line, word: normalized,
+      status: matched ? "ready" : lookupFailed ? "processing" : "unmatched",
+      ...(matched ? {} : { reason: lookupFailed ? "词典服务暂不可用，可稍后继续匹配" : "未找到词典释义" }),
+      entry,
+    };
   };
   const processImportDraft = (clientId: string, id: string): Promise<void> => {
     const key = `${clientId}:${id}`; const existing = backgroundDraftTasks.get(key); if (existing) return existing;
@@ -185,8 +212,15 @@ export function createApp(options: CreateAppOptions = {}) {
       for (let offset = 0; offset < processable.length; offset += 100) {
         const batch = processable.slice(offset, offset + 100);
         const resolved: ResolvedImportDraftEntry[] = await Promise.all(batch.map(async (entry): Promise<ResolvedImportDraftEntry> => {
-          const result = await resolveOneImportLine({ line: entry.line, word: entry.word!, ...(entry.zhMeaning ? { zhMeaning: entry.zhMeaning } : {}) });
-          const status: ResolvedImportDraftEntry["status"] = result.status === "ready" || result.status === "unmatched" ? result.status : "processing";
+          const result = await resolveOneImportLine({
+            line: entry.line, word: entry.word!,
+            ...(entry.pos ? { pos: entry.pos } : {}), ...(entry.enDefinition ? { enDefinition: entry.enDefinition } : {}),
+            ...(entry.zhMeaning ? { zhMeaning: entry.zhMeaning } : {}), ...(entry.example ? { example: entry.example } : {}),
+          });
+          const status: ResolvedImportDraftEntry["status"] =
+            result.status === "ready" || result.status === "unmatched" || result.status === "invalid"
+              ? result.status
+              : "processing";
           return { id: entry.id, status, ...(result.reason ? { reason: result.reason } : {}), ...(result.entry ? { entry: result.entry } : {}) };
         }));
         await studyStore.resolveImportDraftEntries(clientId, id, resolved);
@@ -541,6 +575,14 @@ export function createApp(options: CreateAppOptions = {}) {
       try {
         const entry = await wordLookup.lookup(word);
         if (!entry) {
+          const identity = identityOf(response);
+          const canReadPersonal = identity.clientId && (identity.user || !identity.headerClaimedBy);
+          const personal = canReadPersonal ? await studyStore.findPersonalWord(identity.clientId!, word) : null;
+          if (personal) {
+            response.setHeader("Cache-Control", "private, no-store");
+            response.status(200).json(personal);
+            return;
+          }
           response.status(404).json(apiError("WORD_NOT_FOUND", "Word was not found"));
           return;
         }
@@ -777,7 +819,15 @@ export function createApp(options: CreateAppOptions = {}) {
     try {
       const draft = await studyStore.getImportDraft(clientId, id);
       if (!draft) { response.status(404).json(apiError("IMPORT_DRAFT_NOT_FOUND", "Import draft or target wordbook was not found")); return; }
-      if (draft.status === "processing") { response.status(409).json(apiError("IMPORT_DRAFT_PROCESSING", "Import draft is still matching dictionary data")); return; }
+      const mode = input.mode ?? "append";
+      const group = mode === "overwrite"
+        ? (await studyStore.listImportDrafts(clientId)).filter((item) => item.groupId === draft.groupId)
+        : [draft];
+      if (mode === "overwrite" && group.length !== draft.totalBatches) {
+        response.status(409).json(apiError("IMPORT_DRAFT_GROUP_INCOMPLETE", "One or more import batches are missing"));
+        return;
+      }
+      if (group.some((item) => item.status === "processing")) { response.status(409).json(apiError("IMPORT_DRAFT_PROCESSING", "Import draft group is still matching dictionary data")); return; }
       const wordbook = await studyStore.commitImportDraft(clientId, id, input);
       if (!wordbook) response.status(404).json(apiError("IMPORT_DRAFT_NOT_FOUND", "Import draft or target wordbook was not found")); else response.status(200).json(wordbook);
     } catch (error) { next(error); }

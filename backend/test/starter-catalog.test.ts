@@ -46,5 +46,9 @@ test("starter catalog creates five stable 500-word public books for Waterfak3r",
   assert.equal(catalog.length, 5);
   assert.ok(catalog.every((book) => book.wordCount === 500 && book.author === "Waterfak3r" && book.visibility === "public"));
   assert.deepEqual(new Set(catalog.flatMap((book) => book.exams)), new Set(["四级", "六级", "考研", "IELTS", "TOEFL"]));
+  const sources = await store.listMyWordbooks("starter-client", false);
+  assert.equal(sources.length, 5);
+  assert.ok(sources.every((book) => book.id.startsWith("my-seed-v1-") && book.wordCount === 500));
+  assert.equal(new Set(sources.map((book) => book.id)).size, 5);
   dictionary.close();
 });

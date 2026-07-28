@@ -29,6 +29,7 @@ export type CatalogWordbook = {
   createdAt: string
   shareCode: string
   wordCount: number
+  favoriteCount: number
   favorited: boolean
   added: boolean
   uploaded: boolean
@@ -37,6 +38,7 @@ export type CatalogWordbook = {
   /** Owner upload feeds may expose this so snapshot updates can select the exact source wordbook. */
   sourceWordbookId?: string
 }
+export type CatalogDetail = CatalogWordbook & { words: WordEntry[] }
 
 export type WordbookProgress = {
   mastered: number
@@ -85,7 +87,10 @@ export type LearningEvent =
 export type ImportDraftLine = {
   line: number
   word: string
+  pos?: string
+  enDefinition?: string
   zhMeaning?: string
+  example?: string
 }
 
 export type ImportDraftStatus = 'processing' | 'ready' | 'invalid' | 'duplicate' | 'unmatched' | 'conflict'
@@ -97,6 +102,7 @@ export type ImportDraftEntry = ImportDraftLine & {
   reason?: string
   conflictWith?: string
   resolution?: ImportConflictResolution
+  entry?: WordEntry
 }
 
 export type ImportDraft = {
@@ -195,7 +201,8 @@ function parseCatalog(value: unknown): CatalogWordbook | null {
   if (typeof favorited !== 'boolean' || typeof added !== 'boolean' || typeof value.uploaded !== 'boolean') return null
   if (value.visibility !== undefined && value.visibility !== 'public' && value.visibility !== 'unlisted' && value.visibility !== 'private') return null
   if (value.sourceWordbookId !== undefined && !isText(value.sourceWordbookId)) return null
-  return { id: value.id, title: value.title, description: value.description, author: value.author, exams, goals, rating: value.rating, uses: value.uses, createdAt: value.createdAt, shareCode: value.shareCode, wordCount: value.wordCount, favorited, added, uploaded: value.uploaded, visibility: value.visibility, sourceWordbookId: value.sourceWordbookId }
+  const favoriteCount = isCount(value.favoriteCount) ? value.favoriteCount : 0
+  return { id: value.id, title: value.title, description: value.description, author: value.author, exams, goals, rating: value.rating, uses: value.uses, createdAt: value.createdAt, shareCode: value.shareCode, wordCount: value.wordCount, favoriteCount, favorited, added, uploaded: value.uploaded, visibility: value.visibility, sourceWordbookId: value.sourceWordbookId }
 }
 
 function parseAuthUser(value: unknown): AuthUser | null {
@@ -206,6 +213,28 @@ function parseAuthUser(value: unknown): AuthUser | null {
 function parseMeaning(value: unknown): WordMeaning | null {
   if (!isRecord(value) || !isText(value.pos) || !isText(value.definition) || (value.example !== undefined && !isText(value.example))) return null
   return { pos: value.pos, definition: value.definition, example: value.example }
+}
+
+function parseCatalogEntry(value: unknown): WordEntry | null {
+  if (!isRecord(value) || !isText(value.word) || !isText(value.phonetic) || !isText(value.source) || !Array.isArray(value.meanings)) return null
+  const meanings = value.meanings.map(parseMeaning)
+  if (meanings.some((meaning) => meaning === null)) return null
+  if (value.audioUrl !== undefined && !isText(value.audioUrl)) return null
+  if (value.zhMeaning !== undefined && !isText(value.zhMeaning)) return null
+  if (value.zhMeaningSource !== undefined && value.zhMeaningSource !== 'user' && value.zhMeaningSource !== 'dictionary') return null
+  if (!['backend', 'dictionary-api', 'local-ielts', 'user'].includes(value.source)) return null
+  return {
+    word: value.word, phonetic: value.phonetic, source: value.source as WordSource,
+    meanings: meanings as WordMeaning[], audioUrl: value.audioUrl,
+    zhMeaning: value.zhMeaning, zhMeaningSource: value.zhMeaningSource,
+  }
+}
+
+function parseCatalogDetail(value: unknown): CatalogDetail | null {
+  const card = parseCatalog(value)
+  if (!card || !isRecord(value) || !Array.isArray(value.words)) return null
+  const words = value.words.map(parseCatalogEntry)
+  return words.some((word) => word === null) ? null : { ...card, words: words as WordEntry[] }
 }
 
 function isWordLevel(value: unknown): value is WordLevel {
@@ -281,7 +310,11 @@ function parseImportDraftEntry(value: unknown): ImportDraftEntry | null {
   const status = parseImportStatus(value.status) ?? 'ready'
   if (
     (value.id !== undefined && !isText(value.id)) ||
+    (value.pos !== undefined && !isText(value.pos)) ||
+    (value.enDefinition !== undefined && !isText(value.enDefinition)) ||
     (value.zhMeaning !== undefined && !isText(value.zhMeaning)) ||
+    (value.example !== undefined && !isText(value.example)) ||
+    (value.entry !== undefined && parseCatalogEntry(value.entry) === null) ||
     (value.reason !== undefined && !isText(value.reason)) ||
     (value.conflictWith !== undefined && !isText(value.conflictWith)) ||
     (value.resolution !== undefined && value.resolution !== 'keep' && value.resolution !== 'replace' && value.resolution !== 'merge' && value.resolution !== 'discard')
@@ -289,12 +322,16 @@ function parseImportDraftEntry(value: unknown): ImportDraftEntry | null {
   return {
     line: value.line,
     word: value.word,
+    pos: value.pos,
+    enDefinition: value.enDefinition,
     zhMeaning: value.zhMeaning,
+    example: value.example,
     id: value.id,
     status,
     reason: value.reason,
     conflictWith: value.conflictWith,
     resolution: value.resolution,
+    entry: value.entry === undefined ? undefined : parseCatalogEntry(value.entry) ?? undefined,
   }
 }
 
@@ -351,7 +388,8 @@ export class WorkspaceApi {
   }
   listFavorites() { return this.list(new URL('api/catalog/favorites', this.baseUrl), parseCatalog, 'favorites') }
   listUploads() { return this.list(new URL('api/catalog/uploads/mine', this.baseUrl), parseCatalog, 'uploads') }
-  async toggleFavorite(id: string) { return this.json<{ favorited: boolean }>(`api/catalog/wordbooks/${encodeURIComponent(id)}/favorite`, { method: 'POST' }) }
+  getCatalog(id: string) { return this.json(`api/catalog/wordbooks/${encodeURIComponent(id)}`, {}, parseCatalogDetail) }
+  async toggleFavorite(id: string) { return this.json<{ favorited: boolean; favoriteCount: number }>(`api/catalog/wordbooks/${encodeURIComponent(id)}/favorite`, { method: 'POST' }, (value) => isRecord(value) && typeof value.favorited === 'boolean' && isCount(value.favoriteCount) ? { favorited: value.favorited, favoriteCount: value.favoriteCount } : null) }
   async addCatalog(id: string) { return this.json<{ wordbook: MyWordbook; created: boolean }>(`api/catalog/wordbooks/${encodeURIComponent(id)}/add`, { method: 'POST' }, (value) => isRecord(value) && typeof value.created === 'boolean' && parseMyWordbook(value.wordbook) ? { wordbook: parseMyWordbook(value.wordbook)!, created: value.created } : null) }
   async upload(input: { title: string; description?: string; exams?: string[]; goals?: string[]; words: WordEntry[]; visibility?: CatalogVisibility }) { return this.json('api/catalog/uploads', { method: 'POST', body: JSON.stringify(input) }, parseCatalog) }
   uploadWordbook(input: { sourceWordbookId: string; title?: string; description?: string; exams?: string[]; goals?: string[]; visibility?: CatalogVisibility }) { return this.json('api/catalog/uploads', { method: 'POST', body: JSON.stringify(input) }, parseCatalog) }
@@ -359,14 +397,14 @@ export class WorkspaceApi {
   async importShareCode(shareCode: string) { return this.json<{ wordbook: MyWordbook; created: boolean }>('api/catalog/imports', { method: 'POST', body: JSON.stringify({ shareCode }) }, (value) => isRecord(value) && typeof value.created === 'boolean' && parseMyWordbook(value.wordbook) ? { wordbook: parseMyWordbook(value.wordbook)!, created: value.created } : null) }
   listMyWordbooks(trash = false) { const url = new URL('api/my/wordbooks', this.baseUrl); if (trash) url.searchParams.set('view', 'trash'); return this.list(url, parseMyWordbook, 'wordbook list') }
   createMyWordbook(input: { title: string; description?: string; words?: WordEntry[] }) { return this.json('api/my/wordbooks', { method: 'POST', body: JSON.stringify(input) }, parseMyWordbook) }
-  createImportDraft(input: { title: string; description?: string; lines: ImportDraftLine[] }) {
+  createImportDraft(input: { title: string; description?: string; targetWordbookId?: string; lines: ImportDraftLine[] }) {
     return this.json('api/my/import-drafts', { method: 'POST', body: JSON.stringify(input) }, parseImportDraft)
   }
   listImportDrafts() { return this.list(new URL('api/my/import-drafts', this.baseUrl), parseImportDraft, 'import drafts') }
   getImportDraft(id: string) { return this.json(`api/my/import-drafts/${encodeURIComponent(id)}`, {}, parseImportDraft) }
   processImportDraft(id: string) { return this.json(`api/my/import-drafts/${encodeURIComponent(id)}/process`, { method: 'POST' }, parseImportDraft) }
   deleteImportDraft(id: string) { return this.empty(`api/my/import-drafts/${encodeURIComponent(id)}`, { method: 'DELETE' }) }
-  commitImportDraft(id: string, resolutions: Record<string, ImportConflictResolution> = {}) { return this.json(`api/my/import-drafts/${encodeURIComponent(id)}/commit`, { method: 'POST', body: JSON.stringify({ resolutions }) }, parseMyWordbook) }
+  commitImportDraft(id: string, resolutions: Record<string, ImportConflictResolution> = {}, mode: 'append' | 'overwrite' = 'append') { return this.json(`api/my/import-drafts/${encodeURIComponent(id)}/commit`, { method: 'POST', body: JSON.stringify({ mode, resolutions }) }, parseMyWordbook) }
   deleteMyWordbook(id: string) { return this.empty(`api/my/wordbooks/${encodeURIComponent(id)}`, { method: 'DELETE' }) }
   restoreMyWordbook(id: string) { return this.json(`api/my/wordbooks/${encodeURIComponent(id)}/restore`, { method: 'POST' }, parseMyWordbook) }
   listWords(id: string, status?: WordStatus) { const url = new URL(`api/my/wordbooks/${encodeURIComponent(id)}/words`, this.baseUrl); if (status) url.searchParams.set('status', status); return this.list(url, parseWord, 'word list') }

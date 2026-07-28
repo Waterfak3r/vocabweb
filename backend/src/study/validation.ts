@@ -144,26 +144,27 @@ export function parseCatalogQuery(query: Record<string, unknown>): CatalogQuery 
   return q !== null && exam !== null && goal !== null && sort !== null ? { q, exam, goal, sort } : null;
 }
 
-function parseRawContent(content: string): ImportLineInput[] {
-  return content.split(/\r?\n/).map((raw, index) => {
-    const cleaned = raw.trim().replace(/^(?:[-*+]\s+|\d+[.)]\s+)/, "");
-    const [head = "", ...rest] = cleaned.split(/\s+/); return { line: index + 1, word: head, ...(rest.length ? { zhMeaning: rest.join(" ") } : {}) };
-  }).filter((item) => item.word || item.zhMeaning);
-}
 export function parseCreateImportDraft(value: unknown): CreateImportDraftInput | null {
   if (!isJsonObject(value)) return null;
   const title = text(value.title, 100); const description = value.description === undefined ? undefined : text(value.description, 500, true); const targetWordbookId = value.targetWordbookId === undefined ? undefined : parseResourceId(value.targetWordbookId);
   if (!title || description === null || targetWordbookId === null) return null;
   let lines: ImportLineInput[];
-  if (typeof value.content === "string") {
-    if (value.content.length > 1_000_000) return null; lines = parseRawContent(value.content);
-    if (lines.length > 10_000) return null;
-  } else if (Array.isArray(value.lines) && value.lines.length <= 10_000) {
+  if (Array.isArray(value.lines) && value.lines.length <= 10_000) {
     let total = 0;
     const parsed = value.lines.map((item): ImportLineInput | null => {
       if (!isJsonObject(item) || !Number.isInteger(item.line) || typeof item.line !== "number" || item.line < 1 || item.line > 1_000_000) return null;
-      const rawWord = text(item.word, 160, true); const zhMeaning = item.zhMeaning === undefined ? undefined : text(item.zhMeaning, 1000, true);
-      if (rawWord === null || zhMeaning === null) return null; total += rawWord.length + (zhMeaning?.length ?? 0); return { line: item.line, word: rawWord, ...(zhMeaning ? { zhMeaning } : {}) };
+      const rawWord = text(item.word, 160, true);
+      const pos = item.pos === undefined ? undefined : text(item.pos, 80, true);
+      const enDefinition = item.enDefinition === undefined ? undefined : text(item.enDefinition, 1500, true);
+      const zhMeaning = item.zhMeaning === undefined ? undefined : text(item.zhMeaning, 1000, true);
+      const example = item.example === undefined ? undefined : text(item.example, 1500, true);
+      if (rawWord === null || pos === null || enDefinition === null || zhMeaning === null || example === null) return null;
+      total += rawWord.length + (pos?.length ?? 0) + (enDefinition?.length ?? 0) + (zhMeaning?.length ?? 0) + (example?.length ?? 0);
+      return {
+        line: item.line, word: rawWord,
+        ...(pos ? { pos } : {}), ...(enDefinition ? { enDefinition } : {}),
+        ...(zhMeaning ? { zhMeaning } : {}), ...(example ? { example } : {}),
+      };
     });
     if (parsed.some((item) => item === null) || total > 1_000_000) return null; lines = parsed as ImportLineInput[];
   } else return null;
@@ -173,11 +174,13 @@ export function parseCreateImportDraft(value: unknown): CreateImportDraftInput |
 export function parseCommitImportDraft(value: unknown): CommitImportDraftInput | null {
   if (value === undefined || value === null) return {};
   if (!isJsonObject(value) || (value.resolutions !== undefined && !isJsonObject(value.resolutions))) return null;
-  if (value.resolutions === undefined) return {};
+  const mode = value.mode === undefined ? undefined : value.mode === "append" || value.mode === "overwrite" ? value.mode : null;
+  if (mode === null) return null;
+  if (value.resolutions === undefined) return mode ? { mode } : {};
   const pairs = Object.entries(value.resolutions); if (pairs.length > 10_000) return null;
   const resolutions: Record<string, ImportResolution> = {};
   for (const [key, resolution] of pairs) { if (!parseWordId(key) || !RESOLUTIONS.includes(resolution as ImportResolution)) return null; resolutions[key] = resolution as ImportResolution; }
-  return { resolutions };
+  return { ...(mode ? { mode } : {}), resolutions };
 }
 export function parseUpdateWord(value: unknown): UpdateWordInput | null {
   if (!isJsonObject(value)) return null;

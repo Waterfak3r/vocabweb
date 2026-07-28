@@ -28,12 +28,17 @@ export interface CatalogWordbook {
   sourceWordbookId?: string;
   /** Stable internal identity for deployment-provided catalog content. */
   seedKey?: string;
+  /** Historical adopters whose identity predates the adoption ledger. */
+  legacyUses?: number;
+  /** Internal client identities already counted toward `uses`. */
+  adopterClientIds?: string[];
 }
-export type CatalogCard = Omit<CatalogWordbook, "words" | "ownerClientId" | "sourceWordbookId" | "authorUserId"> & {
-  wordCount: number; favorited: boolean; added: boolean; uploaded: boolean;
+export type CatalogCard = Omit<CatalogWordbook, "words" | "ownerClientId" | "sourceWordbookId" | "authorUserId" | "seedKey" | "legacyUses" | "adopterClientIds"> & {
+  wordCount: number; favoriteCount: number; favorited: boolean; added: boolean; uploaded: boolean;
   /** Only exposed to the owner, so the upload UI can refresh the correct private source. */
   sourceWordbookId?: string;
 };
+export type CatalogDetail = CatalogCard & { words: StudyWordEntry[]; };
 export interface MyWordbook {
   id: string; title: string; description: string; sourceCatalogId?: string;
   createdAt: string; updatedAt: string; deletedAt?: string; words: WordbookWord[];
@@ -111,9 +116,12 @@ export interface UpdateCatalogWordbookInput {
 
 export type ImportEntryStatus = "processing" | "ready" | "invalid" | "duplicate" | "unmatched" | "conflict";
 export type ImportResolution = "keep" | "replace" | "merge" | "discard";
-export interface ImportLineInput { line: number; word: string; zhMeaning?: string; }
+export type ImportCommitMode = "append" | "overwrite";
+export interface ImportLineInput {
+  line: number; word: string; pos?: string; enDefinition?: string; zhMeaning?: string; example?: string;
+}
 export interface ImportDraftEntry {
-  id: string; line: number; word?: string; zhMeaning?: string;
+  id: string; line: number; word?: string; pos?: string; enDefinition?: string; zhMeaning?: string; example?: string;
   status: ImportEntryStatus; reason?: string; conflictWith?: string; resolution?: ImportResolution;
   /** The normalized English data resolved by the server, if any. */
   entry?: StudyWordEntry;
@@ -130,9 +138,9 @@ export interface PreparedImportLine extends ImportLineInput {
   status: ImportEntryStatus; reason?: string; entry?: StudyWordEntry;
 }
 export interface ResolvedImportDraftEntry {
-  id: string; status: "processing" | "ready" | "unmatched"; reason?: string; entry?: StudyWordEntry;
+  id: string; status: "processing" | "ready" | "unmatched" | "invalid"; reason?: string; entry?: StudyWordEntry;
 }
-export interface CommitImportDraftInput { resolutions?: Record<string, ImportResolution>; }
+export interface CommitImportDraftInput { mode?: ImportCommitMode; resolutions?: Record<string, ImportResolution>; }
 export interface UpdateWordInput {
   word?: string; zhMeaning?: string | null; phonetic?: string; audioUrl?: string | null; meanings?: StudyMeaning[];
 }
@@ -170,8 +178,8 @@ export interface StudyStore {
   listCatalog(clientId: string, query: CatalogQuery): Promise<CatalogCard[]>;
   listFavorites(clientId: string): Promise<CatalogCard[]>;
   listUploads(clientId: string): Promise<CatalogCard[]>;
-  getCatalog(clientId: string, id: string): Promise<CatalogCard | null>;
-  toggleFavorite(clientId: string, id: string): Promise<{ favorited: boolean } | null>;
+  getCatalog(clientId: string, id: string): Promise<CatalogDetail | null>;
+  toggleFavorite(clientId: string, id: string): Promise<{ favorited: boolean; favoriteCount: number } | null>;
   addCatalogToMine(clientId: string, id: string): Promise<{ wordbook: MyWordbookCard; created: boolean } | null>;
   uploadCatalog(clientId: string, input: UploadCatalogWordbookInput): Promise<CatalogCard | null>;
   upsertSeedCatalog(clientId: string, input: UploadCatalogWordbookInput & { seedKey: string; author: CatalogAuthor }): Promise<CatalogCard>;
@@ -183,6 +191,8 @@ export interface StudyStore {
   deleteMyWordbook(clientId: string, id: string): Promise<boolean>;
   restoreMyWordbook(clientId: string, id: string): Promise<MyWordbookCard | null>;
   listWords(clientId: string, id: string, status?: WordLearningStatus): Promise<LearningQueueItem[] | null>;
+  /** Exact normalized lookup across live private wordbooks; the most recently updated book wins. */
+  findPersonalWord(clientId: string, word: string): Promise<StudyWordEntry | null>;
   addWordToMyWordbook(clientId: string, wordbookId: string, entry: StudyWordEntry): Promise<{ word: LearningQueueItem; created: boolean } | null>;
   purgeMyWordbook(clientId: string, id: string): Promise<boolean>;
   deleteCatalogUpload(clientId: string, id: string): Promise<boolean>;

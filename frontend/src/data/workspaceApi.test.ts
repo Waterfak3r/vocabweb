@@ -22,7 +22,7 @@ describe('WorkspaceApi import drafts', () => {
       .mockResolvedValueOnce(new Response(JSON.stringify(draft('processing'))))
     const api = new WorkspaceApi('https://api.example.test/', { fetch, clientId: () => 'learner' })
 
-    await expect(api.createImportDraft({ title: '导入测试', lines: [{ line: 1, word: 'resilient' }] })).resolves.toMatchObject({ status: 'processing' })
+    await expect(api.createImportDraft({ title: '导入测试', targetWordbookId: 'my-existing', lines: [{ line: 1, word: 'resilient' }] })).resolves.toMatchObject({ status: 'processing' })
     await expect(api.processImportDraft('draft-1')).resolves.toMatchObject({
       status: 'processing',
       entries: [{ status: 'processing' }],
@@ -32,6 +32,33 @@ describe('WorkspaceApi import drafts', () => {
       ['https://api.example.test/api/my/import-drafts', 'POST'],
       ['https://api.example.test/api/my/import-drafts/draft-1/process', 'POST'],
     ])
+    expect(fetch.mock.calls[0]?.[1]?.body).toBe(JSON.stringify({
+      title: '导入测试',
+      targetWordbookId: 'my-existing',
+      lines: [{ line: 1, word: 'resilient' }],
+    }))
+  })
+
+  it('sends the explicit whole-wordbook overwrite mode', async () => {
+    const fetch = vi.fn<FetchLike>().mockResolvedValue(new Response(JSON.stringify({
+      id: 'my-existing',
+      title: '导入测试',
+      description: '',
+      createdAt: '2026-07-28T00:00:00.000Z',
+      updatedAt: '2026-07-28T00:01:00.000Z',
+      wordCount: 2,
+      progress: { mastered: 0, learning: 0, review: 0, unstudied: 2, percent: 0, levels: { l0: 2, l1: 0, l2: 0, l3: 0, l4: 0 } },
+    })))
+    const api = new WorkspaceApi('https://api.example.test/', { fetch, clientId: () => 'learner' })
+
+    await api.commitImportDraft('draft-1', {}, 'overwrite')
+    expect(fetch).toHaveBeenCalledWith(
+      new URL('https://api.example.test/api/my/import-drafts/draft-1/commit'),
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ mode: 'overwrite', resolutions: {} }),
+      }),
+    )
   })
 })
 
@@ -48,6 +75,7 @@ function catalog(overrides: Record<string, unknown> = {}) {
     createdAt: '2026-07-27T00:00:00.000Z',
     shareCode: 'INVITE88',
     wordCount: 20,
+    favoriteCount: 3,
     favorited: true,
     added: false,
     uploaded: true,
@@ -57,6 +85,18 @@ function catalog(overrides: Record<string, unknown> = {}) {
 }
 
 describe('WorkspaceApi marketplace owner feeds', () => {
+  it('parses catalog details with public words and live counters', async () => {
+    const fetch = vi.fn<FetchLike>().mockResolvedValue(new Response(JSON.stringify(catalog({
+      words: [{ word: 'resilient', phonetic: '/rɪˈzɪliənt/', source: 'user', meanings: [{ pos: 'adjective', definition: 'Able to recover.' }] }],
+    }))))
+    const api = new WorkspaceApi('https://api.example.test/', { fetch, clientId: () => 'learner' })
+
+    await expect(api.getCatalog('catalog-1')).resolves.toMatchObject({
+      favoriteCount: 3,
+      words: [{ word: 'resilient' }],
+    })
+  })
+
   it('keeps the owner-only source wordbook id needed for an exact snapshot update', async () => {
     const fetch = vi.fn<FetchLike>().mockResolvedValue(
       new Response(JSON.stringify([catalog({ sourceWordbookId: 'my-source-2' })])),

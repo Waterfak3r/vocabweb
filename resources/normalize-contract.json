@@ -1,7 +1,9 @@
 {
   "comment": "Shared contract for normalizeWord/isValidWordQuery. frontend/src/domain/normalize.ts and backend/src/words/normalize.ts are intentional copies; both test suites assert this table so any divergence fails CI.",
   "cases": [
-    { "input": "  Hello   World  ", "normalized": "hello world", "valid": false },
+    { "input": "  Hello   World  ", "normalized": "hello world", "valid": true },
+    { "input": "a lot of", "normalized": "a lot of", "valid": true },
+    { "input": "look   forward to", "normalized": "look forward to", "valid": true },
     { "input": "Serendipity", "normalized": "serendipity", "valid": true },
     { "input": "Don’t", "normalized": "don't", "valid": true },
     { "input": "rock’n’roll", "normalized": "rock'n'roll", "valid": true },
@@ -12,6 +14,7 @@
     { "input": "", "normalized": "", "valid": false },
     { "input": "café", "normalized": "café", "valid": false },
     { "input": "'start", "normalized": "'start", "valid": false },
-    { "input": "end-", "normalized": "end-", "valid": false }
+    { "input": "end-", "normalized": "end-", "valid": false },
+    { "input": "hello 123", "normalized": "hello 123", "valid": false }
   ]
 }

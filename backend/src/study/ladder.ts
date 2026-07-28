@@ -11,8 +11,8 @@ export interface ClientData { favorites: string[]; wordbooks: MyWordbook[]; even
 /** A persisted session: the sha256 of the cookie token, its owner, and expiry. */
 export interface SessionRecord { tokenHash: string; userId: string; expiresAt: string; createdAt: string; }
 /** The whole persisted world. SQLite splits this across tables; JSON/memory keep it as one document. */
-export interface State { version: 3; catalog: CatalogWordbook[]; clients: Record<string, ClientData>; users: AccountUser[]; sessions: SessionRecord[]; }
-export const EMPTY = (): State => ({ version: 3, catalog: [], clients: {}, users: [], sessions: [] });
+export interface State { version: 3 | 4; catalog: CatalogWordbook[]; clients: Record<string, ClientData>; users: AccountUser[]; sessions: SessionRecord[]; }
+export const EMPTY = (): State => ({ version: 4, catalog: [], clients: {}, users: [], sessions: [] });
 export const RETENTION_MS = 90 * 86_400_000;
 export const BATCH_SIZE = 500;
 
@@ -142,10 +142,14 @@ export function visibleTo(book: CatalogWordbook, clientId: string): boolean {
   return book.visibility === "public" || book.ownerClientId === clientId;
 }
 /** Build a catalog card. Private source ids are exposed only on the owner's upload feed/cards. */
-export function catalogCard(book: CatalogWordbook, client: ClientData, clientId: string): CatalogCard {
-  const { words: _words, ownerClientId: _owner, sourceWordbookId: _source, authorUserId: _authorUserId, seedKey: _seedKey, ...rest } = book;
+export function catalogCard(book: CatalogWordbook, client: ClientData, clientId: string, favoriteCount = 0): CatalogCard {
+  const {
+    words: _words, ownerClientId: _owner, sourceWordbookId: _source, authorUserId: _authorUserId,
+    seedKey: _seedKey, legacyUses: _legacyUses, adopterClientIds: _adopterClientIds, ...rest
+  } = book;
   return {
     ...clone(rest), wordCount: book.words.length,
+    favoriteCount,
     favorited: client.favorites.includes(book.id),
     added: client.wordbooks.some((item) => !item.deletedAt && item.sourceCatalogId === book.id),
     uploaded: book.ownerClientId === clientId,
@@ -159,9 +163,9 @@ export function foldApostrophes(word: string): string { return word.replace(/[â€
 /** Upgrade older JSON without losing wordbooks, events, publishing data, accounts, or visibility. */
 export function migrate(raw: unknown): State {
   if (!isJsonObject(raw) || !Array.isArray(raw.catalog) || !isJsonObject(raw.clients)) throw new Error("Study data file has an unsupported format");
-  if (raw.version !== 2 && raw.version !== 3) throw new Error("Study data file has an unsupported format");
+  if (raw.version !== 2 && raw.version !== 3 && raw.version !== 4) throw new Error("Study data file has an unsupported format");
   const state = raw as unknown as State;
-  state.version = 3;
+  state.version = 4;
   // Accounts and sessions are newer than the on-disk document; default them so older files load.
   state.users ??= [];
   state.sessions ??= [];
@@ -204,6 +208,25 @@ export function migrate(raw: unknown): State {
         if (entry.entry) entry.entry.word = foldApostrophes(entry.entry.word);
       }
     }
+  }
+  // Build a durable adoption ledger from every surviving catalog-derived copy.
+  // `legacyUses` preserves adopters whose copies were already purged and therefore
+  // cannot be tied back to a client identity during migration.
+  const holders = new Map<string, Set<string>>();
+  for (const [clientId, client] of Object.entries(state.clients)) {
+    for (const wordbook of client.wordbooks) {
+      if (!wordbook.sourceCatalogId) continue;
+      const ids = holders.get(wordbook.sourceCatalogId) ?? new Set<string>();
+      ids.add(clientId);
+      holders.set(wordbook.sourceCatalogId, ids);
+    }
+  }
+  for (const book of state.catalog) {
+    const known = new Set(book.adopterClientIds ?? []);
+    for (const clientId of holders.get(book.id) ?? []) known.add(clientId);
+    book.legacyUses ??= Math.max(0, book.uses - known.size);
+    book.adopterClientIds = [...known];
+    book.uses = Math.max(book.uses, book.legacyUses + known.size);
   }
   return state;
 }
