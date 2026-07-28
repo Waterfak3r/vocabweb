@@ -205,13 +205,14 @@ test("personal wordbook categories trim, clear, validate, and remain client-scop
 test("study routes reject malformed inputs and events outside the selected wordbook", async () => {
   const app = await server();
   try {
-    const invalidQuery = await fetch(`${app.baseUrl}/api/catalog/wordbooks?exam=not-an-exam`, { headers });
+    const accountHeaders = await register(app.baseUrl);
+    const invalidQuery = await fetch(`${app.baseUrl}/api/catalog/wordbooks?exam=not-an-exam`, { headers: accountHeaders });
     assert.equal(invalidQuery.status, 400);
-    const invalidUpload = await fetch(`${app.baseUrl}/api/catalog/uploads`, { method: "POST", headers, body: JSON.stringify({ title: "" }) });
+    const invalidUpload = await fetch(`${app.baseUrl}/api/catalog/uploads`, { method: "POST", headers: accountHeaders, body: JSON.stringify({ title: "" }) });
     assert.equal(invalidUpload.status, 400);
-    const invalidEvent = await fetch(`${app.baseUrl}/api/study/events`, { method: "POST", headers, body: JSON.stringify({ kind: "flashcard", wordbookId: "my-not-real", word: "test" }) });
+    const invalidEvent = await fetch(`${app.baseUrl}/api/study/events`, { method: "POST", headers: accountHeaders, body: JSON.stringify({ kind: "flashcard", wordbookId: "my-not-real", word: "test" }) });
     assert.equal(invalidEvent.status, 400);
-    const unknownWord = await fetch(`${app.baseUrl}/api/study/events`, { method: "POST", headers, body: JSON.stringify({ kind: "new", wordbookId: "my-not-real", word: "test" }) });
+    const unknownWord = await fetch(`${app.baseUrl}/api/study/events`, { method: "POST", headers: accountHeaders, body: JSON.stringify({ kind: "new", wordbookId: "my-not-real", word: "test" }) });
     assert.equal(unknownWord.status, 404);
   } finally { await app.close(); }
 });
@@ -219,9 +220,10 @@ test("study routes reject malformed inputs and events outside the selected wordb
 test("study events drive queues and the selected-wordbook dashboard", async () => {
   const app = await server();
   try {
+    const accountHeaders = await register(app.baseUrl);
     const upload = await fetch(`${app.baseUrl}/api/catalog/uploads`, {
       method: "POST",
-      headers,
+      headers: accountHeaders,
       body: JSON.stringify({
         title: "练习词库",
         visibility: "unlisted",
@@ -233,18 +235,18 @@ test("study events drive queues and the selected-wordbook dashboard", async () =
     });
     assert.equal(upload.status, 201);
     const catalog = await upload.json() as { id: string };
-    const created = await fetch(`${app.baseUrl}/api/catalog/wordbooks/${catalog.id}/add`, { method: "POST", headers });
+    const created = await fetch(`${app.baseUrl}/api/catalog/wordbooks/${catalog.id}/add`, { method: "POST", headers: accountHeaders });
     assert.equal(created.status, 201);
     const book = (await created.json() as { wordbook: { id: string } }).wordbook;
-    const words = await fetch(`${app.baseUrl}/api/my/wordbooks/${book.id}/words?status=new`, { headers });
+    const words = await fetch(`${app.baseUrl}/api/my/wordbooks/${book.id}/words?status=new`, { headers: accountHeaders });
     const queue = await words.json() as Array<{ word: string; status: string }>;
     assert.equal(queue.length, 2);
 
-    const flashcard = await fetch(`${app.baseUrl}/api/study/events`, { method: "POST", headers, body: JSON.stringify({ kind: "flashcard", wordbookId: book.id, word: queue[0]!.word, verdict: "know" }) });
+    const flashcard = await fetch(`${app.baseUrl}/api/study/events`, { method: "POST", headers: accountHeaders, body: JSON.stringify({ kind: "flashcard", wordbookId: book.id, word: queue[0]!.word, verdict: "know" }) });
     assert.equal(flashcard.status, 201);
-    const dictation = await fetch(`${app.baseUrl}/api/study/events`, { method: "POST", headers, body: JSON.stringify({ kind: "dictation", wordbookId: book.id, word: queue[1]!.word, correct: false }) });
+    const dictation = await fetch(`${app.baseUrl}/api/study/events`, { method: "POST", headers: accountHeaders, body: JSON.stringify({ kind: "dictation", wordbookId: book.id, word: queue[1]!.word, correct: false }) });
     assert.equal(dictation.status, 201);
-    const dashboard = await fetch(`${app.baseUrl}/api/study/dashboard/${book.id}`, { headers });
+    const dashboard = await fetch(`${app.baseUrl}/api/study/dashboard/${book.id}`, { headers: accountHeaders });
     const data = await dashboard.json() as { wordbook: { progress: { mastered: number; learning: number; levels: { l1: number } } }; todayPlan: { review: { completed: number }; dictation: { completed: number } }; recentActivity: unknown[]; calendar: unknown[] };
     // A single flashcard "know" reaches 初识 (L1); a failed dictation floors the other word at L1 too.
     assert.equal(data.wordbook.progress.learning, 2);
@@ -260,18 +262,20 @@ test("study events drive queues and the selected-wordbook dashboard", async () =
 test("upload, share-code import, recycle bin, and restore form a usable collection loop", async () => {
   const app = await server();
   try {
-    const upload = await fetch(`${app.baseUrl}/api/catalog/uploads`, { method: "POST", headers, body: JSON.stringify({ title: "我的学术词库", description: "自定义", exams: ["IELTS"], goals: ["写作"], visibility: "unlisted", words: [{ word: "coherent", phonetic: "", source: "user", meanings: [{ pos: "adjective", definition: "Logical and consistent." }] }] }) });
+    const accountHeaders = await register(app.baseUrl);
+    const importerHeaders = { "x-vocab-client-id": OTHER_CLIENT, "content-type": "application/json" };
+    const upload = await fetch(`${app.baseUrl}/api/catalog/uploads`, { method: "POST", headers: accountHeaders, body: JSON.stringify({ title: "我的学术词库", description: "自定义", exams: ["IELTS"], goals: ["写作"], visibility: "unlisted", words: [{ word: "coherent", phonetic: "", source: "user", meanings: [{ pos: "adjective", definition: "Logical and consistent." }] }] }) });
     assert.equal(upload.status, 201);
     const catalog = await upload.json() as { shareCode: string; id: string; uploaded: boolean };
     assert.equal(catalog.uploaded, true);
-    const imported = await fetch(`${app.baseUrl}/api/catalog/imports`, { method: "POST", headers, body: JSON.stringify({ shareCode: catalog.shareCode }) });
+    const imported = await fetch(`${app.baseUrl}/api/catalog/imports`, { method: "POST", headers: importerHeaders, body: JSON.stringify({ shareCode: catalog.shareCode }) });
     assert.equal(imported.status, 201);
     const wordbook = (await imported.json() as { wordbook: { id: string } }).wordbook;
-    const deleted = await fetch(`${app.baseUrl}/api/my/wordbooks/${wordbook.id}`, { method: "DELETE", headers });
+    const deleted = await fetch(`${app.baseUrl}/api/my/wordbooks/${wordbook.id}`, { method: "DELETE", headers: importerHeaders });
     assert.equal(deleted.status, 204);
-    const trash = await fetch(`${app.baseUrl}/api/my/wordbooks?view=trash`, { headers });
+    const trash = await fetch(`${app.baseUrl}/api/my/wordbooks?view=trash`, { headers: importerHeaders });
     assert.equal((await trash.json() as unknown[]).length, 1);
-    const restored = await fetch(`${app.baseUrl}/api/my/wordbooks/${wordbook.id}/restore`, { method: "POST", headers });
+    const restored = await fetch(`${app.baseUrl}/api/my/wordbooks/${wordbook.id}/restore`, { method: "POST", headers: importerHeaders });
     assert.equal(restored.status, 200);
   } finally { await app.close(); }
 });

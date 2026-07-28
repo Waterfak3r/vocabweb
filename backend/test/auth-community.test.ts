@@ -140,11 +140,12 @@ test("community visibility keeps public direct, unlisted share-only, and private
     });
     const source = await sourceResponse.json() as { id: string };
 
-    const anonymousPublic = await fetch(`${app.baseUrl}/api/catalog/uploads`, {
+    const anonymousUpload = await fetch(`${app.baseUrl}/api/catalog/uploads`, {
       method: "POST", headers: jsonHeaders(ANON_CLIENT),
-      body: JSON.stringify({ title: "No", visibility: "public", author: { username: "forged" }, words: [] }),
+      body: JSON.stringify({ title: "No", visibility: "unlisted", author: { username: "forged" }, words: [] }),
     });
-    assert.equal(anonymousPublic.status, 401);
+    assert.equal(anonymousUpload.status, 401);
+    assert.equal((await anonymousUpload.json() as { error: { code: string } }).error.code, "AUTH_REQUIRED_FOR_UPLOAD");
 
     const upload = async (visibility: "public" | "unlisted" | "private") => {
       const response = await fetch(`${app.baseUrl}/api/catalog/uploads`, {
@@ -207,6 +208,43 @@ test("community visibility keeps public direct, unlisted share-only, and private
       body: JSON.stringify({ visibility: "public" }),
     });
     assert.equal(anonymousMakePublic.status, 401);
+  } finally {
+    await app.close();
+  }
+});
+
+test("only administrators can configure the public donation image", async () => {
+  const app = await fixture({ adminUsernames: ["Alice"] });
+  try {
+    const initial = await fetch(`${app.baseUrl}/api/site-settings`, { headers: jsonHeaders(ANON_CLIENT) });
+    assert.deepEqual(await initial.json(), { donationImageUrl: null });
+
+    const denied = await fetch(`${app.baseUrl}/api/admin/site-settings`, {
+      method: "PATCH",
+      headers: jsonHeaders(ANON_CLIENT),
+      body: JSON.stringify({ donationImageUrl: "https://images.example/reward.png" }),
+    });
+    assert.equal(denied.status, 403);
+
+    const alice = await register(app.baseUrl, ALICE_CLIENT, "Alice");
+    const accountHeaders = jsonHeaders(ALICE_CLIENT, alice.cookie);
+    const saved = await fetch(`${app.baseUrl}/api/admin/site-settings`, {
+      method: "PATCH",
+      headers: accountHeaders,
+      body: JSON.stringify({ donationImageUrl: "https://images.example/reward.png" }),
+    });
+    assert.equal(saved.status, 200);
+    assert.deepEqual(await saved.json(), { donationImageUrl: "https://images.example/reward.png" });
+    assert.deepEqual(await (await fetch(`${app.baseUrl}/api/site-settings`)).json(), {
+      donationImageUrl: "https://images.example/reward.png",
+    });
+
+    const unsafe = await fetch(`${app.baseUrl}/api/admin/site-settings`, {
+      method: "PATCH",
+      headers: accountHeaders,
+      body: JSON.stringify({ donationImageUrl: "javascript:alert(1)" }),
+    });
+    assert.equal(unsafe.status, 400);
   } finally {
     await app.close();
   }

@@ -66,7 +66,7 @@ const VISIBILITY_OPTIONS: Array<{ value: CatalogVisibility; label: string; hint:
   { value: 'private', label: '私密', hint: '仅自己可见' },
 ]
 const VISIBILITY_LABELS: Record<CatalogVisibility, string> = { public: '公开', unlisted: '邀请码', private: '私密' }
-const PUBLIC_LOGIN_HINT = '公开上传需要登录账号'
+const UPLOAD_LOGIN_HINT = '登录后才能上传和管理单词本'
 const MODAL_FOCUSABLE = 'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [href], [tabindex]:not([tabindex="-1"])'
 
 export function parseMarketplaceCollection(value: string | null): 'all' | 'favorites' | 'uploads' {
@@ -328,6 +328,10 @@ export function MarketplacePage() {
   }
 
   async function openPublish(target: CatalogWordbook | null = null) {
+    if (!isLoggedIn) {
+      setSyncMessage(UPLOAD_LOGIN_HINT)
+      return
+    }
     publishReturnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
     setShowPublish(true)
     setPublishStep('details')
@@ -427,7 +431,7 @@ export function MarketplacePage() {
       if (input.visibility === 'public' && isAuthRequiredError(error)) {
         setAuthUser(null)
         setPublishStep('details')
-        setPublishError(PUBLIC_LOGIN_HINT)
+        setPublishError(UPLOAD_LOGIN_HINT)
       } else {
         setPublishError('发布失败，请确认后端服务已更新后重试。')
       }
@@ -491,7 +495,7 @@ export function MarketplacePage() {
   async function changeVisibility(book: MarketplaceBook, visibility: CatalogVisibility) {
     if (!api || book.visibility === visibility || visibilityUpdatingIds.has(book.id)) return
     if (visibility === 'public' && !isLoggedIn) {
-      setSyncMessage(PUBLIC_LOGIN_HINT)
+      setSyncMessage(UPLOAD_LOGIN_HINT)
       return
     }
     setVisibilityUpdatingIds((ids) => new Set(ids).add(book.id))
@@ -500,7 +504,7 @@ export function MarketplacePage() {
       await refreshRemote()
       setSyncMessage(`「${book.title}」已设为${VISIBILITY_LABELS[visibility]}。`)
     } catch (error) {
-      if (visibility === 'public' && isAuthRequiredError(error)) setSyncMessage(PUBLIC_LOGIN_HINT)
+      if (isAuthRequiredError(error)) setSyncMessage(UPLOAD_LOGIN_HINT)
       else setSyncMessage('可见性更新失败，请稍后重试。')
     } finally {
       setVisibilityUpdatingIds((ids) => {
@@ -517,7 +521,7 @@ export function MarketplacePage() {
         <div><h1 id="marketplace-title">共享单词本广场</h1><p>发现、收藏、分享你的词汇体系</p></div>
         <div className="marketplace-tools">
           <label className="market-search"><span className="sr-only">搜索词库</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索词库 / 标签 / 作者" /><button type="button" aria-label="搜索"><MarketplaceIcon name="search" /></button></label>
-          <button className="market-primary" type="button" onClick={() => void openPublish()}><MarketplaceIcon name="plus" />上传我的词库</button>
+          {isLoggedIn && <button className="market-primary" type="button" onClick={() => void openPublish()}><MarketplaceIcon name="plus" />上传我的词库</button>}
           <button className="market-secondary" type="button" onClick={importShareCode}><MarketplaceIcon name="share" />从分享码导入</button>
         </div>
         <div className="hero-books" aria-hidden="true"><span /><span /><span /></div>
@@ -539,7 +543,7 @@ export function MarketplacePage() {
           {activeCatalog === null ? <div className="market-empty"><h2>正在加载词库</h2></div> : filtered.length ? <div className={`market-book-grid ${view === 'list' ? 'list-view' : ''}`}>{filtered.map((book) => <article id={`market-book-${book.id}`} className={`market-book-card${focusId === book.id ? ' is-focused' : ''}`} key={book.id}><Link className="market-card-detail-link" to={`/marketplace/${encodeURIComponent(book.id)}`} aria-label={`查看「${book.title}」概况`} /><div className="market-card-cover"><BookCover tone={book.tone} label={book.shortLabel} /></div><div className="market-card-body"><h2>{book.title}</h2><p>{book.description}</p><small>作者：{book.author}</small><div className="market-metrics"><span><MarketplaceIcon name="book" />{book.wordCount}词</span><span><MarketplaceIcon name="heart" />{book.favoriteCount}</span><span><MarketplaceIcon name="people" />{book.learners}</span></div>{book.uploaded && book.visibility && <div className="market-own-meta"><span className={`visibility-badge visibility-${book.visibility}`}>{VISIBILITY_LABELS[book.visibility]}</span>{book.visibility === 'unlisted' && <button type="button" className="copy-invite" onClick={() => void copyShareCode(book)}>复制邀请码</button>}</div>}<div className="market-card-actions"><button type="button" className={favoriteIds.has(book.id) ? 'liked' : ''} aria-label="切换收藏" onClick={() => void toggleFavorite(book.id)}><MarketplaceIcon name="heart" /></button>{book.uploaded ? <span className="market-upload-actions"><button type="button" className="refresh-snapshot" onClick={() => void openPublish(findOwnUpload(book.id))}><MarketplaceIcon name="refresh" />更新快照</button><button type="button" className="delete-upload" onClick={() => void deleteUpload(book)}>删除</button></span> : <button type="button" className="join-book" onClick={() => void joinBook(book)}>{book.added ? '已加入词本' : '加入词本'}</button>}</div></div></article>)}</div> : <div className="market-empty"><h2>{loadError ? '单词广场加载失败' : hasActiveFilters ? '没有找到匹配的词库' : collection === 'favorites' ? '还没有收藏词库' : collection === 'uploads' ? '还没有上传词库' : '单词广场还是空的'}</h2><p>{loadError || (hasActiveFilters ? '试试放宽筛选条件。' : collection === 'favorites' ? '在广场点击爱心后，收藏会出现在这里。' : collection === 'uploads' ? '上传个人词本后，可在这里统一管理。' : '上传第一本共享词库，或使用分享码导入。')}</p>{loadError || hasActiveFilters ? <button type="button" onClick={() => void refreshRemote()}>重新加载</button> : collection === 'all' ? <button type="button" onClick={() => void openPublish()}>上传第一本词库</button> : null}</div>}
           <div className="market-collections">
             <Collection title="我的收藏" icon="star" collection="favorites" books={myFavorites} favorites={favoriteIds} onToggleFavorite={(id) => void toggleFavorite(id)} />
-            <Collection
+            {isLoggedIn && <Collection
               title="我的上传"
               icon="cloud"
               collection="uploads"
@@ -552,12 +556,12 @@ export function MarketplacePage() {
               onDelete={(id) => { const book = myUploads.find((item) => item.id === id); if (book) void deleteUpload(book) }}
               onCopyInvite={(id) => { const book = myUploads.find((item) => item.id === id); if (book) void copyShareCode(book) }}
               onSetVisibility={(id, visibility) => { const book = myUploads.find((item) => item.id === id); if (book) void changeVisibility(book, visibility) }}
-            />
+            />}
           </div>
         </div>
       </div>
 
-      {showPublish && <div className="market-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closePublish() }}><section className="market-modal market-publish-modal" role="dialog" aria-modal="true" aria-labelledby="publish-title"><button className="modal-close" type="button" aria-label="关闭" onClick={closePublish}>×</button>{publishLoading && !personalWordbooks.length ? <p className="publish-loading" role="status">正在读取你的个人词本…</p> : <>{publishStep === 'details' ? <><p className="marginal">{publishTarget ? '更新社区快照' : '新建共享词库'}</p><h2 id="publish-title">{publishTarget ? '更新我的上传' : '发布我的词本'}</h2><p>选择词本并填写展示信息。发布的是独立快照，之后修改个人词本不会影响已发布内容。</p><label>选择个人词本<select value={publishForm.sourceWordbookId} onChange={(event) => chooseSourceWordbook(event.target.value)} disabled={!personalWordbooks.length}><option value="">请选择非空词本</option>{personalWordbooks.map((book) => <option key={book.id} value={book.id}>{book.title}（{book.wordCount} 词）</option>)}</select></label>{publishTarget && !publishForm.sourceWordbookId && <p className="publish-source-hint">为避免覆盖错词本，请明确选择这次快照的来源。</p>}<label>社区展示名称<input value={publishForm.title} maxLength={80} onChange={(event) => setPublishForm((current) => ({ ...current, title: event.target.value }))} placeholder="例如：7 月阅读积累" autoFocus /></label><label>简介<textarea value={publishForm.description} maxLength={240} onChange={(event) => setPublishForm((current) => ({ ...current, description: event.target.value }))} placeholder="告诉大家这本词库适合什么场景。" /></label><div className="publish-meta-fields"><label>考试类型<select value={publishForm.exam} onChange={(event) => setPublishForm((current) => ({ ...current, exam: event.target.value }))}><option value="">不设置</option>{PUBLISH_EXAMS.map((exam) => <option key={exam}>{exam}</option>)}</select></label><label>学习目标<select value={publishForm.goal} onChange={(event) => setPublishForm((current) => ({ ...current, goal: event.target.value }))}><option value="">不设置</option>{PUBLISH_GOALS.map((goal) => <option key={goal}>{goal}</option>)}</select></label></div><fieldset className="publish-visibility"><legend>可见性</legend>{VISIBILITY_OPTIONS.map((option) => { const optionDisabled = option.value === 'public' && !isLoggedIn; return <label key={option.value} className={optionDisabled ? 'is-disabled' : ''}><input type="radio" name="publish-visibility" value={option.value} checked={publishForm.visibility === option.value} disabled={optionDisabled} onChange={() => setPublishForm((current) => ({ ...current, visibility: option.value }))} /><span><strong>{option.label}</strong><small>{option.hint}</small></span></label> })}{!isLoggedIn && <p className="visibility-hint">{PUBLIC_LOGIN_HINT}</p>}</fieldset>{publishError && <p className="publish-error" role="alert">{publishError}</p>}<div className="publish-actions"><button className="market-secondary" type="button" onClick={closePublish}>取消</button><button className="market-primary" type="button" disabled={!personalWordbooks.length} onClick={openPreview}>预览发布</button></div></> : <><p className="marginal">发布预览</p><h2 id="publish-title">确认社区快照</h2><div className="publish-preview"><BookCover tone="blue" label={(publishForm.exam || publishForm.title.slice(0, 5)).toUpperCase()} /><div><strong>{publishForm.title}</strong><span>{selectedSource?.wordCount ?? 0} 词 · {selectedSource?.title}</span><p>{publishForm.description || '暂无简介'}</p><small>{[publishForm.exam, publishForm.goal].filter(Boolean).join(' · ') || '未设置分类'}</small><small>可见性：{VISIBILITY_LABELS[publishForm.visibility]}</small></div></div><p>确认后，社区会保存这本词本的当前副本。以后主动更新快照，也不会改动其他用户已加入的词本。</p>{publishError && <p className="publish-error" role="alert">{publishError}</p>}<div className="publish-actions"><button className="market-secondary" type="button" disabled={publishLoading} onClick={() => setPublishStep('details')}>返回修改</button><button className="market-primary" type="button" disabled={publishLoading} onClick={() => void submitPublish()}>{publishLoading ? '正在发布…' : publishTarget ? '更新社区快照' : '确认发布'}</button></div></>}</>}</section></div>}
+      {showPublish && <div className="market-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closePublish() }}><section className="market-modal market-publish-modal" role="dialog" aria-modal="true" aria-labelledby="publish-title"><button className="modal-close" type="button" aria-label="关闭" onClick={closePublish}>×</button>{publishLoading && !personalWordbooks.length ? <p className="publish-loading" role="status">正在读取你的个人词本…</p> : <>{publishStep === 'details' ? <><p className="marginal">{publishTarget ? '更新社区快照' : '新建共享词库'}</p><h2 id="publish-title">{publishTarget ? '更新我的上传' : '发布我的词本'}</h2><p>选择词本并填写展示信息。发布的是独立快照，之后修改个人词本不会影响已发布内容。</p><label>选择个人词本<select value={publishForm.sourceWordbookId} onChange={(event) => chooseSourceWordbook(event.target.value)} disabled={!personalWordbooks.length}><option value="">请选择非空词本</option>{personalWordbooks.map((book) => <option key={book.id} value={book.id}>{book.title}（{book.wordCount} 词）</option>)}</select></label>{publishTarget && !publishForm.sourceWordbookId && <p className="publish-source-hint">为避免覆盖错词本，请明确选择这次快照的来源。</p>}<label>社区展示名称<input value={publishForm.title} maxLength={80} onChange={(event) => setPublishForm((current) => ({ ...current, title: event.target.value }))} placeholder="例如：7 月阅读积累" autoFocus /></label><label>简介<textarea value={publishForm.description} maxLength={240} onChange={(event) => setPublishForm((current) => ({ ...current, description: event.target.value }))} placeholder="告诉大家这本词库适合什么场景。" /></label><div className="publish-meta-fields"><label>考试类型<select value={publishForm.exam} onChange={(event) => setPublishForm((current) => ({ ...current, exam: event.target.value }))}><option value="">不设置</option>{PUBLISH_EXAMS.map((exam) => <option key={exam}>{exam}</option>)}</select></label><label>学习目标<select value={publishForm.goal} onChange={(event) => setPublishForm((current) => ({ ...current, goal: event.target.value }))}><option value="">不设置</option>{PUBLISH_GOALS.map((goal) => <option key={goal}>{goal}</option>)}</select></label></div><fieldset className="publish-visibility"><legend>可见性</legend>{VISIBILITY_OPTIONS.map((option) => { const optionDisabled = option.value === 'public' && !isLoggedIn; return <label key={option.value} className={optionDisabled ? 'is-disabled' : ''}><input type="radio" name="publish-visibility" value={option.value} checked={publishForm.visibility === option.value} disabled={optionDisabled} onChange={() => setPublishForm((current) => ({ ...current, visibility: option.value }))} /><span><strong>{option.label}</strong><small>{option.hint}</small></span></label> })}{!isLoggedIn && <p className="visibility-hint">{UPLOAD_LOGIN_HINT}</p>}</fieldset>{publishError && <p className="publish-error" role="alert">{publishError}</p>}<div className="publish-actions"><button className="market-secondary" type="button" onClick={closePublish}>取消</button><button className="market-primary" type="button" disabled={!personalWordbooks.length} onClick={openPreview}>预览发布</button></div></> : <><p className="marginal">发布预览</p><h2 id="publish-title">确认社区快照</h2><div className="publish-preview"><BookCover tone="blue" label={(publishForm.exam || publishForm.title.slice(0, 5)).toUpperCase()} /><div><strong>{publishForm.title}</strong><span>{selectedSource?.wordCount ?? 0} 词 · {selectedSource?.title}</span><p>{publishForm.description || '暂无简介'}</p><small>{[publishForm.exam, publishForm.goal].filter(Boolean).join(' · ') || '未设置分类'}</small><small>可见性：{VISIBILITY_LABELS[publishForm.visibility]}</small></div></div><p>确认后，社区会保存这本词本的当前副本。以后主动更新快照，也不会改动其他用户已加入的词本。</p>{publishError && <p className="publish-error" role="alert">{publishError}</p>}<div className="publish-actions"><button className="market-secondary" type="button" disabled={publishLoading} onClick={() => setPublishStep('details')}>返回修改</button><button className="market-primary" type="button" disabled={publishLoading} onClick={() => void submitPublish()}>{publishLoading ? '正在发布…' : publishTarget ? '更新社区快照' : '确认发布'}</button></div></>}</>}</section></div>}
     </section>
   )
 }

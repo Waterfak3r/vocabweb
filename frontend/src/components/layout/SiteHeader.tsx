@@ -69,13 +69,44 @@ export function SiteHeader() {
   const [unreadMessages, setUnreadMessages] = useState(0)
   const [donationOpen, setDonationOpen] = useState(false)
   const [donationImageFailed, setDonationImageFailed] = useState(false)
+  const [donationImageUrl, setDonationImageUrl] = useState(() => import.meta.env.VITE_DONATION_IMAGE_URL?.trim() ?? '')
+  const [canConfigureDonation, setCanConfigureDonation] = useState(false)
+  const [donationSettingsOpen, setDonationSettingsOpen] = useState(false)
+  const [donationDraft, setDonationDraft] = useState('')
+  const [donationSaving, setDonationSaving] = useState(false)
+  const [donationSettingsError, setDonationSettingsError] = useState('')
   const accountMenuRef = useRef<HTMLDivElement>(null)
   const accountTriggerRef = useRef<HTMLButtonElement>(null)
   const donationMenuRef = useRef<HTMLDivElement>(null)
   const donationTriggerRef = useRef<HTMLButtonElement>(null)
   const { user, loading, login, register, logout } = useAuth()
   const { theme, toggleTheme } = useTheme()
-  const donationImageUrl = import.meta.env.VITE_DONATION_IMAGE_URL?.trim()
+  const engagementApi = getEngagementApi()
+
+  useEffect(() => {
+    if (!engagementApi) return
+    let active = true
+    void engagementApi.siteSettings()
+      .then((settings) => {
+        if (!active || !settings.donationImageUrl) return
+        setDonationImageUrl(settings.donationImageUrl)
+        setDonationImageFailed(false)
+      })
+      .catch(() => undefined)
+    return () => { active = false }
+  }, [engagementApi])
+
+  useEffect(() => {
+    if (!user || !engagementApi) {
+      setCanConfigureDonation(false)
+      return
+    }
+    let active = true
+    void engagementApi.adminSiteSettings()
+      .then(() => { if (active) setCanConfigureDonation(true) })
+      .catch(() => { if (active) setCanConfigureDonation(false) })
+    return () => { active = false }
+  }, [engagementApi, user])
 
   useEffect(() => {
     if (!user) { setUnreadMessages(0); return }
@@ -175,11 +206,55 @@ export function SiteHeader() {
     }
   }
 
+  function openDonationSettings() {
+    setAccountOpen(false)
+    setDonationDraft(donationImageUrl)
+    setDonationSettingsError('')
+    setDonationSettingsOpen(true)
+  }
+
+  function chooseDonationImage(file: File | undefined) {
+    if (!file) return
+    if (!['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(file.type)) {
+      setDonationSettingsError('请选择 PNG、JPG、WebP 或 GIF 图片。')
+      return
+    }
+    if (file.size > 1_350_000) {
+      setDonationSettingsError('图片不能超过 1.35 MB。')
+      return
+    }
+    const reader = new FileReader()
+    reader.onload = () => {
+      if (typeof reader.result === 'string') {
+        setDonationDraft(reader.result)
+        setDonationSettingsError('')
+      }
+    }
+    reader.onerror = () => setDonationSettingsError('图片读取失败，请重新选择。')
+    reader.readAsDataURL(file)
+  }
+
+  async function saveDonationSettings() {
+    if (!engagementApi || donationSaving) return
+    setDonationSaving(true)
+    setDonationSettingsError('')
+    try {
+      const settings = await engagementApi.updateSiteSettings(donationDraft.trim() || null)
+      setDonationImageUrl(settings.donationImageUrl ?? '')
+      setDonationImageFailed(false)
+      setDonationSettingsOpen(false)
+    } catch {
+      setDonationSettingsError('保存失败。请使用 HTTPS 图片地址、站内路径或有效图片文件。')
+    } finally {
+      setDonationSaving(false)
+    }
+  }
+
   return (
     <header className="site-header">
-      <NavLink className="brand" to="/" aria-label="墨水词典 Vocab IELTS 首页">
+      <NavLink className="brand" to="/" aria-label="WeCreate Vocab 首页">
         <span className="brand-mark" aria-hidden="true">
-          墨
+          W
         </span>
         <span className="brand-name">WeCreate Vocab</span>
       </NavLink>
@@ -268,6 +343,7 @@ export function SiteHeader() {
               ) : user ? (
                 <>
                   <p className="account-user">{user.username}</p>
+                  {canConfigureDonation && <button type="button" role="menuitem" onClick={openDonationSettings}>配置打赏码</button>}
                   <button
                     type="button"
                     role="menuitem"
@@ -299,6 +375,22 @@ export function SiteHeader() {
           register={register}
           returnFocus={accountTriggerRef.current}
         />
+      )}
+      {donationSettingsOpen && (
+        <div className="donation-settings-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !donationSaving) setDonationSettingsOpen(false) }}>
+          <section className="donation-settings-dialog" role="dialog" aria-modal="true" aria-labelledby="donation-settings-title">
+            <header><div><p>管理员设置</p><h2 id="donation-settings-title">配置打赏码</h2></div><button type="button" aria-label="关闭" disabled={donationSaving} onClick={() => setDonationSettingsOpen(false)}>×</button></header>
+            <label>图片地址<input value={donationDraft.startsWith('data:') ? '' : donationDraft} onChange={(event) => setDonationDraft(event.target.value)} placeholder="https://… 或 /images/reward.png" /></label>
+            <div className="donation-settings-divider"><span>或</span></div>
+            <label className="donation-file-picker">选择二维码图片<input type="file" accept="image/png,image/jpeg,image/webp,image/gif" onChange={(event) => chooseDonationImage(event.target.files?.[0])} /></label>
+            <div className="donation-settings-preview">
+              {donationDraft ? <img src={donationDraft} alt="打赏码预览" /> : <span>未配置图片</span>}
+            </div>
+            <small>图片将保存到服务器数据库并立即对所有访客生效。清空地址后保存可移除打赏码。</small>
+            {donationSettingsError && <p className="donation-settings-error" role="alert">{donationSettingsError}</p>}
+            <footer><button type="button" disabled={donationSaving} onClick={() => { setDonationDraft(''); setDonationSettingsError('') }}>移除</button><button type="button" disabled={donationSaving} onClick={() => void saveDonationSettings()}>{donationSaving ? '保存中…' : '保存'}</button></footer>
+          </section>
+        </div>
       )}
     </header>
   )

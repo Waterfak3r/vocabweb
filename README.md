@@ -67,7 +67,6 @@ docker compose up -d --build
 | `WIKTAPI_BASE_URL` | `https://api.wiktapi.dev/v1/en/word` | 词典查询上游地址 |
 | `DICTIONARY_FILE` | `../resources/dictionaries/generated/vocab.sqlite` | 构建生成的本地双语词典 |
 | `DICTIONARY_REMOTE_FALLBACK` | `true` | 本地英文未命中时是否启用在线补充 |
-| `STARTER_OWNER_USERNAME` | `Waterfak3r` | 5 本初始化社区词本的发布账号 |
 | `ADMIN_USERNAMES` | `Waterfak3r` | 留言板管理员账号，多个值以逗号分隔 |
 
 ### 数据备份

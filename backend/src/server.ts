@@ -7,7 +7,6 @@ import { SqliteLocalDictionaryProvider } from "./providers/local-dictionary.js";
 import { FallbackDictionaryProvider } from "./providers/fallback-dictionary.js";
 import { SqliteStudyStore } from "./study/sqlite-store.js";
 import { WordService } from "./words/word-service.js";
-import { ensureStarterCatalog } from "./study/starter-catalog.js";
 
 const config = loadConfig();
 const remoteProvider = new WiktApiProvider({
@@ -60,13 +59,6 @@ const app = createApp({
   adminUsernames: (process.env.ADMIN_USERNAMES ?? "Waterfak3r").split(",").map((name) => name.trim()).filter(Boolean),
   ...(config.trustProxy ? { trustProxy: config.trustProxy } : {}),
   ...(config.staticDir ? { staticDir: config.staticDir } : {}),
-});
-
-await ensureStarterCatalog({
-  store: studyStore,
-  dictionary: localProvider,
-  dictionaryFile: config.dictionaryFile,
-  ownerUsername: process.env.STARTER_OWNER_USERNAME?.trim() || "Waterfak3r",
 });
 
 app.listen(config.port, () => {

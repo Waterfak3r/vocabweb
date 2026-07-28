@@ -172,6 +172,105 @@
 .donation-placeholder span { color: var(--accent-strong); font-family: var(--font-serif); font-size: 3.2rem; }
 .donation-placeholder small { color: var(--muted); font-size: 0.72rem; }
 
+.donation-settings-backdrop {
+  position: fixed;
+  z-index: 100;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: rgb(10 20 31 / 52%);
+}
+
+.donation-settings-dialog {
+  width: min(29rem, 100%);
+  padding: 1.2rem;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-lg);
+  background: var(--surface-solid);
+  box-shadow: var(--shadow-strong);
+}
+
+.donation-settings-dialog > header,
+.donation-settings-dialog > footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.donation-settings-dialog > header { margin-bottom: 1rem; }
+.donation-settings-dialog > header p { color: var(--muted); font-size: var(--text-xs); }
+.donation-settings-dialog > header h2 { font-family: var(--font-serif); font-size: 1.45rem; }
+.donation-settings-dialog > header button {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 1.5rem;
+  cursor: pointer;
+}
+
+.donation-settings-dialog > label:not(.donation-file-picker) {
+  display: grid;
+  gap: 0.4rem;
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.donation-settings-dialog input[type='text'],
+.donation-settings-dialog > label > input:not([type]) {
+  width: 100%;
+}
+
+.donation-settings-dialog input {
+  min-height: 2.65rem;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+}
+
+.donation-settings-divider {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  margin: 0.75rem 0;
+  color: var(--muted);
+  font-size: var(--text-xs);
+}
+.donation-settings-divider::before,
+.donation-settings-divider::after { content: ''; flex: 1; height: 1px; background: var(--rule); }
+.donation-file-picker { display: grid; gap: 0.4rem; color: var(--ink); font-size: var(--text-sm); }
+.donation-settings-preview {
+  display: grid;
+  width: 10rem;
+  aspect-ratio: 1;
+  place-items: center;
+  margin: 1rem auto 0.65rem;
+  overflow: hidden;
+  border: 1px dashed var(--rule);
+  border-radius: 0.65rem;
+  background: var(--hover-bg);
+  color: var(--muted);
+}
+.donation-settings-preview img { width: 100%; height: 100%; object-fit: contain; }
+.donation-settings-dialog > small { display: block; color: var(--muted); line-height: 1.55; }
+.donation-settings-error { margin-top: 0.65rem; color: var(--danger); font-size: var(--text-sm); }
+.donation-settings-dialog > footer { justify-content: flex-end; margin-top: 1rem; }
+.donation-settings-dialog > footer button {
+  min-height: 2.5rem;
+  padding: 0.5rem 1rem;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--ink);
+  cursor: pointer;
+}
+.donation-settings-dialog > footer button:last-child { border-color: var(--accent); background: var(--accent); color: white; }
+.donation-settings-dialog button:disabled { cursor: wait; opacity: 0.6; }
+
 /* Icon-only control: pad sideways so the tap target clears 24px. */
 .theme-toggle {
   padding-inline: 0.35rem;

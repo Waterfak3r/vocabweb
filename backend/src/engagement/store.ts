@@ -36,6 +36,8 @@ export type MessageDto = {
 export type MessagePage = { items: MessageDto[]; nextCursor?: string };
 
 export interface EngagementStore {
+  getSiteSetting(key: string): Promise<string | null>;
+  setSiteSetting(key: string, value: string | null): Promise<void>;
   recordSearch(word: string): Promise<void>;
   listPopularSearches(since: Date, limit: number): Promise<PopularSearch[]>;
   createFeedback(input: FeedbackInput): Promise<{ id: string; createdAt: string }>;
@@ -53,6 +55,7 @@ type SearchEvent = { word: string; searchedAt: string };
 type FeedbackRecord = FeedbackInput & { id: string; createdAt: string };
 
 export class MemoryEngagementStore implements EngagementStore {
+  readonly siteSettings = new Map<string, string>();
   readonly searches: SearchEvent[] = [];
   readonly feedback: FeedbackRecord[] = [];
   readonly messages: Array<{
@@ -62,6 +65,15 @@ export class MemoryEngagementStore implements EngagementStore {
   }> = [];
 
   constructor(private readonly now: () => Date = () => new Date()) {}
+
+  async getSiteSetting(key: string): Promise<string | null> {
+    return this.siteSettings.get(key) ?? null;
+  }
+
+  async setSiteSetting(key: string, value: string | null): Promise<void> {
+    if (value === null) this.siteSettings.delete(key);
+    else this.siteSettings.set(key, value);
+  }
 
   async recordSearch(word: string): Promise<void> {
     this.searches.push({ word, searchedAt: this.now().toISOString() });
@@ -155,6 +167,24 @@ export class SqliteEngagementStore implements EngagementStore {
   close(): void {
     this.database?.close();
     this.database = undefined;
+  }
+
+  async getSiteSetting(key: string): Promise<string | null> {
+    const db = await this.open();
+    const row = db.prepare("SELECT value FROM site_settings WHERE key = ?").get(key) as { value: string } | undefined;
+    return row?.value ?? null;
+  }
+
+  async setSiteSetting(key: string, value: string | null): Promise<void> {
+    const db = await this.open();
+    if (value === null) {
+      db.prepare("DELETE FROM site_settings WHERE key = ?").run(key);
+      return;
+    }
+    db.prepare(`
+      INSERT INTO site_settings(key, value, updated_at) VALUES (?, ?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+    `).run(key, value, this.now().toISOString());
   }
 
   async recordSearch(word: string): Promise<void> {
@@ -326,6 +356,11 @@ export class SqliteEngagementStore implements EngagementStore {
       );
       CREATE INDEX IF NOT EXISTS feedback_created_at_idx
         ON feedback(created_at DESC);
+      CREATE TABLE IF NOT EXISTS site_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS messages (
         id TEXT PRIMARY KEY,
         parent_id TEXT REFERENCES messages(id) ON DELETE CASCADE,

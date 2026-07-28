@@ -87,6 +87,23 @@ function dictionaryHeadword(value: string): string {
   return value.replace(/ \((?:[a-z0-9]{2,12}|[a-z0-9]{1,8}(?:[&/-][a-z0-9]{1,8}){1,3})\)$/i, "");
 }
 
+const DONATION_IMAGE_SETTING = "donation_image_url";
+
+function parseDonationImageUrl(value: unknown): string | null | undefined {
+  if (value === null || value === "") return null;
+  if (typeof value !== "string") return undefined;
+  const candidate = value.trim();
+  if (!candidate || candidate.length > 1_900_000) return undefined;
+  if (/^data:image\/(?:png|jpeg|webp|gif);base64,[a-z0-9+/=\s]+$/i.test(candidate)) return candidate;
+  if (candidate.startsWith("/") && !candidate.startsWith("//") && candidate.length <= 2_048) return candidate;
+  try {
+    const url = new URL(candidate);
+    return url.protocol === "https:" && candidate.length <= 2_048 ? url.toString() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 type RequestIdentity = {
   user: AccountUser | null;
   clientId: string | null;
@@ -444,6 +461,45 @@ export function createApp(options: CreateAppOptions = {}) {
     response.status(200).json({ status: "ok", service: "vacabweb-backend" });
   });
 
+  app.get("/api/site-settings", async (_request, response, next) => {
+    try {
+      response.setHeader("Cache-Control", "no-store");
+      response.status(200).json({
+        donationImageUrl: await engagementStore.getSiteSetting(DONATION_IMAGE_SETTING),
+      });
+    } catch (error) { next(error); }
+  });
+
+  app.get("/api/admin/site-settings", async (_request, response, next) => {
+    const user = identityOf(response).user;
+    if (!user || !adminUsernames.has(user.username.toLowerCase())) {
+      response.status(403).json(apiError("ADMIN_REQUIRED", "Administrator access is required"));
+      return;
+    }
+    try {
+      response.status(200).json({
+        donationImageUrl: await engagementStore.getSiteSetting(DONATION_IMAGE_SETTING),
+      });
+    } catch (error) { next(error); }
+  });
+
+  app.patch("/api/admin/site-settings", async (request, response, next) => {
+    const user = identityOf(response).user;
+    if (!user || !adminUsernames.has(user.username.toLowerCase())) {
+      response.status(403).json(apiError("ADMIN_REQUIRED", "Administrator access is required"));
+      return;
+    }
+    const donationImageUrl = parseDonationImageUrl(request.body?.donationImageUrl);
+    if (donationImageUrl === undefined) {
+      response.status(400).json(apiError("INVALID_DONATION_IMAGE", "Donation image must be HTTPS, a local path, or an image data URL"));
+      return;
+    }
+    try {
+      await engagementStore.setSiteSetting(DONATION_IMAGE_SETTING, donationImageUrl);
+      response.status(200).json({ donationImageUrl });
+    } catch (error) { next(error); }
+  });
+
   app.post("/api/searches", async (request, response, next) => {
     const word = typeof request.body?.word === "string" ? normalizeWord(request.body.word) : "";
     if (!isValidWordQuery(word)) {
@@ -756,6 +812,10 @@ export function createApp(options: CreateAppOptions = {}) {
   });
   app.get("/api/catalog/uploads/mine", async (request, response, next) => {
     const clientId = readClientId(request, response); if (!clientId) return;
+    if (!identityOf(response).user) {
+      response.status(401).json(apiError("AUTH_REQUIRED_FOR_UPLOAD", "Sign in to manage uploaded wordbooks"));
+      return;
+    }
     try { response.status(200).json(await studyStore.listUploads(clientId)); } catch (error) { next(error); }
   });
   app.get("/api/catalog/wordbooks/:id", async (request, response, next) => {
@@ -777,18 +837,19 @@ export function createApp(options: CreateAppOptions = {}) {
     try { const result = await studyStore.addCatalogToMine(clientId, id); if (!result) response.status(404).json(apiError("CATALOG_NOT_FOUND", "Catalog wordbook was not found")); else response.status(result.created ? 201 : 200).json(result); } catch (error) { next(error); }
   });
   app.post("/api/catalog/uploads", async (request, response, next) => {
-    const clientId = readClientId(request, response); const input = parseUploadCatalog(request.body);
+    const clientId = readClientId(request, response);
     if (!clientId) return;
-    if (!input) { response.status(400).json(apiError("INVALID_CATALOG_UPLOAD", "Catalog upload is invalid")); return; }
     const user = identityOf(response).user;
-    if ((input.visibility ?? "public") === "public" && !user) {
-      response.status(401).json(apiError("AUTH_REQUIRED_FOR_PUBLIC", "Sign in before publishing publicly"));
+    if (!user) {
+      response.status(401).json(apiError("AUTH_REQUIRED_FOR_UPLOAD", "Sign in before uploading a wordbook"));
       return;
     }
+    const input = parseUploadCatalog(request.body);
+    if (!input) { response.status(400).json(apiError("INVALID_CATALOG_UPLOAD", "Catalog upload is invalid")); return; }
     try {
       const catalog = await studyStore.uploadCatalog(clientId, {
         ...input,
-        ...(user ? { author: { userId: user.id, username: user.username } } : {}),
+        author: { userId: user.id, username: user.username },
       });
       if (!catalog) response.status(404).json(apiError("WORDBOOK_NOT_FOUND", "Source wordbook was not found")); else response.status(201).json(catalog);
     } catch (error) { next(error); }
@@ -799,14 +860,14 @@ export function createApp(options: CreateAppOptions = {}) {
     if (!id) { response.status(400).json(apiError("INVALID_RESOURCE_ID", "Resource id is invalid")); return; }
     if (!input) { response.status(400).json(apiError("INVALID_CATALOG_UPLOAD", "Catalog update is invalid")); return; }
     const user = identityOf(response).user;
-    if (input.visibility === "public" && !user) {
-      response.status(401).json(apiError("AUTH_REQUIRED_FOR_PUBLIC", "Sign in before publishing publicly"));
+    if (!user) {
+      response.status(401).json(apiError("AUTH_REQUIRED_FOR_UPLOAD", "Sign in to update an uploaded wordbook"));
       return;
     }
     try {
       const catalog = await studyStore.updateCatalog(clientId, id, {
         ...input,
-        ...(user ? { author: { userId: user.id, username: user.username } } : {}),
+        author: { userId: user.id, username: user.username },
       });
       if (!catalog) response.status(404).json(apiError("CATALOG_NOT_FOUND", "Catalog wordbook or source wordbook was not found")); else response.status(200).json(catalog);
     } catch (error) { next(error); }

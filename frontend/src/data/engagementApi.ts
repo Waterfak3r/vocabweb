@@ -26,6 +26,7 @@ export type Message = {
   canDelete: boolean
 }
 export type MessagePage = { items: Message[]; nextCursor?: string }
+export type SiteSettings = { donationImageUrl: string | null }
 
 type FetchLike = typeof fetch
 type EngagementApiOptions = {
@@ -134,6 +135,21 @@ export class EngagementApi {
     await this.empty('api/messages/read', { method: 'POST' })
   }
 
+  async siteSettings(): Promise<SiteSettings> {
+    return parseSiteSettings(await this.json(new URL('api/site-settings', this.baseUrl)))
+  }
+
+  async adminSiteSettings(): Promise<SiteSettings> {
+    return parseSiteSettings(await this.json(new URL('api/admin/site-settings', this.baseUrl)))
+  }
+
+  async updateSiteSettings(donationImageUrl: string | null): Promise<SiteSettings> {
+    return parseSiteSettings(await this.json(new URL('api/admin/site-settings', this.baseUrl), {
+      method: 'PATCH',
+      body: JSON.stringify({ donationImageUrl }),
+    }))
+  }
+
   private headers() {
     return { 'content-type': 'application/json', 'X-Vocab-Client-Id': this.clientId() }
   }
@@ -155,6 +171,13 @@ export class EngagementApi {
     const response = await this.fetch(new URL(path, this.baseUrl), { ...init, credentials: 'include', headers: { ...this.headers(), ...init.headers } })
     if (!response.ok) throw new Error(`请求失败（${response.status}）。`)
   }
+}
+
+function parseSiteSettings(value: unknown): SiteSettings {
+  if (!value || typeof value !== 'object') throw new Error('站点设置无效。')
+  const donationImageUrl = (value as Record<string, unknown>).donationImageUrl
+  if (donationImageUrl !== null && typeof donationImageUrl !== 'string') throw new Error('站点设置无效。')
+  return { donationImageUrl }
 }
 
 function parseMessage(value: unknown): Message | null {
