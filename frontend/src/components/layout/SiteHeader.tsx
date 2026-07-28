@@ -309,7 +309,7 @@ export function SiteHeader() {
           </button>
           <div className="donation-popover" role="dialog" aria-label="打赏">
             <p>感谢支持</p>
-            {donationOpen && donationImageUrl && !donationImageFailed ? (
+            {donationImageUrl && !donationImageFailed ? (
               <img src={donationImageUrl} alt="打赏二维码" referrerPolicy="no-referrer" onError={() => setDonationImageFailed(true)} />
             ) : (
               <div className="donation-placeholder" role="img" aria-label="打赏码待配置">

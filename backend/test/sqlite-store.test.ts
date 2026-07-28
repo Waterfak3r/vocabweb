@@ -135,6 +135,37 @@ test("SQLite exposes constrained, queryable user/session/catalog rows", async (t
   store.close();
 });
 
+test("SQLite reloads cached account state after an external administrator update", async (t) => {
+  const files = await fixture(t);
+  const serverStore = new SqliteStudyStore(files.databaseFile);
+  const adminStore = new SqliteStudyStore(files.databaseFile);
+
+  try {
+    const created = await serverStore.createUser("Operator", "scrypt:test-hash", CLIENT);
+    assert.equal(created.kind, "created");
+    if (created.kind !== "created") return;
+    await serverStore.createSession(
+      "operator-session",
+      created.user.id,
+      "2026-08-27T00:00:00.000Z",
+    );
+    assert.equal((await serverStore.getUserByUsername("Operator"))?.role, "user");
+
+    assert.equal((await adminStore.setUserRole("Operator", "admin"))?.role, "admin");
+    assert.equal((await serverStore.getUserByUsername("Operator"))?.role, "admin");
+    assert.equal(
+      (await serverStore.getSession(
+        "operator-session",
+        new Date("2026-07-29T00:00:00.000Z"),
+      ))?.user.role,
+      "admin",
+    );
+  } finally {
+    serverStore.close();
+    adminStore.close();
+  }
+});
+
 test("SQLite adds a safe user role to databases created before role authorization", async (t) => {
   const files = await fixture(t);
   const legacy = new Database(files.databaseFile);

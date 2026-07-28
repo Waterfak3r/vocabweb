@@ -49,6 +49,11 @@ export abstract class BaseStore implements StudyStore {
   protected abstract load(): Promise<State>;
   /** Persist one state transition; record-oriented stores can diff against `previous`. */
   protected abstract save(state: State, previous?: State): Promise<void>;
+  /** Persistent stores can invalidate cached state after detecting another writer. */
+  protected async refreshBeforeOperation(): Promise<void> {}
+  protected clearCachedState(): void {
+    this.statePromise = undefined;
+  }
 
   // --- Accounts & sessions ---
   async createUser(username: string, passwordHash: string, clientId: string): Promise<{ kind: "created"; user: AccountUser } | { kind: "taken" } | { kind: "client-taken" }> { return await this.mutate((state) => {
@@ -673,8 +678,12 @@ export abstract class BaseStore implements StudyStore {
   }
   /** 12 hexadecimal characters = 48 bits; legacy 6–8 character codes remain importable. */
   private shareCode(state: State): string { let code = ""; do { code = randomUUID().replace(/-/g, "").slice(0, 24).toUpperCase(); } while (state.catalog.some((book) => book.shareCode === code)); return code; }
-  private async read<T>(operation: (state: State) => T): Promise<T> { const task = this.queue.then(async () => operation(await this.state())); this.queue = task.then(() => undefined, () => undefined); return await task; }
+  private async read<T>(operation: (state: State) => T): Promise<T> { const task = this.queue.then(async () => {
+    await this.refreshBeforeOperation();
+    return operation(await this.state());
+  }); this.queue = task.then(() => undefined, () => undefined); return await task; }
   private async mutate<T>(operation: (state: State) => T): Promise<T> { const task = this.queue.then(async () => {
+    await this.refreshBeforeOperation();
     const previous = await this.state();
     const draft = clone(previous);
     const value = operation(draft);

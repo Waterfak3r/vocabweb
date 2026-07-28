@@ -47,6 +47,7 @@ export class SqliteStudyStore extends BaseStore {
   private readonly databaseFile: string;
   private readonly legacyJsonFile?: string;
   private database?: Database.Database;
+  private dataVersion?: number;
 
   constructor(databaseFile: string, options: SqliteStoreOptions = {}) {
     super(options.now, options.limits);
@@ -70,6 +71,15 @@ export class SqliteStudyStore extends BaseStore {
     const destination = resolve(destinationFile);
     await mkdir(dirname(destination), { recursive: true });
     await db.backup(destination);
+  }
+
+  protected async refreshBeforeOperation(): Promise<void> {
+    const db = await this.open();
+    const version = (db.pragma("data_version", { simple: true }) as number);
+    if (this.dataVersion !== undefined && version !== this.dataVersion) {
+      this.clearCachedState();
+    }
+    this.dataVersion = version;
   }
 
   protected async load(): Promise<State> {
