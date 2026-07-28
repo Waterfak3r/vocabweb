@@ -1,0 +1,52 @@
+import { useDocumentTitle } from '../hooks/useDocumentTitle'
+
+export function PrivacyPage() {
+  useDocumentTitle('隐私说明')
+
+  function clearLocalData() {
+    if (!window.confirm('清除这台浏览器中的匿名身份、主题和本地学习数据？已注册账号的服务器数据不会被删除。')) return
+    try {
+      for (let index = localStorage.length - 1; index >= 0; index -= 1) {
+        const key = localStorage.key(index)
+        if (key?.startsWith('vocab-ielts:') || key === 'vocab-message-nickname-v1') localStorage.removeItem(key)
+      }
+    } finally {
+      window.location.assign('/')
+    }
+  }
+
+  return (
+    <section className="sources-page privacy-page" aria-labelledby="privacy-title">
+      <p className="marginal">PRIVACY</p>
+      <h1 id="privacy-title">隐私与数据说明</h1>
+      <p>本页说明 WeCreate Vocab 在提供查词、词书、学习记录和社区功能时处理的数据。最后更新：2026 年 7 月 28 日。</p>
+
+      <article>
+        <h2>账号与学习数据</h2>
+        <p>注册账号保存用户名、加盐密码哈希、会话哈希、私人词书、学习事件、导入草稿、收藏和发布记录。密码与原始会话令牌不会写入数据库。</p>
+        <p>匿名使用时，浏览器会在 localStorage 保存随机客户端 ID；持有该 ID 的脚本可能访问对应匿名数据，因此重要数据应注册账号保护。</p>
+      </article>
+
+      <article>
+        <h2>搜索、社区与保留期限</h2>
+        <p>成功查询的单词会保存最多 30 天，用于生成不含账号和 IP 的热门词统计。学习事件保留约 90 天；登录会话最长 30 天。留言中的可选联系方式仅管理员可见，账号注销时会被移除。</p>
+      </article>
+
+      <article>
+        <h2>外部服务</h2>
+        <p>本地词典未命中或请求在线发音时，查询词可能发送给 WiktAPI。播放第三方录音时，音频主机可能获得访问者 IP、浏览器信息和请求时间。浏览器语音合成是否使用云服务取决于操作系统和浏览器。</p>
+      </article>
+
+      <article>
+        <h2>控制自己的数据</h2>
+        <p>登录后可在“账号”菜单导出服务器保存的账号、词书、学习记录、发布内容和留言；注销账号需要再次输入密码，并会删除私人学习数据、会话和发布内容，同时匿名化留言。</p>
+        <button type="button" onClick={clearLocalData}>清除这台浏览器的本地数据</button>
+      </article>
+
+      <article>
+        <h2>必要存储</h2>
+        <p>会话 Cookie 仅用于登录，具有 HttpOnly、SameSite 和生产环境 Secure 属性；本站没有广告跟踪器。主题、匿名身份和部分界面偏好保存在 localStorage，不使用非必要营销 Cookie。</p>
+      </article>
+    </section>
+  )
+}

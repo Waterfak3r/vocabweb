@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
-import { NavLink } from 'react-router-dom'
+import { NavLink } from 'react-router'
 import { AuthDialog, type AuthMode } from '../account/AuthDialog'
 import { useAuth } from '../../hooks/useAuth'
 import { useTheme } from '../../hooks/useTheme'
 import { getEngagementApi } from '../../data/engagementApi'
+import { getWorkspaceApi } from '../../data/workspaceApi'
+import { rotateStudyClientId } from '../../data/studyApi'
 
 const NAVIGATION = [
   { to: '/', label: '查词', icon: 'search', end: true },
@@ -69,8 +71,7 @@ export function SiteHeader() {
   const [unreadMessages, setUnreadMessages] = useState(0)
   const [donationOpen, setDonationOpen] = useState(false)
   const [donationImageFailed, setDonationImageFailed] = useState(false)
-  const [donationImageUrl, setDonationImageUrl] = useState(() => import.meta.env.VITE_DONATION_IMAGE_URL?.trim() ?? '')
-  const [canConfigureDonation, setCanConfigureDonation] = useState(false)
+  const [donationImageUrl, setDonationImageUrl] = useState('')
   const [donationSettingsOpen, setDonationSettingsOpen] = useState(false)
   const [donationDraft, setDonationDraft] = useState('')
   const [donationSaving, setDonationSaving] = useState(false)
@@ -95,18 +96,6 @@ export function SiteHeader() {
       .catch(() => undefined)
     return () => { active = false }
   }, [engagementApi])
-
-  useEffect(() => {
-    if (!user || !engagementApi) {
-      setCanConfigureDonation(false)
-      return
-    }
-    let active = true
-    void engagementApi.adminSiteSettings()
-      .then(() => { if (active) setCanConfigureDonation(true) })
-      .catch(() => { if (active) setCanConfigureDonation(false) })
-    return () => { active = false }
-  }, [engagementApi, user])
 
   useEffect(() => {
     if (!user) { setUnreadMessages(0); return }
@@ -206,6 +195,38 @@ export function SiteHeader() {
     }
   }
 
+  async function exportAccountData() {
+    const api = getWorkspaceApi()
+    if (!api) return
+    setLogoutError('')
+    try {
+      const payload = await api.exportAccount()
+      const url = URL.createObjectURL(new Blob([`${JSON.stringify(payload, null, 2)}\n`], { type: 'application/json' }))
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `vacabweb-export-${new Date().toISOString().slice(0, 10)}.json`
+      link.click()
+      URL.revokeObjectURL(url)
+    } catch {
+      setLogoutError('数据导出失败，请稍后重试。')
+    }
+  }
+
+  async function deleteAccount() {
+    const api = getWorkspaceApi()
+    if (!api || !window.confirm('注销后，私人词书、学习记录、会话和发布内容将被永久删除。继续吗？')) return
+    const password = window.prompt('请输入当前密码确认注销账号：')
+    if (!password) return
+    setLogoutError('')
+    try {
+      await api.deleteAccount(password)
+      rotateStudyClientId()
+      window.location.assign('/')
+    } catch {
+      setLogoutError('注销失败，请确认密码后重试。')
+    }
+  }
+
   function openDonationSettings() {
     setAccountOpen(false)
     setDonationDraft(donationImageUrl)
@@ -244,7 +265,7 @@ export function SiteHeader() {
       setDonationImageFailed(false)
       setDonationSettingsOpen(false)
     } catch {
-      setDonationSettingsError('保存失败。请使用 HTTPS 图片地址、站内路径或有效图片文件。')
+      setDonationSettingsError('保存失败。请使用站内图片路径或有效图片文件。')
     } finally {
       setDonationSaving(false)
     }
@@ -288,8 +309,8 @@ export function SiteHeader() {
           </button>
           <div className="donation-popover" role="dialog" aria-label="打赏">
             <p>感谢支持</p>
-            {donationImageUrl && !donationImageFailed ? (
-              <img src={donationImageUrl} alt="打赏二维码" onError={() => setDonationImageFailed(true)} />
+            {donationOpen && donationImageUrl && !donationImageFailed ? (
+              <img src={donationImageUrl} alt="打赏二维码" referrerPolicy="no-referrer" onError={() => setDonationImageFailed(true)} />
             ) : (
               <div className="donation-placeholder" role="img" aria-label="打赏码待配置">
                 <span aria-hidden="true">赏</span>
@@ -343,7 +364,9 @@ export function SiteHeader() {
               ) : user ? (
                 <>
                   <p className="account-user">{user.username}</p>
-                  {canConfigureDonation && <button type="button" role="menuitem" onClick={openDonationSettings}>配置打赏码</button>}
+                  {user.capabilities.includes('site.settings.write') && <button type="button" role="menuitem" onClick={openDonationSettings}>配置打赏码</button>}
+                  <button type="button" role="menuitem" onClick={() => void exportAccountData()}>导出我的数据</button>
+                  <button type="button" role="menuitem" className="account-logout" onClick={() => void deleteAccount()}>注销账号</button>
                   <button
                     type="button"
                     role="menuitem"
@@ -380,11 +403,11 @@ export function SiteHeader() {
         <div className="donation-settings-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !donationSaving) setDonationSettingsOpen(false) }}>
           <section className="donation-settings-dialog" role="dialog" aria-modal="true" aria-labelledby="donation-settings-title">
             <header><div><p>管理员设置</p><h2 id="donation-settings-title">配置打赏码</h2></div><button type="button" aria-label="关闭" disabled={donationSaving} onClick={() => setDonationSettingsOpen(false)}>×</button></header>
-            <label>图片地址<input value={donationDraft.startsWith('data:') ? '' : donationDraft} onChange={(event) => setDonationDraft(event.target.value)} placeholder="https://… 或 /images/reward.png" /></label>
+            <label>站内图片路径<input value={donationDraft.startsWith('data:') ? '' : donationDraft} onChange={(event) => setDonationDraft(event.target.value)} placeholder="/images/reward.png" /></label>
             <div className="donation-settings-divider"><span>或</span></div>
             <label className="donation-file-picker">选择二维码图片<input type="file" accept="image/png,image/jpeg,image/webp,image/gif" onChange={(event) => chooseDonationImage(event.target.files?.[0])} /></label>
             <div className="donation-settings-preview">
-              {donationDraft ? <img src={donationDraft} alt="打赏码预览" /> : <span>未配置图片</span>}
+              {donationDraft ? <img src={donationDraft} alt="打赏码预览" referrerPolicy="no-referrer" /> : <span>未配置图片</span>}
             </div>
             <small>图片将保存到服务器数据库并立即对所有访客生效。清空地址后保存可移除打赏码。</small>
             {donationSettingsError && <p className="donation-settings-error" role="alert">{donationSettingsError}</p>}

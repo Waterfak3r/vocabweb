@@ -1,5 +1,5 @@
 import { Component, lazy, type ReactNode } from 'react'
-import { Navigate, Route, Routes } from 'react-router-dom'
+import { Navigate, Route, Routes } from 'react-router'
 import { AppShell } from './components/layout/AppShell'
 
 // Route-level code splitting keeps the entry chunk to the shell + the page
@@ -10,6 +10,7 @@ const MarketplaceDetailPage = lazy(() => import('./pages/MarketplaceDetailPage')
 const WordbookPage = lazy(() => import('./pages/WordbookPage').then((m) => ({ default: m.WordbookPage })))
 const MessagesPage = lazy(() => import('./pages/MessagesPage').then((m) => ({ default: m.MessagesPage })))
 const SourcesPage = lazy(() => import('./pages/SourcesPage').then((m) => ({ default: m.SourcesPage })))
+const PrivacyPage = lazy(() => import('./pages/PrivacyPage').then((m) => ({ default: m.PrivacyPage })))
 
 type ChunkErrorBoundaryState = { failed: boolean }
 
@@ -47,6 +48,7 @@ function App() {
           <Route path="wordbook" element={<WordbookPage />} />
           <Route path="messages" element={<MessagesPage />} />
           <Route path="sources" element={<SourcesPage />} />
+          <Route path="privacy" element={<PrivacyPage />} />
           <Route path="flashcards" element={<Navigate to="/wordbook?mode=flashcards" replace />} />
           <Route path="dictation" element={<Navigate to="/wordbook?mode=dictation" replace />} />
           <Route path="*" element={<Navigate to="/" replace />} />

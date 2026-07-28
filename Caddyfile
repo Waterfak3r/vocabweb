@@ -1,0 +1,18 @@
+{$SITE_ADDRESS:http://localhost} {
+	encode zstd gzip
+
+	reverse_proxy vacabweb:3000 {
+		health_uri /api/health/ready
+		health_interval 30s
+		health_timeout 5s
+	}
+
+	header {
+		-Server
+	}
+
+	log {
+		output stdout
+		format json
+	}
+}

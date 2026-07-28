@@ -84,7 +84,7 @@ export function Flashcard({
       )}
 
       <div className={styles.cardActions}>
-        <PronounceButton word={item.word} audioUrl={item.audioUrl} />
+        <PronounceButton word={item.word} />
       </div>
     </div>
   )

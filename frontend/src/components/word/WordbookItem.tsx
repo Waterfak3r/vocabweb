@@ -28,7 +28,7 @@ export function WordbookItem({ item, onRemove }: WordbookItemProps) {
       </div>
 
       <div className="wordbook-row-actions">
-        <PronounceButton word={item.word} audioUrl={item.audioUrl} />
+        <PronounceButton word={item.word} />
         <Button variant="danger" size="sm" onClick={() => onRemove(item.id)}>
           移除
         </Button>

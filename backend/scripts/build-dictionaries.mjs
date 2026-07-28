@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { mkdtemp, mkdir, readFile, readdir, rm } from "node:fs/promises";
+import { access, copyFile, mkdtemp, mkdir, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { spawn } from "node:child_process";
@@ -20,6 +20,7 @@ const WIKTEXTRACT_FILE = process.env.WIKTEXTRACT_JSONL_GZ?.trim();
 const WIKTEXTRACT_DUMP_DATE = process.env.WIKTEXTRACT_DUMP_DATE?.trim();
 const WIKTEXTRACT_SHA256 = process.env.WIKTEXTRACT_SHA256?.trim()?.toLowerCase();
 const output = resolve(process.argv[2] ?? "../resources/dictionaries/generated/vocab.sqlite");
+const licenseOutput = resolve(dirname(output), "licenses");
 const requestedWiktextractDate = WIKTEXTRACT_FILE ? WIKTEXTRACT_DUMP_DATE : "not-imported";
 const requestedWiktextractHash = WIKTEXTRACT_FILE ? WIKTEXTRACT_SHA256 : "not-imported";
 if (!process.argv.includes("--force")) {
@@ -34,6 +35,8 @@ if (!process.argv.includes("--force")) {
       && metadata.wiktextract_dump_date === requestedWiktextractDate
       && metadata.wiktextract_sha256 === requestedWiktextractHash
     ) {
+      await access(resolve(licenseOutput, "open-english-wordnet-LICENSE"));
+      await access(resolve(licenseOutput, "ecdict-LICENSE"));
       console.log(`Dictionary is up to date at ${output}`);
       process.exit(0);
     }
@@ -77,6 +80,13 @@ async function clonePinned(url, commit, target) {
   await run("git", ["checkout", "--detach", commit], target);
 }
 
+async function copyRepositoryLicense(repository, targetName) {
+  const license = (await readdir(repository)).find((name) => /^licen[cs]e(?:\.|$)/i.test(name));
+  if (!license) throw new Error(`No license file found in ${repository}`);
+  await mkdir(licenseOutput, { recursive: true });
+  await copyFile(resolve(repository, license), resolve(licenseOutput, targetName));
+}
+
 await mkdir(dirname(output), { recursive: true });
 const temp = await mkdtemp(resolve(tmpdir(), "vacabweb-dictionaries-"));
 const oewnDir = resolve(temp, "oewn");
@@ -85,6 +95,8 @@ const ecdictDir = resolve(temp, "ecdict");
 try {
   await clonePinned("https://github.com/globalwordnet/english-wordnet.git", OEWN_COMMIT, oewnDir);
   await clonePinned("https://github.com/skywind3000/ECDICT.git", ECDICT_COMMIT, ecdictDir);
+  await copyRepositoryLicense(oewnDir, "open-english-wordnet-LICENSE");
+  await copyRepositoryLicense(ecdictDir, "ecdict-LICENSE");
   await rm(output, { force: true });
   const db = new Database(output);
   db.pragma("journal_mode = OFF");

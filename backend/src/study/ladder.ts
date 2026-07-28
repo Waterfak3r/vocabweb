@@ -11,8 +11,8 @@ export interface ClientData { favorites: string[]; wordbooks: MyWordbook[]; even
 /** A persisted session: the sha256 of the cookie token, its owner, and expiry. */
 export interface SessionRecord { tokenHash: string; userId: string; expiresAt: string; createdAt: string; }
 /** The whole persisted world. SQLite splits this across tables; JSON/memory keep it as one document. */
-export interface State { version: 3 | 4; catalog: CatalogWordbook[]; clients: Record<string, ClientData>; users: AccountUser[]; sessions: SessionRecord[]; }
-export const EMPTY = (): State => ({ version: 4, catalog: [], clients: {}, users: [], sessions: [] });
+export interface State { version: 3 | 4 | 5; catalog: CatalogWordbook[]; clients: Record<string, ClientData>; users: AccountUser[]; sessions: SessionRecord[]; }
+export const EMPTY = (): State => ({ version: 5, catalog: [], clients: {}, users: [], sessions: [] });
 export const RETENTION_MS = 90 * 86_400_000;
 export const BATCH_SIZE = 500;
 
@@ -163,12 +163,15 @@ export function foldApostrophes(word: string): string { return word.replace(/[â€
 /** Upgrade older JSON without losing wordbooks, events, publishing data, accounts, or visibility. */
 export function migrate(raw: unknown): State {
   if (!isJsonObject(raw) || !Array.isArray(raw.catalog) || !isJsonObject(raw.clients)) throw new Error("Study data file has an unsupported format");
-  if (raw.version !== 2 && raw.version !== 3 && raw.version !== 4) throw new Error("Study data file has an unsupported format");
+  if (raw.version !== 2 && raw.version !== 3 && raw.version !== 4 && raw.version !== 5) throw new Error("Study data file has an unsupported format");
   const state = raw as unknown as State;
-  state.version = 4;
+  state.version = 5;
   // Accounts and sessions are newer than the on-disk document; default them so older files load.
   state.users ??= [];
   state.sessions ??= [];
+  for (const user of state.users) {
+    if (user.role !== "admin") user.role = "user";
+  }
   for (const book of state.catalog) {
     // Existing/legacy catalog entries predate visibility; the marketplace treats them as public.
     book.visibility ??= "public";

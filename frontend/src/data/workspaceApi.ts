@@ -7,7 +7,8 @@ type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Respo
 export type CatalogSort = 'recommended' | 'hot' | 'newest' | 'rating'
 /** 公开=进广场列表；邀请码=仅凭分享码导入；私密=仅自己可见。 */
 export type CatalogVisibility = 'public' | 'unlisted' | 'private'
-export type AuthUser = { username: string; clientId: string }
+export type AuthCapability = 'site.settings.write' | 'messages.moderate' | 'messages.contact.read'
+export type AuthUser = { username: string; clientId: string; role: 'user' | 'admin'; capabilities: AuthCapability[] }
 export type CatalogExam = 'IELTS' | 'TOEFL' | 'GRE' | '高考' | '四级' | '六级' | '四六级' | '考研'
 export type LearningGoal = '写作' | '阅读' | '听力' | '口语'
 export type CatalogQuery = { q?: string; exam?: CatalogExam; goal?: LearningGoal; sort?: CatalogSort }
@@ -208,7 +209,11 @@ function parseCatalog(value: unknown): CatalogWordbook | null {
 
 function parseAuthUser(value: unknown): AuthUser | null {
   if (!isRecord(value) || !isText(value.username) || !isText(value.clientId)) return null
-  return { username: value.username, clientId: value.clientId }
+  if (value.role !== 'user' && value.role !== 'admin') return null
+  if (!Array.isArray(value.capabilities)) return null
+  const allowed: AuthCapability[] = ['site.settings.write', 'messages.moderate', 'messages.contact.read']
+  if (!value.capabilities.every((item): item is AuthCapability => typeof item === 'string' && allowed.includes(item as AuthCapability))) return null
+  return { username: value.username, clientId: value.clientId, role: value.role, capabilities: [...value.capabilities] }
 }
 
 function parseMeaning(value: unknown): WordMeaning | null {
@@ -451,6 +456,14 @@ export class WorkspaceApi {
   register(username: string, password: string) { return this.json('api/auth/register', { method: 'POST', body: JSON.stringify({ username, password }) }, parseAuthUser) }
   login(username: string, password: string) { return this.json('api/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) }, parseAuthUser) }
   logout() { return this.empty('api/auth/logout', { method: 'POST' }) }
+  async exportAccount(): Promise<unknown> {
+    const response = await this.fetch(new URL('api/account/export', this.baseUrl), this.requestInit({}))
+    if (!response.ok) throw await responseError(response)
+    try { return await response.json() } catch { throw new Error('Backend response is not valid JSON.') }
+  }
+  deleteAccount(password: string) {
+    return this.empty('api/account', { method: 'DELETE', body: JSON.stringify({ password }) })
+  }
   /** Returns the signed-in user, or null when the session is absent/expired. */
   async me(): Promise<AuthUser | null> {
     const response = await this.fetch(new URL('api/auth/me', this.baseUrl), this.requestInit({}))

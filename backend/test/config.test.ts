@@ -16,6 +16,10 @@ test("loadConfig provides bounded word lookup defaults", () => {
     wordSuggestionRateLimitMaxRequests: 240,
     loginRateLimitWindowMs: 900_000,
     loginRateLimitMaxRequests: 10,
+    registrationEnabled: true,
+    maxWordbooksPerClient: 50,
+    maxWordsPerClient: 50_000,
+    maxDraftsPerClient: 20,
     trustProxy: 0,
     staticDir: "",
     databaseFile: "./data/study-state.sqlite",
@@ -39,6 +43,10 @@ test("loadConfig parses configured word lookup settings", () => {
     WORD_SUGGESTION_RATE_LIMIT_MAX_REQUESTS: "120",
     LOGIN_RATE_LIMIT_WINDOW_MS: "120000",
     LOGIN_RATE_LIMIT_MAX_REQUESTS: "4",
+    REGISTRATION_ENABLED: "off",
+    MAX_WORDBOOKS_PER_CLIENT: "12",
+    MAX_WORDS_PER_CLIENT: "3456",
+    MAX_DRAFTS_PER_CLIENT: "7",
     TRUST_PROXY: "1",
     STATIC_DIR: " ../frontend/dist ",
     DATABASE_FILE: "C:/data/vocab.sqlite",
@@ -60,6 +68,10 @@ test("loadConfig parses configured word lookup settings", () => {
     wordSuggestionRateLimitMaxRequests: 120,
     loginRateLimitWindowMs: 120_000,
     loginRateLimitMaxRequests: 4,
+    registrationEnabled: false,
+    maxWordbooksPerClient: 12,
+    maxWordsPerClient: 3_456,
+    maxDraftsPerClient: 7,
     trustProxy: 1,
     staticDir: "../frontend/dist",
     databaseFile: "C:/data/vocab.sqlite",
@@ -77,5 +89,9 @@ test("loadConfig rejects invalid provider and timeout settings", () => {
   assert.throws(
     () => loadConfig({ WIKTAPI_BASE_URL: "file:///dictionary" }),
     /WIKTAPI_BASE_URL/,
+  );
+  assert.throws(
+    () => loadConfig({ REGISTRATION_ENABLED: "sometimes" }),
+    /REGISTRATION_ENABLED/,
   );
 });

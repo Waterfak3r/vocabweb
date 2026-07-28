@@ -67,7 +67,6 @@ export function WordManagerDialog({ title, entries, saving = false, onClose, onS
   const selected = entries.find((entry) => entry.id === selectedId) ?? entries[0]
   const [word, setWord] = useState(selected?.word ?? '')
   const [phonetic, setPhonetic] = useState(selected?.phonetic ?? '')
-  const [audioUrl, setAudioUrl] = useState(selected?.audioUrl ?? '')
   const [zhMeaning, setZhMeaning] = useState(selected?.zhMeaning ?? '')
   const [meaningsText, setMeaningsText] = useState(selected ? meaningsToText(selected) : '')
   const [error, setError] = useState('')
@@ -109,7 +108,6 @@ export function WordManagerDialog({ title, entries, saving = false, onClose, onS
     if (!selected) return
     setWord(selected.word)
     setPhonetic(selected.phonetic)
-    setAudioUrl(selected.audioUrl ?? '')
     setZhMeaning(selected.zhMeaning ?? '')
     setMeaningsText(meaningsToText(selected))
     setError('')
@@ -172,7 +170,6 @@ export function WordManagerDialog({ title, entries, saving = false, onClose, onS
       await onSave(selected.id, {
         word: word.trim(),
         phonetic: phonetic.trim(),
-        ...(audioUrl.trim() ? { audioUrl: audioUrl.trim() } : {}),
         zhMeaning: zhMeaning.trim() || null,
         meanings,
       })
@@ -236,7 +233,6 @@ export function WordManagerDialog({ title, entries, saving = false, onClose, onS
                 <label>音标<input value={phonetic} onChange={(event) => setPhonetic(event.target.value)} placeholder="/.../" /></label>
                 <label>中文释义<input value={zhMeaning} onChange={(event) => setZhMeaning(event.target.value)} placeholder="可留空" /></label>
               </div>
-              <label>发音地址<input value={audioUrl} onChange={(event) => setAudioUrl(event.target.value)} placeholder="https://..." /></label>
               <label>
                 英文释义
                 <textarea

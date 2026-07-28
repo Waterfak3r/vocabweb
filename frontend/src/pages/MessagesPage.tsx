@@ -22,7 +22,7 @@ export function MessagesPage() {
   const [replying, setReplying] = useState<Message>()
   const [editing, setEditing] = useState<Message>()
   const [busy, setBusy] = useState(false)
-  const isAdmin = user?.username.toLowerCase() === 'waterfak3r'
+  const isAdmin = user?.capabilities.includes('messages.moderate') ?? false
 
   const load = useCallback(async (cursor?: string) => {
     if (!api) { setError('当前未连接服务器，留言板暂不可用。'); setLoading(false); return }

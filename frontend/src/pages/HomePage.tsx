@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react'
-import { Link } from 'react-router-dom'
+import { Link } from 'react-router'
 import { WordResultCard } from '../components/word/WordResultCard'
 import { EmptyState } from '../components/ui/EmptyState'
 import { InkRule } from '../components/ui/InkRule'

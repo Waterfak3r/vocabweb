@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:net";
@@ -294,10 +294,20 @@ async function main() {
     if (browser) await browser.close().catch(() => {});
     if (server.exitCode === null) {
       server.kill("SIGTERM");
-      await Promise.race([
-        new Promise((resolveExit) => server.once("exit", resolveExit)),
-        new Promise((resolveWait) => setTimeout(resolveWait, 2_000)),
+      const exited = await Promise.race([
+        new Promise((resolveExit) => server.once("exit", () => resolveExit(true))),
+        new Promise((resolveWait) => setTimeout(() => resolveWait(false), 5_000)),
       ]);
+      if (!exited && server.exitCode === null) {
+        if (process.platform === "win32") {
+          spawnSync("taskkill", ["/PID", String(server.pid), "/T", "/F"], { stdio: "ignore" });
+        } else {
+          server.kill("SIGKILL");
+        }
+        if (server.exitCode === null) {
+          await new Promise((resolveExit) => server.once("exit", resolveExit));
+        }
+      }
     }
     await rm(tempDir, { recursive: true, force: true });
   }

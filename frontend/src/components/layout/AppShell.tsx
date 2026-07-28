@@ -1,4 +1,4 @@
-import { Outlet, useLocation } from 'react-router-dom'
+import { Outlet, useLocation } from 'react-router'
 import { Suspense, useEffect } from 'react'
 import { selectPersistFailed, useWordbook } from '../../data/wordbookStore'
 import { SiteFooter } from './SiteFooter'

@@ -24,6 +24,7 @@ jobs:
           cache: npm
           cache-dependency-path: ${{ matrix.package }}/package-lock.json
       - run: npm ci
+      - run: npm audit --omit=dev --audit-level=high
       - run: npm run typecheck
       - run: npm test
       - if: matrix.package == 'frontend'
@@ -35,6 +36,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: docker build -t vacabweb:ci .
+      - name: Container readiness smoke test
+        run: |
+          docker run -d --name vacabweb-ci -p 127.0.0.1:3000:3000 -e REGISTRATION_ENABLED=false vacabweb:ci
+          trap 'docker logs vacabweb-ci; docker rm -f vacabweb-ci' EXIT
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:3000/api/health/ready; then
+              exit 0
+            fi
+            sleep 1
+          done
+          exit 1
 
   browser:
     name: account and community browser flow
@@ -50,7 +62,10 @@ jobs:
             backend/package-lock.json
             frontend/package-lock.json
       - run: npm ci
+      - run: npm audit --omit=dev --audit-level=high
       - run: npm ci --prefix backend
+      - run: npm audit --omit=dev --audit-level=high --prefix backend
       - run: npm ci --prefix frontend
+      - run: npm audit --omit=dev --audit-level=high --prefix frontend
       - run: npm run build
       - run: npm run test:e2e:community-account

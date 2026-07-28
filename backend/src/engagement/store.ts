@@ -49,6 +49,8 @@ export interface EngagementStore {
   permanentlyDeleteMessage(id: string): Promise<boolean>;
   unreadMessageCount(userId: string): Promise<number>;
   markMessagesRead(userId: string): Promise<void>;
+  exportUserData(userId: string): Promise<unknown>;
+  deleteUserData(userId: string): Promise<void>;
 }
 
 type SearchEvent = { word: string; searchedAt: string };
@@ -149,6 +151,25 @@ export class MemoryEngagementStore implements EngagementStore {
   }
   async unreadMessageCount(): Promise<number> { return 0; }
   async markMessagesRead(): Promise<void> {}
+  async exportUserData(userId: string): Promise<unknown> {
+    return {
+      messages: this.messages
+        .filter((message) => message.authorUserId === userId)
+        .map(({ id, content, contact, status, createdAt, updatedAt }) => ({ id, content, contact, status, createdAt, updatedAt })),
+    };
+  }
+  async deleteUserData(userId: string): Promise<void> {
+    for (const message of this.messages) {
+      if (message.authorUserId !== userId) continue;
+      message.authorUserId = undefined;
+      message.authorClientId = `deleted-${randomUUID()}`;
+      message.author = "已注销用户";
+      message.contact = undefined;
+      message.content = "";
+      message.status = "deleted";
+      message.updatedAt = this.now().toISOString();
+    }
+  }
   private owns(item: { authorUserId?: string; authorClientId: string }, actor: MessageActor) { return actor.userId ? item.authorUserId === actor.userId : !item.authorUserId && item.authorClientId === actor.clientId; }
   private dto(item: typeof this.messages[number], actor: MessageActor | null): MessageDto {
     const owns = actor ? this.owns(item, actor) : false;
@@ -329,6 +350,35 @@ export class SqliteEngagementStore implements EngagementStore {
   async markMessagesRead(userId: string): Promise<void> {
     const db = await this.open();
     db.prepare("UPDATE message_notifications SET read_at = ? WHERE user_id = ? AND read_at IS NULL").run(this.now().toISOString(), userId);
+  }
+
+  async exportUserData(userId: string): Promise<unknown> {
+    const db = await this.open();
+    return {
+      messages: db.prepare(`
+        SELECT id, content, contact, status, created_at AS createdAt, updated_at AS updatedAt
+        FROM messages WHERE author_user_id = ? ORDER BY created_at
+      `).all(userId),
+    };
+  }
+
+  async deleteUserData(userId: string): Promise<void> {
+    const db = await this.open();
+    const at = this.now().toISOString();
+    db.transaction(() => {
+      db.prepare(`
+        UPDATE messages
+        SET author_user_id = NULL,
+            author_client_id = 'deleted-' || id,
+            author_name = '已注销用户',
+            contact = NULL,
+            content = '',
+            status = 'deleted',
+            updated_at = ?
+        WHERE author_user_id = ?
+      `).run(at, userId);
+      db.prepare("DELETE FROM message_notifications WHERE user_id = ?").run(userId);
+    })();
   }
 
   private async open(): Promise<Database.Database> {

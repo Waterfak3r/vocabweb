@@ -31,6 +31,14 @@ export class SqliteLocalDictionaryProvider implements WordProvider, WordSuggesti
     this.database = undefined;
   }
 
+  checkHealth(): void {
+    const db = this.open();
+    if (!db) throw new Error("Local dictionary database is unavailable");
+    if (!db.prepare("SELECT 1 AS ready FROM dictionary_entries LIMIT 1").get()) {
+      throw new Error("Local dictionary database is empty");
+    }
+  }
+
   async lookup(word: string): Promise<WordEntry | null> {
     const db = this.open();
     if (!db) return null;

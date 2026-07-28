@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
-import { Link } from 'react-router-dom'
+import { Link } from 'react-router'
 import { Button } from '../components/ui/Button'
 import { EmptyState } from '../components/ui/EmptyState'
 import { DictationPrompt } from '../components/word/DictationPrompt'
@@ -992,7 +992,7 @@ function WordbookStudyMode({ book, mode, preferences, shortcuts, accent, reportE
   const flashcards = useFlashcardSession(book.entries, reportVerdict, reportMastered, mode === 'new' ? 3 : 1)
   const dictation = useDictationSession(book.entries, reportGrade)
   const spokenItem = mode === 'dictation' ? dictation.current : flashcards.current
-  const { pronounce, stop } = usePronounce(spokenItem?.word ?? '', spokenItem?.audioUrl, mode === 'dictation' ? .78 : .85, accent)
+  const { pronounce, stop } = usePronounce(spokenItem?.word ?? '', mode === 'dictation' ? .78 : .85, accent)
   const shortcutBindings = useMemo(() => mode === 'dictation'
     ? [{ key: shortcuts.dictationPronounce, action: pronounce, allowInInput: true }]
     : [

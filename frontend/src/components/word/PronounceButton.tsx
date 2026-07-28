@@ -3,7 +3,6 @@ import { IconButton } from '../ui/IconButton'
 
 export type PronounceButtonProps = {
   word: string
-  audioUrl?: string
   /** Slower default suits dictation */
   rate?: number
   /** Extra accessible context, e.g. "播放 resilient 的发音" */
@@ -29,8 +28,8 @@ function SpeakerGlyph() {
   )
 }
 
-export function PronounceButton({ word, audioUrl, rate, label }: PronounceButtonProps) {
-  const { pronounce, state, statusText } = usePronounce(word, audioUrl, rate)
+export function PronounceButton({ word, rate, label }: PronounceButtonProps) {
+  const { pronounce, state, statusText } = usePronounce(word, rate)
 
   return (
     <span className="pronounce">

@@ -1,12 +1,13 @@
 import { mkdir, readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import Database from "better-sqlite3";
-import { BaseStore } from "./store.js";
+import { BaseStore, type StudyResourceLimits } from "./store.js";
 import { EMPTY, migrate, type ClientData, type State } from "./ladder.js";
 import type { AccountUser, CatalogWordbook } from "./types.js";
 
 type SqliteStoreOptions = {
   now?: () => Date;
+  limits?: StudyResourceLimits;
   /** Existing JSON document imported exactly once when the new database is empty. */
   legacyJsonFile?: string;
 };
@@ -16,6 +17,7 @@ type UserRow = {
   username: string;
   password_hash: string;
   client_id: string;
+  role: "user" | "admin";
   created_at: string;
 };
 type SessionRow = {
@@ -47,7 +49,7 @@ export class SqliteStudyStore extends BaseStore {
   private database?: Database.Database;
 
   constructor(databaseFile: string, options: SqliteStoreOptions = {}) {
-    super(options.now);
+    super(options.now, options.limits);
     this.databaseFile = resolve(databaseFile);
     this.legacyJsonFile = options.legacyJsonFile ? resolve(options.legacyJsonFile) : undefined;
   }
@@ -55,6 +57,19 @@ export class SqliteStudyStore extends BaseStore {
   close(): void {
     this.database?.close();
     this.database = undefined;
+  }
+
+  async checkHealth(): Promise<void> {
+    const db = await this.open();
+    db.prepare("SELECT 1 AS ready").get();
+    db.exec("BEGIN IMMEDIATE; ROLLBACK;");
+  }
+
+  async backup(destinationFile: string): Promise<void> {
+    const db = await this.open();
+    const destination = resolve(destinationFile);
+    await mkdir(dirname(destination), { recursive: true });
+    await db.backup(destination);
   }
 
   protected async load(): Promise<State> {
@@ -65,12 +80,13 @@ export class SqliteStudyStore extends BaseStore {
     for (const row of db.prepare("SELECT client_id, data_json FROM clients").all() as Array<{ client_id: string; data_json: string }>) {
       clients[row.client_id] = JSON.parse(row.data_json) as ClientData;
     }
-    const users = (db.prepare("SELECT id, username, password_hash, client_id, created_at FROM users").all() as UserRow[])
+    const users = (db.prepare("SELECT id, username, password_hash, client_id, role, created_at FROM users").all() as UserRow[])
       .map((row): AccountUser => ({
         id: row.id,
         username: row.username,
         passwordHash: row.password_hash,
         clientId: row.client_id,
+        role: row.role,
         createdAt: row.created_at,
       }));
     const sessions = (db.prepare("SELECT token_hash, user_id, expires_at, created_at FROM sessions").all() as SessionRow[])
@@ -125,6 +141,7 @@ export class SqliteStudyStore extends BaseStore {
         username TEXT NOT NULL COLLATE NOCASE UNIQUE,
         password_hash TEXT NOT NULL,
         client_id TEXT NOT NULL UNIQUE,
+        role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('user', 'admin')),
         created_at TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS sessions (
@@ -154,6 +171,10 @@ export class SqliteStudyStore extends BaseStore {
       CREATE INDEX IF NOT EXISTS catalog_uses_idx ON catalog(uses DESC);
       CREATE INDEX IF NOT EXISTS catalog_rating_idx ON catalog(rating DESC);
     `);
+    const userColumns = db.prepare("PRAGMA table_info(users)").all() as Array<{ name: string }>;
+    if (!userColumns.some((column) => column.name === "role")) {
+      db.exec("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('user', 'admin'))");
+    }
   }
 
   private async importLegacyJsonIfNeeded(db: Database.Database): Promise<void> {
@@ -187,7 +208,7 @@ export class SqliteStudyStore extends BaseStore {
         LEGACY_IMPORT_KEY,
         legacy ? "imported" : counts.count === 0 ? "no-source" : "skipped-nonempty",
       );
-      db.prepare("INSERT INTO metadata(key, value) VALUES ('state_version', '3') ON CONFLICT(key) DO UPDATE SET value = excluded.value").run();
+      db.prepare("INSERT INTO metadata(key, value) VALUES ('state_version', '5') ON CONFLICT(key) DO UPDATE SET value = excluded.value").run();
     });
     importOnce();
   }
@@ -205,12 +226,13 @@ export class SqliteStudyStore extends BaseStore {
     const old = keyed(before.users, (user) => user.id);
     const current = keyed(after.users, (user) => user.id);
     const upsert = db.prepare(`
-      INSERT INTO users(id, username, password_hash, client_id, created_at)
-      VALUES (@id, @username, @passwordHash, @clientId, @createdAt)
+      INSERT INTO users(id, username, password_hash, client_id, role, created_at)
+      VALUES (@id, @username, @passwordHash, @clientId, @role, @createdAt)
       ON CONFLICT(id) DO UPDATE SET
         username = excluded.username,
         password_hash = excluded.password_hash,
         client_id = excluded.client_id,
+        role = excluded.role,
         created_at = excluded.created_at
     `);
     const remove = db.prepare("DELETE FROM users WHERE id = ?");

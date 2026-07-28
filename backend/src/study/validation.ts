@@ -16,7 +16,8 @@ const VISIBILITIES = ["public", "unlisted", "private"] as const;
 export function isJsonObject(value: unknown): value is JsonObject { return typeof value === "object" && value !== null && !Array.isArray(value); }
 export function parseClientId(value: unknown): string | null {
   const id = typeof value === "string" ? value.trim() : "";
-  return /^[A-Za-z0-9][A-Za-z0-9_-]{7,127}$/.test(id) ? id : null;
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{7,127}$/.test(id)) return null;
+  return ["__proto__", "prototype", "constructor"].includes(id.toLowerCase()) ? null : id;
 }
 export function parseResourceId(value: unknown): string | null {
   const id = typeof value === "string" ? value.trim() : "";
@@ -30,7 +31,7 @@ export function parseBatchWords(value: unknown): { action: BatchWordAction; word
   if (!isJsonObject(value)) return null;
   const action = value.action;
   if (action !== "refresh-meanings" && action !== "delete" && action !== "mark-mastered") return null;
-  if (!Array.isArray(value.wordIds) || value.wordIds.length === 0 || value.wordIds.length > 10_000) return null;
+  if (!Array.isArray(value.wordIds) || value.wordIds.length === 0 || value.wordIds.length > 500) return null;
   const wordIds = value.wordIds.map(parseWordId);
   if (wordIds.some((id) => id === null)) return null;
   const unique = [...new Set(wordIds as string[])];
@@ -156,7 +157,7 @@ export function parseCreateImportDraft(value: unknown): CreateImportDraftInput |
   const title = text(value.title, 100); const description = value.description === undefined ? undefined : text(value.description, 500, true); const targetWordbookId = value.targetWordbookId === undefined ? undefined : parseResourceId(value.targetWordbookId);
   if (!title || description === null || targetWordbookId === null) return null;
   let lines: ImportLineInput[];
-  if (Array.isArray(value.lines) && value.lines.length <= 10_000) {
+  if (Array.isArray(value.lines) && value.lines.length <= 500) {
     let total = 0;
     const parsed = value.lines.map((item): ImportLineInput | null => {
       if (!isJsonObject(item) || !Number.isInteger(item.line) || typeof item.line !== "number" || item.line < 1 || item.line > 1_000_000) return null;
@@ -184,7 +185,7 @@ export function parseCommitImportDraft(value: unknown): CommitImportDraftInput |
   const mode = value.mode === undefined ? undefined : value.mode === "append" || value.mode === "overwrite" ? value.mode : null;
   if (mode === null) return null;
   if (value.resolutions === undefined) return mode ? { mode } : {};
-  const pairs = Object.entries(value.resolutions); if (pairs.length > 10_000) return null;
+  const pairs = Object.entries(value.resolutions); if (pairs.length > 500) return null;
   const resolutions: Record<string, ImportResolution> = {};
   for (const [key, resolution] of pairs) { if (!parseWordId(key) || !RESOLUTIONS.includes(resolution as ImportResolution)) return null; resolutions[key] = resolution as ImportResolution; }
   return { ...(mode ? { mode } : {}), resolutions };

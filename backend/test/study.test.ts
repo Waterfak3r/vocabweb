@@ -156,6 +156,26 @@ test("a new anonymous client can create a wordbook and starts with no learning a
   } finally { await app.close(); }
 });
 
+test("resource limits reject growth while still allowing an over-limit client to delete data", async () => {
+  const store = new InMemoryStudyStore({
+    limits: { maxWordbooksPerClient: 1, maxWordsPerClient: 1, maxDraftsPerClient: 1 },
+  });
+  const first = await store.createMyWordbook(CLIENT, {
+    title: "Allowed",
+    words: [dictionaryEntry("alpha")],
+  });
+  await assert.rejects(
+    () => store.createMyWordbook(CLIENT, { title: "Too many" }),
+    { name: "StudyResourceLimitError" },
+  );
+  await assert.rejects(
+    () => store.addWordToMyWordbook(CLIENT, first.id, dictionaryEntry("beta")),
+    { name: "StudyResourceLimitError" },
+  );
+  assert.equal(await store.deleteMyWordbook(CLIENT, first.id), true);
+  assert.equal(await store.purgeMyWordbook(CLIENT, first.id), true);
+});
+
 test("personal wordbook categories trim, clear, validate, and remain client-scoped", async () => {
   const app = await server();
   try {
@@ -289,7 +309,7 @@ test("JSON store persists mutations with a complete atomic document", async () =
     await Promise.all([first.createMyWordbook(CLIENT, { title: "A" }), first.createMyWordbook(CLIENT, { title: "B" })]);
     assert.ok(created.id);
     const raw = await readFile(file, "utf8");
-    assert.match(raw, /"version": 4/);
+    assert.match(raw, /"version": 5/);
     const reloaded = new JsonFileStudyStore(file);
     assert.equal((await reloaded.listMyWordbooks(CLIENT, false)).length, 3);
   } finally { await rm(directory, { recursive: true, force: true }); }
@@ -307,7 +327,7 @@ test("JSON store preserves a deliberately empty persisted state without restorin
     assert.deepEqual(JSON.parse(await readFile(file, "utf8")), { version: 2, catalog: [], clients: {} });
     await store.createMyWordbook(CLIENT, { title: "First", words: [] });
     const persisted = JSON.parse(await readFile(file, "utf8")) as { version: number; catalog: unknown[]; clients: Record<string, { wordbooks: unknown[] }> };
-    assert.equal(persisted.version, 4);
+    assert.equal(persisted.version, 5);
     assert.deepEqual(persisted.catalog, []);
     assert.equal(persisted.clients[CLIENT]?.wordbooks.length, 1);
   } finally { await rm(directory, { recursive: true, force: true }); }
@@ -353,13 +373,13 @@ async function eventually<T>(read: () => Promise<T>, matches: (value: T) => bool
   assert.fail("Timed out waiting for asynchronous import processing");
 }
 
-test("import drafts preserve Chinese input, batch 501 valid words, and append later drafts to one wordbook", async () => {
+test("import drafts preserve Chinese input, enforce the 500-line boundary, and append later drafts", async () => {
   const app = await server({
     wordLookup: { async lookup(word) { return word === "missing" ? null : dictionaryEntry(word); } },
     localChineseLookup: { async lookup(word) { return word === "fallback" ? "本地中文释义" : undefined; } },
   });
   try {
-    const words = Array.from({ length: 501 }, (_, index) => alphabeticWord(index));
+    const words = Array.from({ length: 498 }, (_, index) => alphabeticWord(index));
     const response = await fetch(`${app.baseUrl}/api/my/import-drafts`, {
       method: "POST", headers,
       body: JSON.stringify({ title: "分批导入", lines: [{ line: 1, word: "resilient", pos: "adjective", enDefinition: "Able to recover, even under pressure.", zhMeaning: "坚韧的", example: "A resilient team recovered.", }, { line: 2, word: "fallback" }, ...words.map((word, index) => ({ line: index + 3, word }))] }),
@@ -367,13 +387,13 @@ test("import drafts preserve Chinese input, batch 501 valid words, and append la
     assert.equal(response.status, 201);
     const first = await response.json() as { id: string; entries: unknown[]; batchIndex: number; totalBatches: number };
     assert.equal(first.batchIndex, 1);
-    assert.equal(first.totalBatches, 2);
+    assert.equal(first.totalBatches, 1);
     assert.equal(first.entries.length, 500);
     const drafts = await (await fetch(`${app.baseUrl}/api/my/import-drafts`, { headers })).json() as Array<{
       id: string; batchIndex: number; targetWordbookId?: string;
       entries: Array<{ word: string; entry: { zhMeaning?: string; zhMeaningSource?: string; source: string; meanings: Array<{ pos: string; definition: string; example?: string }> } }>;
     }>;
-    assert.equal(drafts.length, 2);
+    assert.equal(drafts.length, 1);
     const custom = drafts.flatMap((draft) => draft.entries).find((entry) => entry.word === "resilient")!;
     assert.deepEqual(custom.entry.zhMeaning, "坚韧的");
     assert.equal(custom.entry.zhMeaningSource, "user");
@@ -386,7 +406,30 @@ test("import drafts preserve Chinese input, batch 501 valid words, and append la
     assert.equal(firstCommit.status, 200);
     const firstBook = await firstCommit.json() as { id: string; wordCount: number };
     assert.equal(firstBook.wordCount, 500);
-    const next = drafts.find((draft) => draft.batchIndex === 2)!;
+
+    const oversized = await fetch(`${app.baseUrl}/api/my/import-drafts`, {
+      method: "POST", headers,
+      body: JSON.stringify({
+        title: "超限",
+        lines: Array.from({ length: 501 }, (_, index) => ({ line: index + 1, word: alphabeticWord(index) })),
+      }),
+    });
+    assert.equal(oversized.status, 400);
+
+    const appended = await fetch(`${app.baseUrl}/api/my/import-drafts`, {
+      method: "POST", headers,
+      body: JSON.stringify({
+        title: "追加导入",
+        targetWordbookId: firstBook.id,
+        lines: ["extraalpha", "extrabeta", "extragamma"].map((word, index) => ({ line: index + 1, word })),
+      }),
+    });
+    assert.equal(appended.status, 201);
+    const next = await appended.json() as { id: string };
+    await eventually(
+      async () => await (await fetch(`${app.baseUrl}/api/my/import-drafts/${next.id}`, { headers })).json() as { status: string; entries: Array<{ status: string }> },
+      (draft) => draft.status === "pending" && draft.entries.every((entry) => entry.status !== "processing"),
+    );
     const secondCommit = await fetch(`${app.baseUrl}/api/my/import-drafts/${next.id}/commit`, { method: "POST", headers, body: "{}" });
     const complete = await secondCommit.json() as { id: string; wordCount: number };
     assert.equal(complete.id, firstBook.id);
@@ -527,7 +570,7 @@ test("overwrite commits an entire import group atomically while retaining matchi
     await fetch(`${app.baseUrl}/api/study/events`, { method: "POST", headers, body: JSON.stringify({ kind: "flashcard", wordbookId: book.id, wordId: alpha.id, verdict: "know" }) });
     await fetch(`${app.baseUrl}/api/study/events`, { method: "POST", headers, body: JSON.stringify({ kind: "flashcard", wordbookId: book.id, wordId: beta.id, verdict: "know" }) });
 
-    const extra = Array.from({ length: 500 }, (_, index) => alphabeticWord(index));
+    const extra = Array.from({ length: 499 }, (_, index) => alphabeticWord(index));
     const createdDraft = await fetch(`${app.baseUrl}/api/my/import-drafts`, {
       method: "POST", headers,
       body: JSON.stringify({
@@ -544,7 +587,7 @@ test("overwrite commits an entire import group atomically while retaining matchi
       method: "POST", headers, body: JSON.stringify({ mode: "overwrite" }),
     });
     assert.equal(committed.status, 200);
-    assert.equal((await committed.json() as { wordCount: number }).wordCount, 501);
+    assert.equal((await committed.json() as { wordCount: number }).wordCount, 500);
     const after = await (await fetch(`${app.baseUrl}/api/my/wordbooks/${book.id}/words`, { headers })).json() as Array<{ id: string; word: string; level: number; meanings: Array<{ definition: string }> }>;
     assert.equal(after.find((word) => word.word === "alpha")!.id, alpha.id);
     assert.equal(after.find((word) => word.word === "alpha")!.level, 1);
@@ -660,7 +703,7 @@ test("v2 state migrates word IDs and old learning events without dropping progre
     // Reads keep the migrated state in memory only; the first mutation persists it.
     await store.createMyWordbook(CLIENT, { title: "Trigger", words: [] });
     const persisted = JSON.parse(await readFile(file, "utf8")) as { version: number; clients: Record<string, { wordbooks: Array<{ words: Array<{ id?: string }> }>; events: Array<{ wordId?: string }> }> };
-    assert.equal(persisted.version, 4);
+    assert.equal(persisted.version, 5);
     assert.ok(persisted.clients[CLIENT]!.wordbooks[0]!.words[0]!.id);
     assert.equal(persisted.clients[CLIENT]!.events[0]!.wordId, persisted.clients[CLIENT]!.wordbooks[0]!.words[0]!.id);
   } finally { await rm(directory, { recursive: true, force: true }); }

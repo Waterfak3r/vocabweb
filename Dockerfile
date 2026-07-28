@@ -3,7 +3,7 @@
 # ---------------------------------------------------------------------------
 # Stage 1: build the frontend (Vite -> frontend/dist)
 # ---------------------------------------------------------------------------
-FROM node:22-alpine AS frontend-build
+FROM node:22.23.1-alpine3.23 AS frontend-build
 WORKDIR /app/frontend
 
 # Install deps first for better layer caching.
@@ -21,7 +21,7 @@ RUN npm run build
 # ---------------------------------------------------------------------------
 # Stage 2: build the backend (tsc -> backend/dist) + prune to runtime deps
 # ---------------------------------------------------------------------------
-FROM node:22-alpine AS backend-build
+FROM node:22.23.1-alpine3.23 AS backend-build
 WORKDIR /app/backend
 
 # better-sqlite3 normally downloads a musl prebuild. Keep a native-build
@@ -41,7 +41,7 @@ RUN npm run dictionaries:build \
 # ---------------------------------------------------------------------------
 # Stage 3: minimal runtime image
 # ---------------------------------------------------------------------------
-FROM node:22-alpine AS runtime
+FROM node:22.23.1-alpine3.23 AS runtime
 
 # Repo-relative layout preserved inside the image so the compiled backend can
 # resolve ../../../resources from backend/dist/study and serve the frontend.
@@ -73,6 +73,6 @@ USER node
 EXPOSE 3000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+  CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/api/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
 CMD ["node", "dist/server.js"]

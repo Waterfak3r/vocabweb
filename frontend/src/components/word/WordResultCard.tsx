@@ -46,7 +46,7 @@ export function WordResultCard({ entry, showAddAction = true }: WordResultCardPr
     <article className={`${styles.card} home-word-card`}>
       <header className={styles.header}>
         <WordHeadword word={entry.word} phonetic={entry.phonetic} source={entry.source} />
-        <PronounceButton word={entry.word} audioUrl={entry.audioUrl} />
+        <PronounceButton word={entry.word} />
       </header>
 
       <hr className={styles.rule} />

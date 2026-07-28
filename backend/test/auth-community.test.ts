@@ -41,9 +41,16 @@ async function register(baseUrl: string, clientId: string, username: string) {
     body: JSON.stringify({ username, password: "password-123" }),
   });
   assert.equal(response.status, 201);
+  const setCookie = response.headers.get("set-cookie")!;
   return {
-    user: await response.json() as { username: string; clientId: string },
-    cookie: response.headers.get("set-cookie")!.split(";")[0]!,
+    user: await response.json() as {
+      username: string;
+      clientId: string;
+      role: "user" | "admin";
+      capabilities: string[];
+    },
+    cookie: setCookie.split(";")[0]!,
+    setCookie,
   };
 }
 
@@ -51,7 +58,7 @@ test("sessions override client headers, claimed ids require auth, and logout is 
   const app = await fixture();
   try {
     const alice = await register(app.baseUrl, ALICE_CLIENT, "Alice");
-    assert.deepEqual(alice.user, { username: "Alice", clientId: ALICE_CLIENT });
+    assert.deepEqual(alice.user, { username: "Alice", clientId: ALICE_CLIENT, role: "user", capabilities: [] });
 
     const claimedWithoutCookie = await fetch(`${app.baseUrl}/api/my/wordbooks`, { headers: jsonHeaders(ALICE_CLIENT) });
     assert.equal(claimedWithoutCookie.status, 401);
@@ -67,7 +74,8 @@ test("sessions override client headers, claimed ids require auth, and logout is 
 
     const me = await fetch(`${app.baseUrl}/api/auth/me`, { headers: { cookie: alice.cookie } });
     assert.equal(me.status, 200);
-    assert.deepEqual(await me.json(), { username: "Alice", clientId: ALICE_CLIENT });
+    assert.equal(me.headers.get("cache-control"), "private, no-store");
+    assert.deepEqual(await me.json(), { username: "Alice", clientId: ALICE_CLIENT, role: "user", capabilities: [] });
 
     const firstLogout = await fetch(`${app.baseUrl}/api/auth/logout`, { method: "POST", headers: { cookie: alice.cookie } });
     assert.equal(firstLogout.status, 204);
@@ -214,7 +222,7 @@ test("community visibility keeps public direct, unlisted share-only, and private
 });
 
 test("only administrators can configure the public donation image", async () => {
-  const app = await fixture({ adminUsernames: ["Alice"] });
+  const app = await fixture();
   try {
     const initial = await fetch(`${app.baseUrl}/api/site-settings`, { headers: jsonHeaders(ANON_CLIENT) });
     assert.deepEqual(await initial.json(), { donationImageUrl: null });
@@ -222,21 +230,23 @@ test("only administrators can configure the public donation image", async () => 
     const denied = await fetch(`${app.baseUrl}/api/admin/site-settings`, {
       method: "PATCH",
       headers: jsonHeaders(ANON_CLIENT),
-      body: JSON.stringify({ donationImageUrl: "https://images.example/reward.png" }),
+      body: JSON.stringify({ donationImageUrl: "/images/reward.png" }),
     });
     assert.equal(denied.status, 403);
 
     const alice = await register(app.baseUrl, ALICE_CLIENT, "Alice");
+    const promoted = await app.store.setUserRole("Alice", "admin");
+    assert.equal(promoted?.role, "admin");
     const accountHeaders = jsonHeaders(ALICE_CLIENT, alice.cookie);
     const saved = await fetch(`${app.baseUrl}/api/admin/site-settings`, {
       method: "PATCH",
       headers: accountHeaders,
-      body: JSON.stringify({ donationImageUrl: "https://images.example/reward.png" }),
+      body: JSON.stringify({ donationImageUrl: "/images/reward.png" }),
     });
     assert.equal(saved.status, 200);
-    assert.deepEqual(await saved.json(), { donationImageUrl: "https://images.example/reward.png" });
+    assert.deepEqual(await saved.json(), { donationImageUrl: "/images/reward.png" });
     assert.deepEqual(await (await fetch(`${app.baseUrl}/api/site-settings`)).json(), {
-      donationImageUrl: "https://images.example/reward.png",
+      donationImageUrl: "/images/reward.png",
     });
 
     const unsafe = await fetch(`${app.baseUrl}/api/admin/site-settings`, {
@@ -245,6 +255,122 @@ test("only administrators can configure the public donation image", async () => 
       body: JSON.stringify({ donationImageUrl: "javascript:alert(1)" }),
     });
     assert.equal(unsafe.status, 400);
+  } finally {
+    await app.close();
+  }
+});
+
+test("a publicly registered default-looking username never receives administrator capabilities", async () => {
+  const app = await fixture();
+  try {
+    const account = await register(app.baseUrl, ALICE_CLIENT, "Waterfak3r");
+    assert.deepEqual(account.user.capabilities, []);
+    assert.equal(account.user.role, "user");
+    const denied = await fetch(`${app.baseUrl}/api/admin/site-settings`, {
+      headers: jsonHeaders(ALICE_CLIENT, account.cookie),
+    });
+    assert.equal(denied.status, 403);
+  } finally {
+    await app.close();
+  }
+});
+
+test("production sessions are Secure and authenticated mutations require browser origin evidence", async () => {
+  const store = new InMemoryStudyStore();
+  const app = await fixture({ studyStore: store, productionSecurity: true });
+  try {
+    const alice = await register(app.baseUrl, ALICE_CLIENT, "Alice");
+    assert.match(alice.setCookie, /;\s*Secure(?:;|$)/);
+    const promoted = await store.setUserRole("Alice", "admin");
+    assert.equal(promoted?.role, "admin");
+
+    const noOrigin = await fetch(`${app.baseUrl}/api/admin/site-settings`, {
+      method: "PATCH",
+      headers: jsonHeaders(ALICE_CLIENT, alice.cookie),
+      body: JSON.stringify({ donationImageUrl: null }),
+    });
+    assert.equal(noOrigin.status, 403);
+    assert.equal((await noOrigin.json() as { error: { code: string } }).error.code, "CSRF_ORIGIN_DENIED");
+
+    const sameOrigin = await fetch(`${app.baseUrl}/api/admin/site-settings`, {
+      method: "PATCH",
+      headers: {
+        ...jsonHeaders(ALICE_CLIENT, alice.cookie),
+        origin: app.baseUrl,
+        "sec-fetch-site": "same-origin",
+      },
+      body: JSON.stringify({ donationImageUrl: null }),
+    });
+    assert.equal(sameOrigin.status, 200);
+  } finally {
+    await app.close();
+  }
+});
+
+test("reserved object property names are rejected as anonymous client ids", async () => {
+  const app = await fixture();
+  try {
+    const response = await fetch(`${app.baseUrl}/api/my/wordbooks`, {
+      headers: jsonHeaders("constructor"),
+    });
+    assert.equal(response.status, 400);
+  } finally {
+    await app.close();
+  }
+});
+
+test("accounts can export their data and password-confirmed deletion removes private state", async () => {
+  const app = await fixture();
+  try {
+    const alice = await register(app.baseUrl, ALICE_CLIENT, "Alice");
+    const accountHeaders = jsonHeaders(ALICE_CLIENT, alice.cookie);
+    await fetch(`${app.baseUrl}/api/my/wordbooks`, {
+      method: "POST",
+      headers: accountHeaders,
+      body: JSON.stringify({ title: "Private export" }),
+    });
+    await fetch(`${app.baseUrl}/api/messages`, {
+      method: "POST",
+      headers: accountHeaders,
+      body: JSON.stringify({ content: "Please export me", contact: "alice@example.test" }),
+    });
+
+    const exported = await fetch(`${app.baseUrl}/api/account/export`, { headers: accountHeaders });
+    assert.equal(exported.status, 200);
+    assert.match(exported.headers.get("content-disposition") ?? "", /attachment/);
+    const payload = await exported.json() as {
+      study: { account: { username: string }; collection: { wordbooks: Array<{ title: string }> } };
+      engagement: { messages: Array<{ content: string; contact: string }> };
+    };
+    assert.equal(payload.study.account.username, "Alice");
+    assert.deepEqual(payload.study.collection.wordbooks.map((book) => book.title), ["Private export"]);
+    assert.equal(payload.engagement.messages[0]?.contact, "alice@example.test");
+
+    const wrongPassword = await fetch(`${app.baseUrl}/api/account`, {
+      method: "DELETE",
+      headers: accountHeaders,
+      body: JSON.stringify({ password: "wrong-password" }),
+    });
+    assert.equal(wrongPassword.status, 403);
+
+    const deleted = await fetch(`${app.baseUrl}/api/account`, {
+      method: "DELETE",
+      headers: accountHeaders,
+      body: JSON.stringify({ password: "password-123" }),
+    });
+    assert.equal(deleted.status, 204);
+    assert.match(deleted.headers.get("set-cookie") ?? "", /Max-Age=0/);
+    assert.equal((await fetch(`${app.baseUrl}/api/auth/me`, { headers: accountHeaders })).status, 401);
+    assert.equal(await app.store.getUserByUsername("Alice"), null);
+    assert.deepEqual(await app.store.listMyWordbooks(ALICE_CLIENT, false), []);
+
+    const messages = await (await fetch(`${app.baseUrl}/api/messages`, {
+      headers: jsonHeaders(BOB_CLIENT),
+    })).json() as { items: Array<{ author: string; status: string; content?: string; contact?: string }> };
+    assert.equal(messages.items[0]?.author, "已注销用户");
+    assert.equal(messages.items[0]?.status, "deleted");
+    assert.equal(messages.items[0]?.content, undefined);
+    assert.equal(messages.items[0]?.contact, undefined);
   } finally {
     await app.close();
   }
@@ -288,6 +414,31 @@ test("registration shares the stricter authentication rate limit", async () => {
       body: JSON.stringify({ username: "Second", password: "password-123" }),
     });
     assert.equal(second.status, 429);
+  } finally {
+    await app.close();
+  }
+});
+
+test("public registration can be disabled without affecting session login", async () => {
+  const store = new InMemoryStudyStore();
+  const passwordHash = await import("../src/auth.js").then(({ hashPassword }) => hashPassword("password-123"));
+  const created = await store.createUser("Existing", passwordHash, ALICE_CLIENT);
+  assert.equal(created.kind, "created");
+  const app = await fixture({ studyStore: store, registrationEnabled: false });
+  try {
+    const denied = await fetch(`${app.baseUrl}/api/auth/register`, {
+      method: "POST",
+      headers: jsonHeaders(BOB_CLIENT),
+      body: JSON.stringify({ username: "NewUser", password: "password-123" }),
+    });
+    assert.equal(denied.status, 403);
+
+    const login = await fetch(`${app.baseUrl}/api/auth/login`, {
+      method: "POST",
+      headers: jsonHeaders(BOB_CLIENT),
+      body: JSON.stringify({ username: "Existing", password: "password-123" }),
+    });
+    assert.equal(login.status, 200);
   } finally {
     await app.close();
   }

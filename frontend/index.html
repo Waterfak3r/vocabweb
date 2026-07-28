@@ -9,16 +9,7 @@
     <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png" />
     <link rel="icon" type="image/png" sizes="512x512" href="/icon-512.png" />
     <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
-    <script>
-      // Pre-paint theme restore: keeps returning dark-mode users from flashing light.
-      try {
-        var rawTheme = localStorage.getItem('vocab-ielts:theme:v1')
-        if (rawTheme === 'dark' || JSON.parse(rawTheme) === 'dark') {
-          document.documentElement.dataset.theme = 'dark'
-          document.querySelector('meta[name="theme-color"]').setAttribute('content', '#0c1622')
-        }
-      } catch (e) {}
-    </script>
+    <script src="/theme-init.js"></script>
     <title>WeCreate Vocab</title>
   </head>
   <body>

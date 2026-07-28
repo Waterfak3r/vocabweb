@@ -20,10 +20,32 @@ import type {
 export { EMPTY, migrate };
 export type { ClientData, State };
 
+export type StudyResourceLimits = {
+  maxWordbooksPerClient: number;
+  maxWordsPerClient: number;
+  maxDraftsPerClient: number;
+};
+
+export const DEFAULT_STUDY_RESOURCE_LIMITS: StudyResourceLimits = {
+  maxWordbooksPerClient: 50,
+  maxWordsPerClient: 50_000,
+  maxDraftsPerClient: 20,
+};
+
+export class StudyResourceLimitError extends Error {
+  constructor(public readonly resource: "wordbooks" | "words" | "drafts") {
+    super(`Study ${resource} limit exceeded`);
+    this.name = "StudyResourceLimitError";
+  }
+}
+
 export abstract class BaseStore implements StudyStore {
   private statePromise: Promise<State> | undefined;
   private queue: Promise<void> = Promise.resolve();
-  protected constructor(protected readonly now: () => Date = () => new Date()) {}
+  protected constructor(
+    protected readonly now: () => Date = () => new Date(),
+    private readonly limits: StudyResourceLimits = DEFAULT_STUDY_RESOURCE_LIMITS,
+  ) {}
   protected abstract load(): Promise<State>;
   /** Persist one state transition; record-oriented stores can diff against `previous`. */
   protected abstract save(state: State, previous?: State): Promise<void>;
@@ -33,7 +55,7 @@ export abstract class BaseStore implements StudyStore {
     const lower = username.toLowerCase();
     if (state.users.some((user) => user.username.toLowerCase() === lower)) return { kind: "taken" as const };
     if (state.users.some((user) => user.clientId === clientId)) return { kind: "client-taken" as const };
-    const user: AccountUser = { id: `user-${randomUUID()}`, username, passwordHash, clientId, createdAt: this.now().toISOString() };
+    const user: AccountUser = { id: `user-${randomUUID()}`, username, passwordHash, clientId, role: "user", createdAt: this.now().toISOString() };
     state.users.push(user);
     // Registering adopts the requesting anonymous client as the account's data home.
     this.client(state, clientId);
@@ -42,6 +64,38 @@ export abstract class BaseStore implements StudyStore {
   async getUserByUsername(username: string): Promise<AccountUser | null> { return await this.read((state) => { const lower = username.toLowerCase(); const user = state.users.find((item) => item.username.toLowerCase() === lower); return user ? clone(user) : null; }); }
   async getUserById(id: string): Promise<AccountUser | null> { return await this.read((state) => { const user = state.users.find((item) => item.id === id); return user ? clone(user) : null; }); }
   async getUserByClientId(clientId: string): Promise<AccountUser | null> { return await this.read((state) => { const user = state.users.find((item) => item.clientId === clientId); return user ? clone(user) : null; }); }
+  async setUserRole(username: string, role: AccountUser["role"]): Promise<AccountUser | null> { return await this.mutate((state) => {
+    const lower = username.toLowerCase();
+    const user = state.users.find((item) => item.username.toLowerCase() === lower);
+    if (!user) return null;
+    user.role = role;
+    return clone(user);
+  }); }
+  async exportUserData(userId: string): Promise<unknown | null> { return await this.read((state) => {
+    const user = state.users.find((item) => item.id === userId);
+    if (!user) return null;
+    return {
+      account: { username: user.username, role: user.role, createdAt: user.createdAt },
+      collection: clone(this.clientView(state, user.clientId)),
+      catalogUploads: clone(state.catalog.filter((book) => book.authorUserId === user.id)),
+    };
+  }); }
+  async deleteUser(userId: string): Promise<boolean> { return await this.mutate((state) => {
+    const index = state.users.findIndex((item) => item.id === userId);
+    if (index < 0) return false;
+    const [user] = state.users.splice(index, 1);
+    if (!user) return false;
+    state.sessions = state.sessions.filter((session) => session.userId !== userId);
+    delete state.clients[user.clientId];
+    const removedCatalogIds = new Set(
+      state.catalog.filter((book) => book.authorUserId === userId || book.ownerClientId === user.clientId).map((book) => book.id),
+    );
+    state.catalog = state.catalog.filter((book) => !removedCatalogIds.has(book.id));
+    for (const client of Object.values(state.clients)) {
+      client.favorites = client.favorites.filter((id) => !removedCatalogIds.has(id));
+    }
+    return true;
+  }); }
   async createSession(tokenHash: string, userId: string, expiresAt: string): Promise<void> { await this.mutate((state) => {
     const now = this.now();
     state.sessions = state.sessions.filter((session) => session.tokenHash !== tokenHash && Date.parse(session.expiresAt) > now.getTime());
@@ -577,9 +631,14 @@ export abstract class BaseStore implements StudyStore {
   }); }
 
   // --- Shared state plumbing ---
-  private client(state: State, id: string): ClientData { return state.clients[id] ??= defaultClient(); }
+  private client(state: State, id: string): ClientData {
+    if (!Object.hasOwn(state.clients, id)) state.clients[id] = defaultClient();
+    return state.clients[id]!;
+  }
   /** Read-only view: never inserts a client record, so GETs cannot grow the persisted state. */
-  private clientView(state: State, id: string): ClientData { return state.clients[id] ?? defaultClient(); }
+  private clientView(state: State, id: string): ClientData {
+    return Object.hasOwn(state.clients, id) ? state.clients[id]! : defaultClient();
+  }
   private favoriteCount(state: State, catalogId: string): number {
     let total = 0;
     for (const client of Object.values(state.clients)) if (client.favorites.includes(catalogId)) total += 1;
@@ -619,6 +678,7 @@ export abstract class BaseStore implements StudyStore {
     const previous = await this.state();
     const draft = clone(previous);
     const value = operation(draft);
+    this.enforceResourceLimits(previous, draft);
     await this.save(draft, previous);
     this.statePromise = Promise.resolve(draft);
     return value;
@@ -631,11 +691,39 @@ export abstract class BaseStore implements StudyStore {
     }
     return await this.statePromise;
   }
+  private enforceResourceLimits(previous: State, next: State): void {
+    const clientIds = new Set([...Object.keys(previous.clients), ...Object.keys(next.clients)]);
+    const usage = (state: State, clientId: string) => {
+      const client = Object.hasOwn(state.clients, clientId) ? state.clients[clientId]! : defaultClient();
+      return {
+        wordbooks: client.wordbooks.length,
+        words: client.wordbooks.reduce((total, book) => total + book.words.length, 0),
+        drafts: client.drafts.length,
+      };
+    };
+    for (const clientId of clientIds) {
+      const before = usage(previous, clientId);
+      const after = usage(next, clientId);
+      if (after.wordbooks > this.limits.maxWordbooksPerClient && after.wordbooks > before.wordbooks) {
+        throw new StudyResourceLimitError("wordbooks");
+      }
+      if (after.words > this.limits.maxWordsPerClient && after.words > before.words) {
+        throw new StudyResourceLimitError("words");
+      }
+      if (after.drafts > this.limits.maxDraftsPerClient && after.drafts > before.drafts) {
+        throw new StudyResourceLimitError("drafts");
+      }
+    }
+  }
 }
-export class InMemoryStudyStore extends BaseStore { constructor(options: { now?: () => Date } = {}) { super(options.now); } protected async load(): Promise<State> { return EMPTY(); } protected async save(_state: State, _previous?: State): Promise<void> {} }
+export class InMemoryStudyStore extends BaseStore {
+  constructor(options: { now?: () => Date; limits?: StudyResourceLimits } = {}) { super(options.now, options.limits); }
+  protected async load(): Promise<State> { return EMPTY(); }
+  protected async save(_state: State, _previous?: State): Promise<void> {}
+}
 export class JsonFileStudyStore extends BaseStore {
   private readonly filePath: string;
-  constructor(filePath: string, options: { now?: () => Date } = {}) { super(options.now); this.filePath = resolve(filePath); }
+  constructor(filePath: string, options: { now?: () => Date; limits?: StudyResourceLimits } = {}) { super(options.now, options.limits); this.filePath = resolve(filePath); }
   protected async load(): Promise<State> { try { return migrate(JSON.parse(await readFile(this.filePath, "utf8")) as unknown); } catch (error) { if (isJsonObject(error) && error.code === "ENOENT") return EMPTY(); throw error; } }
   protected async save(state: State, _previous?: State): Promise<void> { await mkdir(dirname(this.filePath), { recursive: true }); const temp = `${this.filePath}.${process.pid}.${randomUUID()}.tmp`; try { await writeFile(temp, `${JSON.stringify(state, null, 2)}\n`, "utf8"); await rename(temp, this.filePath); } catch (error) { await rm(temp, { force: true }).catch(() => undefined); throw error; } }
 }

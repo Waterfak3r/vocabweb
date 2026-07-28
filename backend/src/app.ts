@@ -1,6 +1,7 @@
 import path from "node:path";
 import cors from "cors";
 import express, { type ErrorRequestHandler, type RequestHandler } from "express";
+import helmet from "helmet";
 import { MemoryEngagementStore, type EngagementStore, type FeedbackInput, type FeedbackType, type MessageActor } from "./engagement/store.js";
 import {
   clearSessionCookie, createSessionToken, hashPassword, hashSessionToken, parseAuthCredentials,
@@ -10,12 +11,13 @@ import { FixedWindowRateLimiter, type RateLimiter } from "./http/rate-limit.js";
 import { isChineseSuggestionQuery, type WordSuggestionLookup } from "./providers/local-dictionary.js";
 import { WiktApiProvider } from "./providers/wiktapi.js";
 import { CsvLocalChineseDictionary, type LocalChineseLookup } from "./study/local-dictionary.js";
-import { JsonFileStudyStore } from "./study/store.js";
+import { JsonFileStudyStore, StudyResourceLimitError } from "./study/store.js";
 import { parseAddWord, parseBatchWords, parseCatalogQuery, parseClientId, parseCommitImportDraft, parseCreateImportDraft, parseCreateMyWordbook, parseLearningEvent, parseResourceId, parseShareCode, parseStatus, parseUpdateCatalog, parseUpdateMyWordbook, parseUpdateWord, parseUploadCatalog, parseWordId } from "./study/validation.js";
 import type { AccountUser, ImportLineInput, PreparedImportLine, ResolvedImportDraftEntry, StudyStore, StudyWordEntry } from "./study/types.js";
 import { isValidWordQuery, normalizeWord } from "./words/normalize.js";
 import { WordService, type WordLookup } from "./words/word-service.js";
 import { WordProviderError } from "./words/types.js";
+import { capabilitiesFor, hasCapability } from "./authorization.js";
 
 export interface CreateAppOptions {
   frontendOrigins?: string[];
@@ -31,11 +33,14 @@ export interface CreateAppOptions {
   studyStore?: StudyStore;
   engagementStore?: EngagementStore;
   localChineseLookup?: LocalChineseLookup;
-  adminUsernames?: string[];
+  registrationEnabled?: boolean;
+  /** Production-only browser protections: secure cookies, HSTS, and strict cookie mutation origins. */
+  productionSecurity?: boolean;
   /** Express "trust proxy" hop count; set to the number of reverse proxies in front of the app. */
   trustProxy?: number;
   /** Absolute or cwd-relative path to a built frontend to serve (static assets + SPA fallback). */
   staticDir?: string;
+  readinessCheck?: () => Promise<void>;
 }
 
 interface ApiErrorBody {
@@ -56,6 +61,13 @@ class AuthCapacityError extends Error {
   constructor() {
     super("Authentication crypto capacity is busy");
     this.name = "AuthCapacityError";
+  }
+}
+
+class LookupCapacityError extends Error {
+  constructor() {
+    super("Dictionary lookup queue is full");
+    this.name = "LookupCapacityError";
   }
 }
 
@@ -96,12 +108,7 @@ function parseDonationImageUrl(value: unknown): string | null | undefined {
   if (!candidate || candidate.length > 1_900_000) return undefined;
   if (/^data:image\/(?:png|jpeg|webp|gif);base64,[a-z0-9+/=\s]+$/i.test(candidate)) return candidate;
   if (candidate.startsWith("/") && !candidate.startsWith("//") && candidate.length <= 2_048) return candidate;
-  try {
-    const url = new URL(candidate);
-    return url.protocol === "https:" && candidate.length <= 2_048 ? url.toString() : undefined;
-  } catch {
-    return undefined;
-  }
+  return undefined;
 }
 
 type RequestIdentity = {
@@ -163,7 +170,6 @@ export function createApp(options: CreateAppOptions = {}) {
   const studyStore = options.studyStore ?? new JsonFileStudyStore("./data/study-state.json");
   const engagementStore = options.engagementStore ?? new MemoryEngagementStore();
   const localChineseLookup = options.localChineseLookup ?? new CsvLocalChineseDictionary();
-  const adminUsernames = new Set((options.adminUsernames ?? ["Waterfak3r"]).map((name) => name.toLowerCase()));
   const guestMessageRateLimiter = new FixedWindowRateLimiter({ windowMs: 10 * 60_000, maxRequests: 3 });
   const userMessageRateLimiter = new FixedWindowRateLimiter({ windowMs: 10 * 60_000, maxRequests: 10 });
   // Missing usernames still pay the same scrypt verification cost as real users.
@@ -185,6 +191,10 @@ export function createApp(options: CreateAppOptions = {}) {
     }
   };
   const limitedLookup = (word: string) => new Promise<Awaited<ReturnType<WordLookup["lookup"]>>>((resolveLookup, rejectLookup) => {
+    if (lookupJobs.length + activeLookups >= 100) {
+      rejectLookup(new LookupCapacityError());
+      return;
+    }
     lookupJobs.push({ word, resolve: resolveLookup, reject: rejectLookup }); drainLookupQueue();
   });
   const backgroundDraftTasks = new Map<string, Promise<void>>();
@@ -315,6 +325,34 @@ export function createApp(options: CreateAppOptions = {}) {
 
   app.disable("x-powered-by");
   if (options.trustProxy) app.set("trust proxy", options.trustProxy);
+  app.use(helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        baseUri: ["'self'"],
+        connectSrc: ["'self'"],
+        fontSrc: ["'self'", "data:"],
+        formAction: ["'self'"],
+        frameAncestors: ["'none'"],
+        imgSrc: ["'self'", "data:", "https:"],
+        mediaSrc: ["'self'", "https:"],
+        objectSrc: ["'none'"],
+        scriptSrc: ["'self'"],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        upgradeInsecureRequests: null,
+      },
+    },
+    frameguard: { action: "deny" },
+    strictTransportSecurity: options.productionSecurity
+      ? { maxAge: 31_536_000, includeSubDomains: true }
+      : false,
+  }));
+  app.use("/api", (_request, response, next) => {
+    // API responses are non-cacheable unless a specific public route overrides
+    // this header after completing its identity-independent lookup.
+    response.setHeader("Cache-Control", "private, no-store");
+    next();
+  });
   app.use(
     cors((request, callback) => {
       const expressRequest = request as express.Request;
@@ -353,12 +391,35 @@ export function createApp(options: CreateAppOptions = {}) {
       next(error);
     }
   });
+  app.use("/api", (request, response, next) => {
+    if (!options.productionSecurity || ["GET", "HEAD", "OPTIONS"].includes(request.method)) {
+      next();
+      return;
+    }
+    const identity = identityOf(response);
+    if (!identity.sessionTokenHash) {
+      next();
+      return;
+    }
+    const origin = request.header("origin");
+    const fetchSite = request.header("sec-fetch-site");
+    if (!origin || fetchSite === "cross-site") {
+      response.status(403).json(apiError("CSRF_ORIGIN_DENIED", "Authenticated mutations require a same-origin browser request"));
+      return;
+    }
+    next();
+  });
 
-  const authDto = (user: AccountUser) => ({ username: user.username, clientId: user.clientId });
+  const authDto = (user: AccountUser) => ({
+    username: user.username,
+    clientId: user.clientId,
+    role: user.role,
+    capabilities: capabilitiesFor(user),
+  });
   const beginSession = async (response: express.Response, user: AccountUser) => {
     const created = createSessionToken();
     await studyStore.createSession(created.tokenHash, user.id, sessionExpiresAt());
-    response.setHeader("Set-Cookie", sessionCookie(created.token, response.req.secure));
+    response.setHeader("Set-Cookie", sessionCookie(created.token, options.productionSecurity || response.req.secure));
   };
   const enforceLoginRateLimit: RequestHandler = (request, response, next) => {
     const clientKey = request.ip || request.socket.remoteAddress || "unknown";
@@ -372,6 +433,10 @@ export function createApp(options: CreateAppOptions = {}) {
   };
 
   app.post("/api/auth/register", enforceLoginRateLimit, async (request, response, next) => {
+    if (options.registrationEnabled === false) {
+      response.status(403).json(apiError("REGISTRATION_DISABLED", "Public account registration is disabled"));
+      return;
+    }
     const credentials = parseAuthCredentials(request.body);
     const identity = identityOf(response);
     if (!credentials) {
@@ -441,7 +506,7 @@ export function createApp(options: CreateAppOptions = {}) {
     try {
       const identity = identityOf(response);
       if (identity.sessionTokenHash) await studyStore.deleteSession(identity.sessionTokenHash);
-      response.setHeader("Set-Cookie", clearSessionCookie(response.req.secure));
+      response.setHeader("Set-Cookie", clearSessionCookie(options.productionSecurity || response.req.secure));
       response.status(204).end();
     } catch (error) {
       next(error);
@@ -457,9 +522,57 @@ export function createApp(options: CreateAppOptions = {}) {
     response.status(200).json(authDto(user));
   });
 
-  app.get("/api/health", (_request, response) => {
+  app.get("/api/account/export", async (_request, response, next) => {
+    const user = identityOf(response).user;
+    if (!user) {
+      response.status(401).json(apiError("AUTH_REQUIRED", "No active account session"));
+      return;
+    }
+    try {
+      const study = await studyStore.exportUserData(user.id);
+      const engagement = await engagementStore.exportUserData(user.id);
+      response.setHeader("Content-Disposition", `attachment; filename="vacabweb-${new Date().toISOString().slice(0, 10)}.json"`);
+      response.status(200).json({ exportedAt: new Date().toISOString(), study, engagement });
+    } catch (error) { next(error); }
+  });
+
+  app.delete("/api/account", async (request, response, next) => {
+    const identity = identityOf(response);
+    const user = identity.user;
+    const credentials = user ? parseAuthCredentials({ username: user.username, password: request.body?.password }) : null;
+    if (!user || !credentials) {
+      response.status(user ? 400 : 401).json(apiError(user ? "INVALID_CREDENTIALS" : "AUTH_REQUIRED", "Password confirmation is required"));
+      return;
+    }
+    try {
+      const passwordMatches = await runAuthCrypto(() => verifyPassword(credentials.password, user.passwordHash));
+      if (!passwordMatches) {
+        response.status(403).json(apiError("INVALID_PASSWORD", "Password is incorrect"));
+        return;
+      }
+      await engagementStore.deleteUserData(user.id);
+      if (!await studyStore.deleteUser(user.id)) {
+        response.status(404).json(apiError("ACCOUNT_NOT_FOUND", "Account no longer exists"));
+        return;
+      }
+      response.setHeader("Set-Cookie", clearSessionCookie(options.productionSecurity || response.req.secure));
+      response.status(204).end();
+    } catch (error) { next(error); }
+  });
+
+  app.get("/api/health/live", (_request, response) => {
     response.status(200).json({ status: "ok", service: "vacabweb-backend" });
   });
+  const readinessHandler: RequestHandler = async (_request, response) => {
+    try {
+      await options.readinessCheck?.();
+      response.status(200).json({ status: "ok", service: "vacabweb-backend" });
+    } catch {
+      response.status(503).json(apiError("NOT_READY", "Service dependencies are not ready"));
+    }
+  };
+  app.get("/api/health", readinessHandler);
+  app.get("/api/health/ready", readinessHandler);
 
   app.get("/api/site-settings", async (_request, response, next) => {
     try {
@@ -472,7 +585,7 @@ export function createApp(options: CreateAppOptions = {}) {
 
   app.get("/api/admin/site-settings", async (_request, response, next) => {
     const user = identityOf(response).user;
-    if (!user || !adminUsernames.has(user.username.toLowerCase())) {
+    if (!hasCapability(user, "site.settings.write")) {
       response.status(403).json(apiError("ADMIN_REQUIRED", "Administrator access is required"));
       return;
     }
@@ -485,7 +598,7 @@ export function createApp(options: CreateAppOptions = {}) {
 
   app.patch("/api/admin/site-settings", async (request, response, next) => {
     const user = identityOf(response).user;
-    if (!user || !adminUsernames.has(user.username.toLowerCase())) {
+    if (!hasCapability(user, "site.settings.write")) {
       response.status(403).json(apiError("ADMIN_REQUIRED", "Administrator access is required"));
       return;
     }
@@ -560,7 +673,7 @@ export function createApp(options: CreateAppOptions = {}) {
     const user = identityOf(response).user;
     return {
       clientId,
-      ...(user ? { userId: user.id, username: user.username, isAdmin: adminUsernames.has(user.username.toLowerCase()) } : {}),
+      ...(user ? { userId: user.id, username: user.username, isAdmin: hasCapability(user, "messages.moderate") } : {}),
     };
   };
   const messageId = (value: unknown) => typeof value === "string" && /^[0-9a-f-]{36}$/i.test(value) ? value : null;
@@ -570,7 +683,7 @@ export function createApp(options: CreateAppOptions = {}) {
   };
   const requireMessageAdmin = (response: express.Response): boolean => {
     const user = identityOf(response).user;
-    if (user && adminUsernames.has(user.username.toLowerCase())) return true;
+    if (hasCapability(user, "messages.moderate")) return true;
     response.status(403).json(apiError("ADMIN_REQUIRED", "Message board administrator access is required"));
     return false;
   };
@@ -591,7 +704,7 @@ export function createApp(options: CreateAppOptions = {}) {
     const identity = identityOf(response);
     const actor = identity.clientId ? {
       clientId: identity.clientId,
-      ...(identity.user ? { userId: identity.user.id, username: identity.user.username, isAdmin: adminUsernames.has(identity.user.username.toLowerCase()) } : {}),
+      ...(identity.user ? { userId: identity.user.id, username: identity.user.username, isAdmin: hasCapability(identity.user, "messages.moderate") } : {}),
     } : null;
     const cursor = typeof request.query.cursor === "string" && request.query.cursor.length <= 500 ? request.query.cursor : undefined;
     const limit = request.query.limit === undefined ? 20 : Number(request.query.limit);
@@ -1002,6 +1115,11 @@ export function createApp(options: CreateAppOptions = {}) {
     const clientId = readClientId(request, response); const input = parseCreateImportDraft(request.body);
     if (!clientId) return;
     if (!input) { response.status(400).json(apiError("INVALID_IMPORT_DRAFT", "Import draft is invalid or exceeds the file limit")); return; }
+    if (backgroundDraftTasks.size >= 20) {
+      response.setHeader("Retry-After", "5");
+      response.status(503).json(apiError("IMPORT_QUEUE_FULL", "Import processing is busy; retry shortly"));
+      return;
+    }
     try {
       const drafts = await studyStore.createImportDrafts(clientId, input);
       if (!drafts[0]) response.status(404).json(apiError("WORDBOOK_NOT_FOUND", "Target wordbook was not found"));
@@ -1048,6 +1166,12 @@ export function createApp(options: CreateAppOptions = {}) {
       const draft = await studyStore.getImportDraft(clientId, id);
       if (!draft) { response.status(404).json(apiError("IMPORT_DRAFT_NOT_FOUND", "Import draft was not found")); return; }
       if (draft.status === "committed") { response.status(409).json(apiError("IMPORT_DRAFT_COMMITTED", "Committed drafts cannot be processed")); return; }
+      const key = `${clientId}:${id}`;
+      if (!backgroundDraftTasks.has(key) && backgroundDraftTasks.size >= 20) {
+        response.setHeader("Retry-After", "5");
+        response.status(503).json(apiError("IMPORT_QUEUE_FULL", "Import processing is busy; retry shortly"));
+        return;
+      }
       void processImportDraft(clientId, id);
       response.status(202).json(draft);
     } catch (error) { next(error); }
@@ -1122,6 +1246,11 @@ export function createApp(options: CreateAppOptions = {}) {
     if (error instanceof AuthCapacityError) {
       response.setHeader("Retry-After", "1");
       response.status(503).json(apiError("AUTH_BUSY", "Authentication is busy; retry shortly"));
+      return;
+    }
+
+    if (error instanceof StudyResourceLimitError) {
+      response.status(409).json(apiError("RESOURCE_LIMIT_EXCEEDED", `The ${error.resource} storage limit has been reached`));
       return;
     }
 

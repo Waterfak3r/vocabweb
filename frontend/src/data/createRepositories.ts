@@ -1,8 +1,4 @@
 import { BackendWordRepository } from './backendWordRepository'
-import { CompositeWordRepository } from './compositeWordRepository'
-import { DictionaryApiRepository } from './dictionaryApiRepository'
-import { IELTS_WORDS } from './ieltsWords'
-import { LocalIeltsRepository } from './localIeltsRepository'
 import type { WordRepository } from './wordRepository'
 import {
   BackendWordSuggestionRepository,
@@ -12,26 +8,13 @@ import {
 /**
  * Composition root for data access.
  *
- * With VITE_API_BASE configured, non-local lookups go only through our backend.
- * Without it, development keeps the existing dictionaryapi.dev fallback.
+ * All lookups go through our backend so privacy, rate limits, provenance, and
+ * upstream policy remain server-controlled. A missing value means same-origin.
  */
 export function createWordRepository(
   apiBase: string | undefined = import.meta.env.VITE_API_BASE,
 ): WordRepository {
-  if (apiBase?.trim()) {
-    // The backend already composes OEWN + ECDICT + the online miss fallback.
-    // Bypassing it for the bundled IELTS sample would discard Chinese meanings
-    // and source attribution for common words.
-    return new BackendWordRepository(apiBase)
-  }
-  const remote = new DictionaryApiRepository({
-    baseUrl: 'https://api.dictionaryapi.dev/api/v2/entries/en',
-  })
-
-  return new CompositeWordRepository(
-    new LocalIeltsRepository(IELTS_WORDS),
-    remote,
-  )
+  return new BackendWordRepository(apiBase?.trim() || '/')
 }
 
 /** Singleton for the app's lifetime. */
@@ -45,5 +28,5 @@ export function createWordSuggestionRepository(
     : null
 }
 
-/** Suggestions require the indexed backend dictionary; direct provider mode stays lookup-only. */
+/** Suggestions require the indexed backend dictionary. */
 export const wordSuggestionRepository = createWordSuggestionRepository()

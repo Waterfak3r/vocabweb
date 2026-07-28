@@ -10,7 +10,7 @@ export type PronounceState = 'idle' | 'playing' | 'unavailable'
  * Pronounce a word: prefer the recorded audioUrl, fall back to
  * Web Speech (en-GB). `statusText` is meant for an aria-live region.
  */
-export function usePronounce(word: string, audioUrl?: string, rate = 0.85, requestedAccent?: EnglishAccent) {
+export function usePronounce(word: string, rate = 0.85, requestedAccent?: EnglishAccent) {
   const accent = requestedAccent ?? readPronunciationPreferences().accent
   const [state, setState] = useState<PronounceState>('idle')
   const [statusText, setStatusText] = useState('')
@@ -85,7 +85,7 @@ export function usePronounce(word: string, audioUrl?: string, rate = 0.85, reque
       if (pronunciation?.audioUrl) playRecording(pronunciation.audioUrl)
       else fallbackToSpeech()
     })
-  }, [word, audioUrl, rate, accent, stop])
+  }, [word, rate, accent, stop])
 
   useEffect(() => stop, [stop])
 

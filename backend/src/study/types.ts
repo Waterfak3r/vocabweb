@@ -159,8 +159,9 @@ export interface BatchWordResult {
   failed: Array<{ wordId: string; code: "WORD_NOT_FOUND" | "DICTIONARY_UNAVAILABLE" }>;
 }
 
+export type UserRole = "user" | "admin";
 /** A registered account. `clientId` is the account's data home (the anonymous id adopted at registration). */
-export interface AccountUser { id: string; username: string; passwordHash: string; clientId: string; createdAt: string; }
+export interface AccountUser { id: string; username: string; passwordHash: string; clientId: string; role: UserRole; createdAt: string; }
 
 /** Persistence seam: production SQLite is durable; tests inject the memory store. */
 export interface StudyStore {
@@ -170,6 +171,10 @@ export interface StudyStore {
   getUserByUsername(username: string): Promise<AccountUser | null>;
   getUserById(id: string): Promise<AccountUser | null>;
   getUserByClientId(clientId: string): Promise<AccountUser | null>;
+  /** Changes an existing account's durable role. Intended for local administration tooling. */
+  setUserRole(username: string, role: UserRole): Promise<AccountUser | null>;
+  exportUserData(userId: string): Promise<unknown | null>;
+  deleteUser(userId: string): Promise<boolean>;
   createSession(tokenHash: string, userId: string, expiresAt: string): Promise<void>;
   /** Returns the session's user when live; an expired session yields null and is deleted. */
   getSession(tokenHash: string, now: Date): Promise<{ user: AccountUser; expiresAt: string } | null>;

@@ -13,6 +13,10 @@ export interface AppConfig {
   wordSuggestionRateLimitMaxRequests: number;
   loginRateLimitWindowMs: number;
   loginRateLimitMaxRequests: number;
+  registrationEnabled: boolean;
+  maxWordbooksPerClient: number;
+  maxWordsPerClient: number;
+  maxDraftsPerClient: number;
   trustProxy: number;
   databaseFile: string;
   /** Legacy JSON source retained for one-time SQLite migration. */
@@ -53,6 +57,14 @@ function parseWiktApiBaseUrl(value: string | undefined): string {
   }
 
   return rawUrl.replace(/\/+$/, "");
+}
+
+function parseBoolean(name: string, value: string | undefined, defaultValue: boolean): boolean {
+  if (value === undefined || !value.trim()) return defaultValue;
+  const normalized = value.trim().toLowerCase();
+  if (["1", "true", "on", "yes"].includes(normalized)) return true;
+  if (["0", "false", "off", "no"].includes(normalized)) return false;
+  throw new Error(`${name} must be true or false`);
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
@@ -118,6 +130,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     loginRateLimitMaxRequests: parseInteger(
       "LOGIN_RATE_LIMIT_MAX_REQUESTS", env.LOGIN_RATE_LIMIT_MAX_REQUESTS, 10, 1, 100_000,
     ),
+    registrationEnabled: parseBoolean("REGISTRATION_ENABLED", env.REGISTRATION_ENABLED, true),
+    maxWordbooksPerClient: parseInteger("MAX_WORDBOOKS_PER_CLIENT", env.MAX_WORDBOOKS_PER_CLIENT, 50, 1, 10_000),
+    maxWordsPerClient: parseInteger("MAX_WORDS_PER_CLIENT", env.MAX_WORDS_PER_CLIENT, 50_000, 1, 1_000_000),
+    maxDraftsPerClient: parseInteger("MAX_DRAFTS_PER_CLIENT", env.MAX_DRAFTS_PER_CLIENT, 20, 1, 1_000),
     trustProxy: parseInteger("TRUST_PROXY", env.TRUST_PROXY, 0, 0, 10),
     databaseFile: (() => {
       const value = env.DATABASE_FILE?.trim() || "./data/study-state.sqlite";

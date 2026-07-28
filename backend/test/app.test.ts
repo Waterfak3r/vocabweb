@@ -57,6 +57,47 @@ test("GET /api/health returns service status", async () => {
   }
 });
 
+test("responses include browser hardening headers without advertising Express", async () => {
+  const server = await startServer();
+  try {
+    const response = await fetch(`${server.baseUrl}/api/health`);
+    assert.match(response.headers.get("content-security-policy") ?? "", /script-src 'self'/);
+    assert.equal(response.headers.get("x-frame-options"), "DENY");
+    assert.equal(response.headers.get("x-content-type-options"), "nosniff");
+    assert.equal(response.headers.get("referrer-policy"), "no-referrer");
+    assert.equal(response.headers.get("x-powered-by"), null);
+    assert.equal(response.headers.get("strict-transport-security"), null);
+    assert.equal(response.headers.get("cache-control"), "private, no-store");
+  } finally {
+    await server.close();
+  }
+});
+
+test("production security adds HSTS", async () => {
+  const server = await startServer({ productionSecurity: true });
+  try {
+    const response = await fetch(`${server.baseUrl}/api/health`);
+    assert.match(response.headers.get("strict-transport-security") ?? "", /max-age=31536000/);
+  } finally {
+    await server.close();
+  }
+});
+
+test("liveness remains available while readiness reports dependency failures", async () => {
+  const server = await startServer({
+    readinessCheck: async () => { throw new Error("database unavailable"); },
+  });
+  try {
+    assert.equal((await fetch(`${server.baseUrl}/api/health/live`)).status, 200);
+    const ready = await fetch(`${server.baseUrl}/api/health/ready`);
+    assert.equal(ready.status, 503);
+    assert.equal((await ready.json() as { error: { code: string } }).error.code, "NOT_READY");
+    assert.equal((await fetch(`${server.baseUrl}/api/health`)).status, 503);
+  } finally {
+    await server.close();
+  }
+});
+
 test("search reporting and feedback expose stable public API contracts", async () => {
   const engagementStore = new MemoryEngagementStore();
   const server = await startServer({ engagementStore });

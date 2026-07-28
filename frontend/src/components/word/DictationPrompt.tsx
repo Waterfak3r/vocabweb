@@ -132,7 +132,6 @@ export function DictationPrompt({
         <div className="dictation-play">
           <PronounceButton
             word={item.word}
-            audioUrl={item.audioUrl}
             rate={0.78}
             label={`播放第 ${item.word} 题发音`}
           />

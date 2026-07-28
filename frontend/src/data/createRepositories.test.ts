@@ -57,30 +57,24 @@ describe('createWordRepository', () => {
     )
   })
 
-  it('preserves the direct dictionary fallback when no API base is set', async () => {
+  it('uses the same-origin backend when no API base is set', async () => {
     const fetch = vi.fn<FetchLike>(async () =>
-      jsonResponse([
-        {
-          word: 'serendipity',
-          phonetic: '',
-          meanings: [
-            {
-              partOfSpeech: 'noun',
-              definitions: [{ definition: 'A fortunate discovery.' }],
-            },
-          ],
-        },
-      ]),
+      jsonResponse({
+        word: 'serendipity',
+        phonetic: '',
+        meanings: [{ pos: 'noun', definition: 'A fortunate discovery.' }],
+        source: 'backend',
+      }),
     )
     vi.stubGlobal('fetch', fetch)
     const repository = createWordRepository('')
 
     await expect(repository.lookup('serendipity')).resolves.toMatchObject({
       word: 'serendipity',
-      source: 'dictionary-api',
+      source: 'backend',
     })
     expect(fetch.mock.calls[0][0].toString()).toContain(
-      'api.dictionaryapi.dev/api/v2/entries/en/serendipity',
+      'localhost/api/words/serendipity',
     )
   })
 })

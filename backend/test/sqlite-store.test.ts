@@ -105,8 +105,8 @@ test("SQLite exposes constrained, queryable user/session/catalog rows", async (t
 
   const inspection = new Database(files.databaseFile);
   assert.deepEqual(
-    inspection.prepare("SELECT username, client_id FROM users").get(),
-    { username: "Learner", client_id: CLIENT },
+    inspection.prepare("SELECT username, client_id, role FROM users").get(),
+    { username: "Learner", client_id: CLIENT, role: "user" },
   );
   assert.deepEqual(
     inspection.prepare("SELECT user_id, expires_at FROM sessions WHERE token_hash = ?").get("token-hash"),
@@ -133,4 +133,51 @@ test("SQLite exposes constrained, queryable user/session/catalog rows", async (t
   );
   inspection.close();
   store.close();
+});
+
+test("SQLite adds a safe user role to databases created before role authorization", async (t) => {
+  const files = await fixture(t);
+  const legacy = new Database(files.databaseFile);
+  legacy.exec(`
+    CREATE TABLE users (
+      id TEXT PRIMARY KEY,
+      username TEXT NOT NULL COLLATE NOCASE UNIQUE,
+      password_hash TEXT NOT NULL,
+      client_id TEXT NOT NULL UNIQUE,
+      created_at TEXT NOT NULL
+    );
+    INSERT INTO users VALUES (
+      'user-legacy', 'Waterfak3r', 'scrypt:test-hash',
+      'client-legacy-0001', '2026-07-27T00:00:00.000Z'
+    );
+  `);
+  legacy.close();
+
+  const store = new SqliteStudyStore(files.databaseFile);
+  const user = await store.getUserByUsername("Waterfak3r");
+  assert.equal(user?.role, "user");
+  assert.equal((await store.setUserRole("Waterfak3r", "admin"))?.role, "admin");
+  store.close();
+
+  const inspection = new Database(files.databaseFile, { readonly: true });
+  assert.deepEqual(
+    inspection.prepare("SELECT role FROM users WHERE id = 'user-legacy'").get(),
+    { role: "admin" },
+  );
+  inspection.close();
+});
+
+test("SQLite online backups are complete and pass integrity checks", async (t) => {
+  const files = await fixture(t);
+  const backupFile = path.join(files.directory, "backup", "study.sqlite");
+  const store = new SqliteStudyStore(files.databaseFile);
+  await store.createMyWordbook(CLIENT, { title: "Backed up" });
+  await store.checkHealth();
+  await store.backup(backupFile);
+  store.close();
+
+  const backup = new SqliteStudyStore(backupFile);
+  assert.deepEqual((await backup.listMyWordbooks(CLIENT, false)).map((book) => book.title), ["Backed up"]);
+  await backup.checkHealth();
+  backup.close();
 });
