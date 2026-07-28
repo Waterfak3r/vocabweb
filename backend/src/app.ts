@@ -1,7 +1,7 @@
 import path from "node:path";
 import cors from "cors";
 import express, { type ErrorRequestHandler, type RequestHandler } from "express";
-import { MemoryEngagementStore, type EngagementStore, type FeedbackInput, type FeedbackType } from "./engagement/store.js";
+import { MemoryEngagementStore, type EngagementStore, type FeedbackInput, type FeedbackType, type MessageActor } from "./engagement/store.js";
 import {
   clearSessionCookie, createSessionToken, hashPassword, hashSessionToken, parseAuthCredentials,
   readSessionToken, sessionCookie, sessionExpiresAt, verifyPassword,
@@ -25,6 +25,7 @@ export interface CreateAppOptions {
   studyStore?: StudyStore;
   engagementStore?: EngagementStore;
   localChineseLookup?: LocalChineseLookup;
+  adminUsernames?: string[];
   /** Express "trust proxy" hop count; set to the number of reverse proxies in front of the app. */
   trustProxy?: number;
   /** Absolute or cwd-relative path to a built frontend to serve (static assets + SPA fallback). */
@@ -101,6 +102,9 @@ export function createApp(options: CreateAppOptions = {}) {
   const studyStore = options.studyStore ?? new JsonFileStudyStore("./data/study-state.json");
   const engagementStore = options.engagementStore ?? new MemoryEngagementStore();
   const localChineseLookup = options.localChineseLookup ?? new CsvLocalChineseDictionary();
+  const adminUsernames = new Set((options.adminUsernames ?? ["Waterfak3r"]).map((name) => name.toLowerCase()));
+  const guestMessageRateLimiter = new FixedWindowRateLimiter({ windowMs: 10 * 60_000, maxRequests: 3 });
+  const userMessageRateLimiter = new FixedWindowRateLimiter({ windowMs: 10 * 60_000, maxRequests: 10 });
   // Missing usernames still pay the same scrypt verification cost as real users.
   const dummyPasswordHash = hashPassword(createSessionToken().token);
   let activeAuthCrypto = 0;
@@ -391,6 +395,127 @@ export function createApp(options: CreateAppOptions = {}) {
     } catch (error) {
       next(error);
     }
+  });
+
+  const messageActor = (response: express.Response): MessageActor | null => {
+    const clientId = readClientId(response.req, response);
+    if (!clientId) return null;
+    const user = identityOf(response).user;
+    return {
+      clientId,
+      ...(user ? { userId: user.id, username: user.username, isAdmin: adminUsernames.has(user.username.toLowerCase()) } : {}),
+    };
+  };
+  const messageId = (value: unknown) => typeof value === "string" && /^[0-9a-f-]{36}$/i.test(value) ? value : null;
+  const messageContent = (value: unknown) => {
+    const content = typeof value === "string" ? value.trim() : "";
+    return content.length >= 1 && content.length <= 1_000 ? content : null;
+  };
+  const requireMessageAdmin = (response: express.Response): boolean => {
+    const user = identityOf(response).user;
+    if (user && adminUsernames.has(user.username.toLowerCase())) return true;
+    response.status(403).json(apiError("ADMIN_REQUIRED", "Message board administrator access is required"));
+    return false;
+  };
+  const enforceMessagePostingLimit: RequestHandler = (request, response, next) => {
+    const user = identityOf(response).user;
+    const limiter = user ? userMessageRateLimiter : guestMessageRateLimiter;
+    const clientKey = `${user ? "user" : "guest"}:${request.ip || request.socket.remoteAddress || "unknown"}`;
+    const decision = limiter.consume(clientKey);
+    if (!decision.allowed) {
+      response.setHeader("Retry-After", Math.max(1, Math.ceil(decision.retryAfterMs / 1_000)));
+      response.status(429).json(apiError("MESSAGE_RATE_LIMITED", "Too many messages; try again later"));
+      return;
+    }
+    next();
+  };
+
+  app.get("/api/messages", async (request, response, next) => {
+    const identity = identityOf(response);
+    const actor = identity.clientId ? {
+      clientId: identity.clientId,
+      ...(identity.user ? { userId: identity.user.id, username: identity.user.username, isAdmin: adminUsernames.has(identity.user.username.toLowerCase()) } : {}),
+    } : null;
+    const cursor = typeof request.query.cursor === "string" && request.query.cursor.length <= 500 ? request.query.cursor : undefined;
+    const limit = request.query.limit === undefined ? 20 : Number(request.query.limit);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 20 || (request.query.cursor !== undefined && !cursor)) {
+      response.status(400).json(apiError("INVALID_MESSAGE_QUERY", "Message query is invalid"));
+      return;
+    }
+    try { response.status(200).json(await engagementStore.listMessages(actor, cursor, limit)); } catch (error) { next(error); }
+  });
+
+  app.post("/api/messages", enforceMessagePostingLimit, async (request, response, next) => {
+    const actor = messageActor(response); if (!actor) return;
+    const content = messageContent(request.body?.content);
+    const parentId = request.body?.parentId === undefined ? undefined : messageId(request.body.parentId);
+    const contact = typeof request.body?.contact === "string" ? request.body.contact.trim() : "";
+    const nickname = actor.userId ? undefined : typeof request.body?.nickname === "string" ? request.body.nickname.trim() : "";
+    if (!content || parentId === null || contact.length > 200 || (!actor.userId && (nickname.length < 2 || nickname.length > 30))) {
+      response.status(400).json(apiError("INVALID_MESSAGE", "Message is invalid"));
+      return;
+    }
+    try {
+      const created = await engagementStore.createMessage(actor, { content, ...(nickname ? { nickname } : {}), ...(contact ? { contact } : {}), ...(parentId ? { parentId } : {}) });
+      if (!created) response.status(404).json(apiError("PARENT_MESSAGE_NOT_FOUND", "Parent message was not found"));
+      else response.status(201).json(created);
+    } catch (error) { next(error); }
+  });
+
+  app.patch("/api/messages/:id", async (request, response, next) => {
+    const actor = messageActor(response); const id = messageId(request.params.id); const content = messageContent(request.body?.content);
+    if (!actor) return;
+    if (!id || !content) { response.status(400).json(apiError("INVALID_MESSAGE", "Message is invalid")); return; }
+    try {
+      const result = await engagementStore.editMessage(actor, id, content);
+      if (!result) response.status(404).json(apiError("MESSAGE_NOT_FOUND", "Message was not found"));
+      else if (result === "forbidden") response.status(403).json(apiError("MESSAGE_EDIT_FORBIDDEN", "Message can no longer be edited"));
+      else response.status(200).json(result);
+    } catch (error) { next(error); }
+  });
+
+  app.delete("/api/messages/:id", async (request, response, next) => {
+    const actor = messageActor(response); const id = messageId(request.params.id);
+    if (!actor) return;
+    if (!id) { response.status(400).json(apiError("INVALID_MESSAGE_ID", "Message id is invalid")); return; }
+    try {
+      const result = await engagementStore.softDeleteMessage(actor, id);
+      if (result === "not-found") response.status(404).json(apiError("MESSAGE_NOT_FOUND", "Message was not found"));
+      else if (result === "forbidden") response.status(403).json(apiError("MESSAGE_DELETE_FORBIDDEN", "Message does not belong to this author"));
+      else response.status(204).end();
+    } catch (error) { next(error); }
+  });
+
+  app.patch("/api/messages/:id/moderation", async (request, response, next) => {
+    const id = messageId(request.params.id); const action = request.body?.action;
+    if (!requireMessageAdmin(response)) return;
+    if (!id || (action !== "hide" && action !== "restore")) { response.status(400).json(apiError("INVALID_MODERATION", "Moderation action is invalid")); return; }
+    try {
+      if (!await engagementStore.moderateMessage(id, action)) response.status(404).json(apiError("MESSAGE_NOT_FOUND", "Message was not found"));
+      else response.status(204).end();
+    } catch (error) { next(error); }
+  });
+
+  app.delete("/api/messages/:id/permanent", async (request, response, next) => {
+    const id = messageId(request.params.id);
+    if (!requireMessageAdmin(response)) return;
+    if (!id) { response.status(400).json(apiError("INVALID_MESSAGE_ID", "Message id is invalid")); return; }
+    try {
+      if (!await engagementStore.permanentlyDeleteMessage(id)) response.status(404).json(apiError("MESSAGE_NOT_FOUND", "Message was not found"));
+      else response.status(204).end();
+    } catch (error) { next(error); }
+  });
+
+  app.get("/api/messages/unread-count", async (_request, response, next) => {
+    const user = identityOf(response).user;
+    if (!user) { response.status(200).json({ count: 0 }); return; }
+    try { response.status(200).json({ count: await engagementStore.unreadMessageCount(user.id) }); } catch (error) { next(error); }
+  });
+
+  app.post("/api/messages/read", async (_request, response, next) => {
+    const user = identityOf(response).user;
+    if (!user) { response.status(401).json(apiError("AUTH_REQUIRED", "Sign in to manage message notifications")); return; }
+    try { await engagementStore.markMessagesRead(user.id); response.status(204).end(); } catch (error) { next(error); }
   });
 
   app.get(["/api/words", "/api/words/"], enforceWordRateLimit, (_request, response) => {

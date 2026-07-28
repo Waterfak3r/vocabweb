@@ -23,6 +23,14 @@ export type WordEntry = {
   zhMeaning?: string
   /** User meanings take precedence over dictionary-provided Chinese text. */
   zhMeaningSource?: 'user' | 'dictionary'
+  availableLanguages?: Array<'zh' | 'en'>
+  sources?: Array<{
+    id: 'open_english_wordnet' | 'ecdict' | 'wiktapi'
+    name: string
+    version: string
+    license: string
+    url: string
+  }>
   source: WordSource
 }
 

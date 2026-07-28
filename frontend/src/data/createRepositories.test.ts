@@ -15,18 +15,24 @@ afterEach(() => {
 })
 
 describe('createWordRepository', () => {
-  it('keeps the local IELTS repository first when a backend is configured', async () => {
-    const fetch = vi.fn<FetchLike>(async () => {
-      throw new Error('local entries must not call the backend')
-    })
+  it('uses the bilingual backend even for words in the offline IELTS sample', async () => {
+    const fetch = vi.fn<FetchLike>(async () => jsonResponse({
+      word: 'resilient',
+      phonetic: '',
+      meanings: [{ pos: 'adjective', definition: 'Able to recover.' }],
+      zhMeaning: '有韧性的',
+      availableLanguages: ['zh', 'en'],
+      source: 'backend',
+    }))
     vi.stubGlobal('fetch', fetch)
     const repository = createWordRepository('https://backend.example.test')
 
     await expect(repository.lookup('resilient')).resolves.toMatchObject({
       word: 'resilient',
-      source: 'local-ielts',
+      source: 'backend',
+      zhMeaning: '有韧性的',
     })
-    expect(fetch).not.toHaveBeenCalled()
+    expect(fetch).toHaveBeenCalledTimes(1)
   })
 
   it('uses the backend exclusively for non-local words when configured', async () => {

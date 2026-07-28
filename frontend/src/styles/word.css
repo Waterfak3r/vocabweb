@@ -953,3 +953,48 @@
   .meaning-definition { font-size: 0.94rem; }
   .study-sidebar { grid-template-columns: 1fr; }
 }
+.dictionary-language-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1.2rem;
+}
+
+.dictionary-language-switch {
+  display: inline-flex;
+  padding: 3px;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  background: var(--input-bg);
+}
+
+.dictionary-language-switch button {
+  padding: 0.35rem 0.8rem;
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.dictionary-language-switch button.active {
+  background: var(--ink);
+  color: var(--surface);
+}
+
+.dictionary-language-switch button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.dictionary-source-note {
+  color: var(--muted);
+  font-size: var(--text-xs);
+}
+
+.chinese-meaning-list {
+  display: grid;
+  gap: 0.65rem;
+  padding-left: 1rem;
+  border-left: 1px solid var(--rule);
+  line-height: 1.75;
+}

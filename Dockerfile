@@ -27,13 +27,15 @@ WORKDIR /app/backend
 # better-sqlite3 normally downloads a musl prebuild. Keep a native-build
 # fallback in this disposable stage so a missing architecture prebuild does not
 # make production images unreproducible.
-RUN apk add --no-cache python3 make g++
+RUN apk add --no-cache python3 make g++ git
 
 COPY backend/package.json backend/package-lock.json ./
 RUN npm ci
 
 COPY backend/ ./
-RUN npm run build \
+COPY resources/ /app/resources/
+RUN npm run dictionaries:build \
+    && npm run build \
     && npm prune --omit=dev
 
 # ---------------------------------------------------------------------------
@@ -53,6 +55,7 @@ COPY --from=backend-build /app/backend/node_modules ./backend/node_modules
 COPY --from=backend-build /app/backend/package.json ./backend/package.json
 COPY --from=frontend-build /app/frontend/dist ./frontend/dist
 COPY resources/ ./resources/
+COPY --from=backend-build /app/resources/dictionaries/generated ./resources/dictionaries/generated
 
 WORKDIR /app/backend
 

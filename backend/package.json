@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "dictionaries:build": "node scripts/build-dictionaries.mjs",
     "dev": "tsx watch src/server.ts",
     "start": "node dist/server.js",
     "typecheck": "tsc --noEmit",
@@ -22,7 +23,8 @@
     "@types/express": "^5.0.1",
     "@types/node": "^22.15.3",
     "tsx": "^4.19.4",
-    "typescript": "^5.8.3"
+    "typescript": "^5.8.3",
+    "yaml": "^2.8.1"
   },
   "engines": {
     "node": ">=20"

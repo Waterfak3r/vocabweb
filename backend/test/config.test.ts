@@ -18,6 +18,8 @@ test("loadConfig provides bounded word lookup defaults", () => {
     staticDir: "",
     databaseFile: "./data/study-state.sqlite",
     dataFile: "./data/study-state.json",
+    dictionaryFile: "../resources/dictionaries/generated/vocab.sqlite",
+    dictionaryRemoteFallback: true,
   });
 });
 
@@ -37,6 +39,8 @@ test("loadConfig parses configured word lookup settings", () => {
     STATIC_DIR: " ../frontend/dist ",
     DATABASE_FILE: "C:/data/vocab.sqlite",
     DATA_FILE: "C:/data/vocab.json",
+    DICTIONARY_FILE: "C:/data/dictionary.sqlite",
+    DICTIONARY_REMOTE_FALLBACK: "false",
   });
 
   assert.deepEqual(config, {
@@ -54,6 +58,8 @@ test("loadConfig parses configured word lookup settings", () => {
     staticDir: "../frontend/dist",
     databaseFile: "C:/data/vocab.sqlite",
     dataFile: "C:/data/vocab.json",
+    dictionaryFile: "C:/data/dictionary.sqlite",
+    dictionaryRemoteFallback: false,
   });
 });
 

@@ -7,7 +7,7 @@ import {
 } from "./types.js";
 
 type JsonObject = Record<string, unknown>;
-const EXAMS = ["IELTS", "TOEFL", "GRE", "高考", "四六级", "考研"] as const;
+const EXAMS = ["IELTS", "TOEFL", "GRE", "高考", "四级", "六级", "四六级", "考研"] as const;
 const GOALS = ["写作", "阅读", "听力", "口语"] as const;
 const SORTS = ["recommended", "hot", "newest", "rating"] as const;
 const RESOLUTIONS = ["keep", "replace", "merge", "discard"] as const;

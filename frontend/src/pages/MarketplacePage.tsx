@@ -55,8 +55,8 @@ type PublishingWorkspaceApi = {
   updateCatalogSnapshot?: (catalogId: string, input: PublishCatalogInput) => Promise<unknown>
 }
 
-const MARKETPLACE_CATEGORIES = ['全部', 'IELTS', 'TOEFL', 'GRE', '高考', '四六级', '考研', '写作', '阅读', '听力', '口语']
-const PUBLISH_EXAMS = ['IELTS', 'TOEFL', 'GRE', '高考', '四六级', '考研']
+const MARKETPLACE_CATEGORIES = ['全部', 'IELTS', 'TOEFL', 'GRE', '高考', '四级', '六级', '考研', '写作', '阅读', '听力', '口语']
+const PUBLISH_EXAMS = ['IELTS', 'TOEFL', 'GRE', '高考', '四级', '六级', '考研']
 const PUBLISH_GOALS = ['写作', '阅读', '听力', '口语']
 const EMPTY_PUBLISH_FORM: PublishForm = { sourceWordbookId: '', title: '', description: '', exam: '', goal: '', visibility: 'public' }
 const VISIBILITY_OPTIONS: Array<{ value: CatalogVisibility; label: string; hint: string }> = [
@@ -497,7 +497,7 @@ export function MarketplacePage() {
       <div className="marketplace-layout">
         <aside className="market-filter" aria-label="分类筛选">
           <h2><MarketplaceIcon name="filter" />分类筛选</h2>
-          <fieldset><legend>考试类型</legend><div className="filter-grid"><Toggle label="IELTS" checked={examFilters.includes('IELTS')} onChange={() => toggleFilter('IELTS', setExamFilters)} /><Toggle label="TOEFL" checked={examFilters.includes('TOEFL')} onChange={() => toggleFilter('TOEFL', setExamFilters)} /><Toggle label="GRE" checked={examFilters.includes('GRE')} onChange={() => toggleFilter('GRE', setExamFilters)} /><Toggle label="高考" checked={examFilters.includes('高考')} onChange={() => toggleFilter('高考', setExamFilters)} /><Toggle label="四六级" checked={examFilters.includes('四六级')} onChange={() => toggleFilter('四六级', setExamFilters)} /></div></fieldset>
+          <fieldset><legend>考试类型</legend><div className="filter-grid"><Toggle label="IELTS" checked={examFilters.includes('IELTS')} onChange={() => toggleFilter('IELTS', setExamFilters)} /><Toggle label="TOEFL" checked={examFilters.includes('TOEFL')} onChange={() => toggleFilter('TOEFL', setExamFilters)} /><Toggle label="GRE" checked={examFilters.includes('GRE')} onChange={() => toggleFilter('GRE', setExamFilters)} /><Toggle label="高考" checked={examFilters.includes('高考')} onChange={() => toggleFilter('高考', setExamFilters)} /><Toggle label="四级" checked={examFilters.includes('四级')} onChange={() => toggleFilter('四级', setExamFilters)} /><Toggle label="六级" checked={examFilters.includes('六级')} onChange={() => toggleFilter('六级', setExamFilters)} /></div></fieldset>
           <fieldset><legend>学习目标</legend><div className="filter-grid"><Toggle label="写作" checked={goalFilters.includes('写作')} onChange={() => toggleFilter('写作', setGoalFilters)} /><Toggle label="阅读" checked={goalFilters.includes('阅读')} onChange={() => toggleFilter('阅读', setGoalFilters)} /><Toggle label="听力" checked={goalFilters.includes('听力')} onChange={() => toggleFilter('听力', setGoalFilters)} /><Toggle label="口语" checked={goalFilters.includes('口语')} onChange={() => toggleFilter('口语', setGoalFilters)} /></div></fieldset>
           <fieldset><legend>排序方式</legend><div className="filter-radio">{([['popular', '热门'], ['latest', '最新'], ['rating', '评分最高']] as const).map(([value, label]) => <label key={value}><input type="radio" name="market-sort" checked={sort === value} onChange={() => setSort(value)} />{label}</label>)}</div></fieldset>
           <button className="clear-filters" type="button" onClick={() => { setExamFilters([]); setGoalFilters([]); setActiveCategory('全部'); setQuery('') }}>清空筛选</button>

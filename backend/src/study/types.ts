@@ -1,7 +1,7 @@
 export const WORD_SOURCES = ["backend", "dictionary-api", "local-ielts", "user"] as const;
 export type WordSource = (typeof WORD_SOURCES)[number];
 export type ZhMeaningSource = "user" | "dictionary";
-export type CatalogExam = "IELTS" | "TOEFL" | "GRE" | "高考" | "四六级" | "考研";
+export type CatalogExam = "IELTS" | "TOEFL" | "GRE" | "高考" | "四级" | "六级" | "四六级" | "考研";
 export type LearningGoal = "写作" | "阅读" | "听力" | "口语";
 export type CatalogSort = "recommended" | "hot" | "newest" | "rating";
 /** Marketplace listing scope. Existing/legacy entries migrate to "public". */
@@ -26,6 +26,8 @@ export interface CatalogWordbook {
   authorUserId?: string;
   /** Points at the owner's private source only; `words` is always a publish-time snapshot. */
   sourceWordbookId?: string;
+  /** Stable internal identity for deployment-provided catalog content. */
+  seedKey?: string;
 }
 export type CatalogCard = Omit<CatalogWordbook, "words" | "ownerClientId" | "sourceWordbookId" | "authorUserId"> & {
   wordCount: number; favorited: boolean; added: boolean; uploaded: boolean;
@@ -154,6 +156,7 @@ export interface StudyStore {
   toggleFavorite(clientId: string, id: string): Promise<{ favorited: boolean } | null>;
   addCatalogToMine(clientId: string, id: string): Promise<{ wordbook: MyWordbookCard; created: boolean } | null>;
   uploadCatalog(clientId: string, input: UploadCatalogWordbookInput): Promise<CatalogCard | null>;
+  upsertSeedCatalog(clientId: string, input: UploadCatalogWordbookInput & { seedKey: string; author: CatalogAuthor }): Promise<CatalogCard>;
   updateCatalog(clientId: string, id: string, input: UpdateCatalogWordbookInput): Promise<CatalogCard | null>;
   importShareCode(clientId: string, shareCode: string): Promise<{ wordbook: MyWordbookCard; created: boolean } | null>;
   listMyWordbooks(clientId: string, trash: boolean): Promise<MyWordbookCard[]>;

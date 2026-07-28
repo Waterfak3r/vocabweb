@@ -163,6 +163,42 @@ export abstract class BaseStore implements StudyStore {
     };
     state.catalog.push(book); return catalogCard(book, client, clientId);
   }); }
+  async upsertSeedCatalog(clientId: string, input: UploadCatalogWordbookInput & { seedKey: string; author: { userId: string; username: string } }): Promise<CatalogCard> { return await this.mutate((state) => {
+    const client = this.client(state, clientId);
+    const existing = state.catalog.find((book) => book.seedKey === input.seedKey);
+    if (existing) {
+      existing.title = input.title ?? existing.title;
+      existing.description = input.description ?? existing.description;
+      existing.exams = clone(input.exams ?? []);
+      existing.goals = clone(input.goals ?? []);
+      existing.words = clone(input.words ?? []);
+      existing.visibility = "public";
+      existing.author = input.author.username;
+      existing.authorUserId = input.author.userId;
+      existing.ownerClientId = clientId;
+      return catalogCard(existing, client, clientId);
+    }
+    const now = this.now().toISOString();
+    const book: CatalogWordbook = {
+      id: `catalog-seed-${input.seedKey}`,
+      seedKey: input.seedKey,
+      title: input.title ?? "",
+      description: input.description ?? "",
+      author: input.author.username,
+      authorUserId: input.author.userId,
+      exams: clone(input.exams ?? []),
+      goals: clone(input.goals ?? []),
+      rating: 0,
+      uses: 0,
+      createdAt: now,
+      visibility: "public",
+      shareCode: this.shareCode(state),
+      words: clone(input.words ?? []),
+      ownerClientId: clientId,
+    };
+    state.catalog.push(book);
+    return catalogCard(book, client, clientId);
+  }); }
   async updateCatalog(clientId: string, id: string, input: UpdateCatalogWordbookInput): Promise<CatalogCard | null> { return await this.mutate((state) => {
     const catalog = state.catalog.find((item) => item.id === id && item.ownerClientId === clientId); if (!catalog) return null;
     const client = this.client(state, clientId);

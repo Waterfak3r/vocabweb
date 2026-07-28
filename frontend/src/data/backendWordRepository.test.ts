@@ -129,6 +129,23 @@ describe('BackendWordRepository', () => {
     expect(fetch).toHaveBeenCalledTimes(1)
   })
 
+  it('accepts bilingual metadata and a Chinese-only local hit', async () => {
+    const repository = new BackendWordRepository('https://example.test', {
+      fetch: async () => jsonResponse(backendEntry({
+        meanings: [],
+        zhMeaning: '偶然发现珍奇事物的本领',
+        availableLanguages: ['zh'],
+        sources: [{ id: 'ecdict', name: 'ECDICT', version: 'pinned', license: 'MIT', url: 'https://example.test/source' }],
+      })),
+    })
+    await expect(repository.lookup('serendipity')).resolves.toMatchObject({
+      zhMeaning: '偶然发现珍奇事物的本领',
+      zhMeaningSource: 'dictionary',
+      meanings: [],
+      availableLanguages: ['zh'],
+    })
+  })
+
   it('maps stable backend error codes to UI-safe LookupErrors', async () => {
     const fetch = vi.fn<FetchLike>(async () =>
       jsonResponse(

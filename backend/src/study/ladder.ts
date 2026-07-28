@@ -126,7 +126,7 @@ export function visibleTo(book: CatalogWordbook, clientId: string): boolean {
 }
 /** Build a catalog card. Private source ids are exposed only on the owner's upload feed/cards. */
 export function catalogCard(book: CatalogWordbook, client: ClientData, clientId: string): CatalogCard {
-  const { words: _words, ownerClientId: _owner, sourceWordbookId: _source, authorUserId: _authorUserId, ...rest } = book;
+  const { words: _words, ownerClientId: _owner, sourceWordbookId: _source, authorUserId: _authorUserId, seedKey: _seedKey, ...rest } = book;
   return {
     ...clone(rest), wordCount: book.words.length,
     favorited: client.favorites.includes(book.id),

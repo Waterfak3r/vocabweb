@@ -356,3 +356,34 @@
   /* The theme toggle is icon-only, so it keeps its glyph where labels drop theirs. */
   .theme-toggle .nav-icon { display: block; }
 }
+.nav-unread {
+  display: inline-grid;
+  min-width: 1.15rem;
+  height: 1.15rem;
+  place-items: center;
+  padding: 0 0.25rem;
+  border-radius: 999px;
+  background: var(--danger);
+  color: white;
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  line-height: 1;
+}
+
+.sources-page {
+  width: min(52rem, calc(100% - 2rem));
+  margin: 0 auto;
+  padding: 4rem 0 7rem;
+}
+
+.sources-page > h1 {
+  margin: 0.3rem 0 0.8rem;
+  font-family: var(--font-serif);
+  font-size: var(--text-3xl);
+}
+
+.sources-page > p { color: var(--muted); }
+.sources-page article { padding: 1.5rem 0; border-top: 1px solid var(--rule); }
+.sources-page article:first-of-type { margin-top: 2rem; }
+.sources-page article h2 { margin-bottom: 0.45rem; font-family: var(--font-serif); }
+.sources-page article p { margin-bottom: 0.5rem; }

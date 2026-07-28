@@ -9,6 +9,16 @@ export interface WordEntry {
   phonetic: string;
   audioUrl?: string;
   meanings: WordMeaning[];
+  zhMeaning?: string;
+  zhMeaningSource?: "dictionary";
+  availableLanguages?: Array<"zh" | "en">;
+  sources?: Array<{
+    id: "open_english_wordnet" | "ecdict" | "wiktapi";
+    name: string;
+    version: string;
+    license: string;
+    url: string;
+  }>;
   source: "backend";
 }
 

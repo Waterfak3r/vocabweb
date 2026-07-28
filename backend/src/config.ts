@@ -16,6 +16,8 @@ export interface AppConfig {
   /** Legacy JSON source retained for one-time SQLite migration. */
   dataFile: string;
   staticDir: string;
+  dictionaryFile: string;
+  dictionaryRemoteFallback: boolean;
 }
 
 function parseInteger(
@@ -122,5 +124,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       }
       return value;
     })(),
+    dictionaryFile: env.DICTIONARY_FILE?.trim() || "../resources/dictionaries/generated/vocab.sqlite",
+    dictionaryRemoteFallback: !["0", "false", "off"].includes((env.DICTIONARY_REMOTE_FALLBACK ?? "true").toLowerCase()),
   };
 }

@@ -8,7 +8,7 @@ export type CatalogSort = 'recommended' | 'hot' | 'newest' | 'rating'
 /** 公开=进广场列表；邀请码=仅凭分享码导入；私密=仅自己可见。 */
 export type CatalogVisibility = 'public' | 'unlisted' | 'private'
 export type AuthUser = { username: string; clientId: string }
-export type CatalogExam = 'IELTS' | 'TOEFL' | 'GRE' | '高考' | '四六级' | '考研'
+export type CatalogExam = 'IELTS' | 'TOEFL' | 'GRE' | '高考' | '四级' | '六级' | '四六级' | '考研'
 export type LearningGoal = '写作' | '阅读' | '听力' | '口语'
 export type CatalogQuery = { q?: string; exam?: CatalogExam; goal?: LearningGoal; sort?: CatalogSort }
 export type WordStatus = 'new' | 'learning' | 'review' | 'mastered'

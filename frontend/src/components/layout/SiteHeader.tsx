@@ -3,12 +3,13 @@ import { NavLink } from 'react-router-dom'
 import { AuthDialog, type AuthMode } from '../account/AuthDialog'
 import { useAuth } from '../../hooks/useAuth'
 import { useTheme } from '../../hooks/useTheme'
-import { FeedbackDialog } from './FeedbackDialog'
+import { getEngagementApi } from '../../data/engagementApi'
 
 const NAVIGATION = [
   { to: '/', label: '查词', icon: 'search', end: true },
   { to: '/marketplace', label: '单词广场', icon: 'grid' },
   { to: '/wordbook', label: '我的单词本', icon: 'book' },
+  { to: '/messages', label: '留言', icon: 'feedback' },
 ]
 
 function NavIcon({ name }: { name: string }) {
@@ -65,17 +66,31 @@ export function SiteHeader() {
   const [authMode, setAuthMode] = useState<AuthMode | null>(null)
   const [logoutError, setLogoutError] = useState('')
   const [loggingOut, setLoggingOut] = useState(false)
-  const [feedbackOpen, setFeedbackOpen] = useState(false)
+  const [unreadMessages, setUnreadMessages] = useState(0)
   const [donationOpen, setDonationOpen] = useState(false)
   const [donationImageFailed, setDonationImageFailed] = useState(false)
   const accountMenuRef = useRef<HTMLDivElement>(null)
   const accountTriggerRef = useRef<HTMLButtonElement>(null)
-  const feedbackTriggerRef = useRef<HTMLButtonElement>(null)
   const donationMenuRef = useRef<HTMLDivElement>(null)
   const donationTriggerRef = useRef<HTMLButtonElement>(null)
   const { user, loading, login, register, logout } = useAuth()
   const { theme, toggleTheme } = useTheme()
   const donationImageUrl = import.meta.env.VITE_DONATION_IMAGE_URL?.trim()
+
+  useEffect(() => {
+    if (!user) { setUnreadMessages(0); return }
+    const api = getEngagementApi()
+    if (!api) return
+    let active = true
+    void api.unreadMessageCount().then((count) => { if (active) setUnreadMessages(count) }).catch(() => undefined)
+    return () => { active = false }
+  }, [user])
+
+  useEffect(() => {
+    const clear = () => setUnreadMessages(0)
+    window.addEventListener('vocab:messages-read', clear)
+    return () => window.removeEventListener('vocab:messages-read', clear)
+  }, [])
 
   function openAuth(mode: AuthMode) {
     setLogoutError('')
@@ -181,17 +196,9 @@ export function SiteHeader() {
           >
             <NavIcon name={icon} />
             {label}
+            {to === '/messages' && unreadMessages > 0 && <span className="nav-unread" aria-label={`${unreadMessages} 条未读回复`}>{unreadMessages > 99 ? '99+' : unreadMessages}</span>}
           </NavLink>
         ))}
-        <button
-          ref={feedbackTriggerRef}
-          type="button"
-          className="nav-link nav-action"
-          onClick={() => setFeedbackOpen(true)}
-        >
-          <NavIcon name="feedback" />
-          留言
-        </button>
         <div ref={donationMenuRef} className={`donation-menu${donationOpen ? ' open' : ''}`}>
           <button
             ref={donationTriggerRef}
@@ -292,9 +299,6 @@ export function SiteHeader() {
           register={register}
           returnFocus={accountTriggerRef.current}
         />
-      )}
-      {feedbackOpen && (
-        <FeedbackDialog onClose={() => setFeedbackOpen(false)} returnFocus={feedbackTriggerRef.current} />
       )}
     </header>
   )

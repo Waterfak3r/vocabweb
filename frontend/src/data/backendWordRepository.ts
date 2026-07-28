@@ -86,7 +86,6 @@ function parseBackendWordEntry(
     typeof value.phonetic !== 'string' ||
     value.source !== 'backend' ||
     !Array.isArray(value.meanings) ||
-    value.meanings.length === 0 ||
     value.meanings.length > 8
   ) {
     return null
@@ -100,12 +99,35 @@ function parseBackendWordEntry(
 
   const audioUrl = parseAudioUrl(value.audioUrl)
   if (audioUrl === null) return null
+  const zhMeaning = typeof value.zhMeaning === 'string' && value.zhMeaning.trim() ? value.zhMeaning.trim() : undefined
+  const availableLanguages = Array.isArray(value.availableLanguages)
+    ? value.availableLanguages.filter((language): language is 'zh' | 'en' => language === 'zh' || language === 'en')
+    : undefined
+  if (!meanings.length && !zhMeaning) return null
+  const sources = Array.isArray(value.sources)
+    ? value.sources.flatMap((source) => {
+        if (!isRecord(source)
+          || !['open_english_wordnet', 'ecdict', 'wiktapi'].includes(String(source.id))
+          || typeof source.name !== 'string' || typeof source.version !== 'string'
+          || typeof source.license !== 'string' || typeof source.url !== 'string') return []
+        return [{
+          id: source.id as 'open_english_wordnet' | 'ecdict' | 'wiktapi',
+          name: source.name,
+          version: source.version,
+          license: source.license,
+          url: source.url,
+        }]
+      })
+    : undefined
 
   return {
     word,
     phonetic: value.phonetic.trim(),
     audioUrl,
     meanings: meanings as WordMeaning[],
+    ...(zhMeaning ? { zhMeaning, zhMeaningSource: 'dictionary' as const } : {}),
+    ...(availableLanguages ? { availableLanguages } : {}),
+    ...(sources ? { sources } : {}),
     source: 'backend',
   }
 }

@@ -95,6 +95,36 @@ test("search reporting and feedback expose stable public API contracts", async (
   }
 });
 
+test("public message routes support guest threads, editing, and soft deletion", async () => {
+  const engagementStore = new MemoryEngagementStore();
+  const server = await startServer({ engagementStore });
+  const headers = { "content-type": "application/json", "X-Vocab-Client-Id": "guest-client-123" };
+  try {
+    const rootResponse = await fetch(`${server.baseUrl}/api/messages`, {
+      method: "POST", headers, body: JSON.stringify({ nickname: "学习者", content: "第一条留言" }),
+    });
+    assert.equal(rootResponse.status, 201);
+    const root = await rootResponse.json() as { id: string };
+    const replyResponse = await fetch(`${server.baseUrl}/api/messages`, {
+      method: "POST", headers, body: JSON.stringify({ nickname: "学习者", content: "补充回复", parentId: root.id }),
+    });
+    assert.equal(replyResponse.status, 201);
+    const listing = await fetch(`${server.baseUrl}/api/messages?limit=20`, { headers });
+    assert.equal(listing.status, 200);
+    assert.equal(((await listing.json()) as { items: unknown[] }).items.length, 2);
+    const edited = await fetch(`${server.baseUrl}/api/messages/${root.id}`, {
+      method: "PATCH", headers, body: JSON.stringify({ content: "修改后的留言" }),
+    });
+    assert.equal(edited.status, 200);
+    const deleted = await fetch(`${server.baseUrl}/api/messages/${root.id}`, { method: "DELETE", headers });
+    assert.equal(deleted.status, 204);
+    const after = await engagementStore.listMessages({ clientId: "guest-client-123" }, undefined, 20);
+    assert.equal(after.items.find((item) => item.id === root.id)?.status, "deleted");
+  } finally {
+    await server.close();
+  }
+});
+
 test("unknown routes return the shared 404 response", async () => {
   const server = await startServer();
   try {

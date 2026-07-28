@@ -7,6 +7,8 @@ import { AppShell } from './components/layout/AppShell'
 const HomePage = lazy(() => import('./pages/HomePage').then((m) => ({ default: m.HomePage })))
 const MarketplacePage = lazy(() => import('./pages/MarketplacePage').then((m) => ({ default: m.MarketplacePage })))
 const WordbookPage = lazy(() => import('./pages/WordbookPage').then((m) => ({ default: m.WordbookPage })))
+const MessagesPage = lazy(() => import('./pages/MessagesPage').then((m) => ({ default: m.MessagesPage })))
+const SourcesPage = lazy(() => import('./pages/SourcesPage').then((m) => ({ default: m.SourcesPage })))
 
 type ChunkErrorBoundaryState = { failed: boolean }
 
@@ -41,6 +43,8 @@ function App() {
           <Route index element={<HomePage />} />
           <Route path="marketplace" element={<MarketplacePage />} />
           <Route path="wordbook" element={<WordbookPage />} />
+          <Route path="messages" element={<MessagesPage />} />
+          <Route path="sources" element={<SourcesPage />} />
           <Route path="flashcards" element={<Navigate to="/wordbook?mode=flashcards" replace />} />
           <Route path="dictation" element={<Navigate to="/wordbook?mode=dictation" replace />} />
           <Route path="*" element={<Navigate to="/" replace />} />

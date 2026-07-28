@@ -14,11 +14,15 @@ import type { WordRepository } from './wordRepository'
 export function createWordRepository(
   apiBase: string | undefined = import.meta.env.VITE_API_BASE,
 ): WordRepository {
-  const remote = apiBase?.trim()
-    ? new BackendWordRepository(apiBase)
-    : new DictionaryApiRepository({
-        baseUrl: 'https://api.dictionaryapi.dev/api/v2/entries/en',
-      })
+  if (apiBase?.trim()) {
+    // The backend already composes OEWN + ECDICT + the online miss fallback.
+    // Bypassing it for the bundled IELTS sample would discard Chinese meanings
+    // and source attribution for common words.
+    return new BackendWordRepository(apiBase)
+  }
+  const remote = new DictionaryApiRepository({
+    baseUrl: 'https://api.dictionaryapi.dev/api/v2/entries/en',
+  })
 
   return new CompositeWordRepository(
     new LocalIeltsRepository(IELTS_WORDS),

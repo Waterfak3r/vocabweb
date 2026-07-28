@@ -1,6 +1,6 @@
 # Vacabweb 背单词
 
-本地优先的查词 + 背单词应用：React 前端可独立离线使用（查词、单词本、单词卡、听写）；Express 后端提供词典代理、账号同步、个人词本、学习统计，以及支持公开、邀请码和私密三档可见性的单词社区。
+本地优先的查词 + 背单词应用：生产后端预载 OEWN 2025 英文释义与 ECDICT 中文释义，仅在本地英文未命中时使用在线词典补充；React 前端支持中英文释义切换、单词本、单词卡和听写。Express 后端还提供账号同步、学习统计、单词社区与公开楼中楼留言板。
 
 ## 目录结构
 
@@ -65,6 +65,10 @@ docker compose up -d --build
 | `LOGIN_RATE_LIMIT_WINDOW_MS` | `900000` | 注册/登录认证限流窗口（毫秒） |
 | `LOGIN_RATE_LIMIT_MAX_REQUESTS` | `10` | 单 IP 每个认证限流窗口的最大尝试次数 |
 | `WIKTAPI_BASE_URL` | `https://api.wiktapi.dev/v1/en/word` | 词典查询上游地址 |
+| `DICTIONARY_FILE` | `../resources/dictionaries/generated/vocab.sqlite` | 构建生成的本地双语词典 |
+| `DICTIONARY_REMOTE_FALLBACK` | `true` | 本地英文未命中时是否启用在线补充 |
+| `STARTER_OWNER_USERNAME` | `Waterfak3r` | 5 本初始化社区词本的发布账号 |
+| `ADMIN_USERNAMES` | `Waterfak3r` | 留言板管理员账号，多个值以逗号分隔 |
 
 ### 数据备份
 
