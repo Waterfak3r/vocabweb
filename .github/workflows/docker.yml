@@ -73,6 +73,11 @@ jobs:
     environment: production
 
     steps:
+      - name: Checkout deployment files
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.build.outputs.commit_sha }}
+
       - name: Configure SSH
         shell: bash
         env:
@@ -87,32 +92,62 @@ jobs:
           printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
           chmod 600 "$HOME/.ssh/known_hosts"
 
-      - name: Deploy tested commit
+      - name: Upload Compose configuration
+        shell: bash
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+        run: |
+          test -n "$DEPLOY_HOST"
+          test -n "$DEPLOY_USER"
+          test -n "$DEPLOY_PATH"
+          ssh -o BatchMode=yes "$DEPLOY_USER@$DEPLOY_HOST" \
+            "test -d '$DEPLOY_PATH' && test -f '$DEPLOY_PATH/.env'"
+          scp -o BatchMode=yes \
+            docker-compose.yml Caddyfile \
+            "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/"
+
+      - name: Login server to GHCR
+        shell: bash
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          printf '%s' "$GHCR_TOKEN" | ssh \
+            -o BatchMode=yes \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+
+      - name: Pull and deploy image
         shell: bash
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
           COMMIT_SHA: ${{ needs.build.outputs.commit_sha }}
+          IMAGE_NAME: ${{ needs.build.outputs.image_name }}
         run: |
-          test -n "$DEPLOY_HOST"
-          test -n "$DEPLOY_USER"
-          test -n "$DEPLOY_PATH"
           test -n "$COMMIT_SHA"
+          test -n "$IMAGE_NAME"
           ssh \
             -o BatchMode=yes \
-            -o StrictHostKeyChecking=yes \
             "$DEPLOY_USER@$DEPLOY_HOST" \
-            bash -se -- "$DEPLOY_PATH" "$COMMIT_SHA" <<'REMOTE'
+            bash -se -- "$DEPLOY_PATH" "$IMAGE_NAME" "$COMMIT_SHA" <<'REMOTE'
           set -Eeuo pipefail
           deploy_path="$1"
-          commit_sha="$2"
+          image_name="$2"
+          commit_sha="$3"
 
           cd "$deploy_path"
-          git diff --quiet
-          git diff --cached --quiet
-          git fetch origin main
-          git cat-file -e "$commit_sha^{commit}"
-          git checkout --detach "$commit_sha"
-          docker compose up -d --build --remove-orphans --wait --wait-timeout 120
+          trap 'docker logout ghcr.io >/dev/null 2>&1 || true' EXIT
+          printf 'VACABWEB_IMAGE=%s:%s\n' "$image_name" "$commit_sha" > .deploy.env
+          docker compose --env-file .env --env-file .deploy.env pull
+          docker compose --env-file .env --env-file .deploy.env up \
+            -d \
+            --no-build \
+            --remove-orphans \
+            --wait \
+            --wait-timeout 120
           REMOTE

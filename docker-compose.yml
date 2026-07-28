@@ -2,7 +2,7 @@ services:
   vacabweb:
     build:
       context: .
-    image: vacabweb:latest
+    image: ${VACABWEB_IMAGE:-vacabweb:latest}
     restart: unless-stopped
     expose:
       - "3000"
