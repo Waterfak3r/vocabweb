@@ -105,7 +105,7 @@ jobs:
           ssh -o BatchMode=yes "$DEPLOY_USER@$DEPLOY_HOST" \
             "test -d '$DEPLOY_PATH' && test -f '$DEPLOY_PATH/.env'"
           scp -o BatchMode=yes \
-            docker-compose.yml Caddyfile \
+            docker-compose.yml \
             "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/"
 
       - name: Login server to GHCR
@@ -143,11 +143,11 @@ jobs:
           cd "$deploy_path"
           trap 'docker logout ghcr.io >/dev/null 2>&1 || true' EXIT
           printf 'VACABWEB_IMAGE=%s:%s\n' "$image_name" "$commit_sha" > .deploy.env
-          docker compose --env-file .env --env-file .deploy.env pull
+          docker compose --env-file .env --env-file .deploy.env pull vacabweb
           docker compose --env-file .env --env-file .deploy.env up \
             -d \
             --no-build \
-            --remove-orphans \
             --wait \
-            --wait-timeout 120
+            --wait-timeout 120 \
+            vacabweb
           REMOTE
