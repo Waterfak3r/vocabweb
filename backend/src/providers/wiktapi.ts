@@ -263,6 +263,31 @@ function isTimeout(error: unknown, signal: AbortSignal): boolean {
   );
 }
 
+function settleOnAbort<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) {
+    return Promise.reject(signal.reason);
+  }
+
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => {
+      signal.removeEventListener("abort", onAbort);
+      reject(signal.reason);
+    };
+
+    signal.addEventListener("abort", onAbort, { once: true });
+    operation.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
 export class WiktApiProvider implements WordProvider {
   private readonly baseUrl: string;
   private readonly timeoutMs: number;
@@ -290,20 +315,28 @@ export class WiktApiProvider implements WordProvider {
     const timeout = setTimeout(() => {
       controller.abort(new DOMException("WiktApi request timed out", "TimeoutError"));
     }, this.timeoutMs);
-    timeout.unref();
 
     const encodedQuery = encodeURIComponent(query);
     const requestOptions: RequestInit = {
       headers: { accept: "application/json" },
       signal: controller.signal,
     };
-    const definitionsRequest = Promise.resolve().then(() =>
-      this.fetchFn(`${this.baseUrl}/${encodedQuery}/definitions?lang=en`, requestOptions),
+    const definitionsRequest = settleOnAbort(
+      Promise.resolve().then(() =>
+        this.fetchFn(`${this.baseUrl}/${encodedQuery}/definitions?lang=en`, requestOptions),
+      ),
+      controller.signal,
     );
-    const fullEntryRequest = Promise.resolve().then(() =>
-      this.fetchFn(`${this.baseUrl}/${encodedQuery}?lang=en`, requestOptions),
+    const fullEntryRequest = settleOnAbort(
+      Promise.resolve().then(() =>
+        this.fetchFn(`${this.baseUrl}/${encodedQuery}?lang=en`, requestOptions),
+      ),
+      controller.signal,
     );
-    const pronunciationRequest = this.readOptionalPronunciation(fullEntryRequest);
+    const pronunciationRequest = this.readOptionalPronunciation(
+      fullEntryRequest,
+      controller.signal,
+    );
 
     try {
       const entry = await this.readRequiredDefinitions(
@@ -356,7 +389,7 @@ export class WiktApiProvider implements WordProvider {
 
     let payload: unknown;
     try {
-      payload = await response.json();
+      payload = await settleOnAbort(response.json(), signal);
     } catch (cause) {
       if (isTimeout(cause, signal)) {
         throw new WordProviderError("UPSTREAM_TIMEOUT", "WiktApi request timed out", { cause });
@@ -371,14 +404,17 @@ export class WiktApiProvider implements WordProvider {
     return mapWiktApiDefinitionsPayload(payload);
   }
 
-  private async readOptionalPronunciation(request: Promise<Response>): Promise<Pronunciation> {
+  private async readOptionalPronunciation(
+    request: Promise<Response>,
+    signal: AbortSignal,
+  ): Promise<Pronunciation> {
     try {
       const response = await request;
       if (!response.ok) {
         return { phonetic: "" };
       }
 
-      const payload: unknown = await response.json();
+      const payload: unknown = await settleOnAbort(response.json(), signal);
       return mapWiktApiPronunciationPayload(payload, this.accent);
     } catch {
       return { phonetic: "" };
