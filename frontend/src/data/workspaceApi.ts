@@ -14,6 +14,7 @@ export type CatalogQuery = { q?: string; exam?: CatalogExam; goal?: LearningGoal
 export type WordStatus = 'new' | 'learning' | 'review' | 'mastered'
 /** 熟练度档位：0 未学习 / 1 初识 / 2 熟悉 / 3 掌握 / 4 精通 */
 export type WordLevel = 0 | 1 | 2 | 3 | 4
+export type RecognitionStreak = 0 | 1 | 2
 export type LevelCounts = { l0: number; l1: number; l2: number; l3: number; l4: number }
 
 export type CatalogWordbook = {
@@ -122,6 +123,13 @@ export type UpdateWordInput = {
   refresh?: boolean
 }
 
+export type BatchWordAction = 'refresh-meanings' | 'delete' | 'mark-mastered'
+export type BatchWordResult = {
+  action: BatchWordAction
+  succeededIds: string[]
+  failed: Array<{ wordId: string; code: 'WORD_NOT_FOUND' | 'DICTIONARY_UNAVAILABLE' }>
+}
+
 type WorkspaceApiOptions = { fetch?: FetchLike; timeoutMs?: number; clientId?: () => string }
 
 export class WorkspaceApiError extends Error {
@@ -204,7 +212,7 @@ function isWordLevel(value: unknown): value is WordLevel {
   return value === 0 || value === 1 || value === 2 || value === 3 || value === 4
 }
 
-function parseWord(value: unknown): (WordbookItem & { status?: WordStatus; level?: WordLevel; levelReachedAt?: string; lastStudiedAt?: string }) | null {
+function parseWord(value: unknown): (WordbookItem & { status?: WordStatus; level?: WordLevel; levelReachedAt?: string; lastStudiedAt?: string; recognitionStreak?: RecognitionStreak }) | null {
   if (!isRecord(value) || !isText(value.id) || !isText(value.word) || !isText(value.phonetic) || !isText(value.addedAt) || !isText(value.source) || !Array.isArray(value.meanings) || (value.audioUrl !== undefined && !isText(value.audioUrl))) return null
   if (
     (value.zhMeaning !== undefined && !isText(value.zhMeaning))
@@ -219,6 +227,7 @@ function parseWord(value: unknown): (WordbookItem & { status?: WordStatus; level
   if (value.level !== undefined && !isWordLevel(value.level)) return null
   if (value.levelReachedAt !== undefined && !isText(value.levelReachedAt)) return null
   if (value.lastStudiedAt !== undefined && !isText(value.lastStudiedAt)) return null
+  if (value.recognitionStreak !== undefined && value.recognitionStreak !== 0 && value.recognitionStreak !== 1 && value.recognitionStreak !== 2) return null
   return {
     id: value.id,
     word: value.word,
@@ -233,6 +242,7 @@ function parseWord(value: unknown): (WordbookItem & { status?: WordStatus; level
     level: value.level,
     levelReachedAt: value.levelReachedAt,
     lastStudiedAt: value.lastStudiedAt,
+    recognitionStreak: value.recognitionStreak as RecognitionStreak | undefined,
   }
 }
 
@@ -361,6 +371,21 @@ export class WorkspaceApi {
   restoreMyWordbook(id: string) { return this.json(`api/my/wordbooks/${encodeURIComponent(id)}/restore`, { method: 'POST' }, parseMyWordbook) }
   listWords(id: string, status?: WordStatus) { const url = new URL(`api/my/wordbooks/${encodeURIComponent(id)}/words`, this.baseUrl); if (status) url.searchParams.set('status', status); return this.list(url, parseWord, 'word list') }
   updateWord(wordbookId: string, wordId: string, input: UpdateWordInput) { return this.json(`api/my/wordbooks/${encodeURIComponent(wordbookId)}/words/${encodeURIComponent(wordId)}`, { method: 'PATCH', body: JSON.stringify(input) }, parseWord) }
+  batchWords(wordbookId: string, action: BatchWordAction, wordIds: string[]) {
+    return this.json(
+      `api/my/wordbooks/${encodeURIComponent(wordbookId)}/words/batch`,
+      { method: 'POST', body: JSON.stringify({ action, wordIds }) },
+      (value): BatchWordResult | null => {
+        if (!isRecord(value) || value.action !== action || !Array.isArray(value.succeededIds) || !value.succeededIds.every(isText) || !Array.isArray(value.failed)) return null
+        const failed = value.failed.map((item) => isRecord(item) && isText(item.wordId) && (item.code === 'WORD_NOT_FOUND' || item.code === 'DICTIONARY_UNAVAILABLE')
+          ? { wordId: item.wordId, code: item.code }
+          : null)
+        return failed.some((item) => item === null)
+          ? null
+          : { action, succeededIds: value.succeededIds, failed: failed as BatchWordResult['failed'] }
+      },
+    )
+  }
   getDashboard(id: string) { return this.json(`api/study/dashboard/${encodeURIComponent(id)}`, {}, parseDashboard) }
   recordStudyEvent(event: LearningEvent) { return this.json('api/study/events', { method: 'POST', body: JSON.stringify(event) }, (value) => value) }
   /** Adds one word to a wordbook; the backend supplements dictionary data. 200 means it was already there. */

@@ -85,7 +85,7 @@ export class MemoryEngagementStore implements EngagementStore {
     this.feedback.push(record);
     return { id: record.id, createdAt: record.createdAt };
   }
-  async listMessages(actor: MessageActor | null): Promise<MessagePage> {
+  async listMessages(actor: MessageActor | null, _cursor?: string, _limit?: number): Promise<MessagePage> {
     return { items: this.messages.map((item) => this.dto(item, actor)) };
   }
   async createMessage(actor: MessageActor, input: { content: string; nickname?: string; contact?: string; parentId?: string }): Promise<MessageDto | null> {

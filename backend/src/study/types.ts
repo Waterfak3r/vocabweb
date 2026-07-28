@@ -67,7 +67,13 @@ export interface WordbookProgress { mastered: number; learning: number; review: 
  * `lastStudiedAt` (occurredAt of the last event of ANY kind, mark included) drives the spaced-review
  * due rule and is omitted only when the word has never been touched.
  */
-export type StudiedWord = WordbookWord & { level: WordLevel; levelReachedAt?: string; lastStudiedAt?: string };
+export type StudiedWord = WordbookWord & {
+  level: WordLevel;
+  levelReachedAt?: string;
+  lastStudiedAt?: string;
+  /** Consecutive "know" verdicts while the word is still L0. */
+  recognitionStreak: 0 | 1 | 2;
+};
 export interface LearningQueueItem extends StudiedWord { status: WordLearningStatus; }
 
 export interface StudyDashboard {
@@ -131,6 +137,18 @@ export interface UpdateWordInput {
   word?: string; zhMeaning?: string | null; phonetic?: string; audioUrl?: string | null; meanings?: StudyMeaning[];
 }
 export type UpdateWordResult = { kind: "updated"; word: StudiedWord } | { kind: "not-found" } | { kind: "duplicate" } | { kind: "lookup-failed" };
+export type BatchWordAction = "refresh-meanings" | "delete" | "mark-mastered";
+export interface BatchWordInput {
+  action: BatchWordAction;
+  wordIds: string[];
+  /** Dictionary matches keyed by word id; used only for refresh-meanings. */
+  rematched?: Record<string, StudyWordEntry>;
+}
+export interface BatchWordResult {
+  action: BatchWordAction;
+  succeededIds: string[];
+  failed: Array<{ wordId: string; code: "WORD_NOT_FOUND" | "DICTIONARY_UNAVAILABLE" }>;
+}
 
 /** A registered account. `clientId` is the account's data home (the anonymous id adopted at registration). */
 export interface AccountUser { id: string; username: string; passwordHash: string; clientId: string; createdAt: string; }
@@ -169,6 +187,7 @@ export interface StudyStore {
   purgeMyWordbook(clientId: string, id: string): Promise<boolean>;
   deleteCatalogUpload(clientId: string, id: string): Promise<boolean>;
   updateWord(clientId: string, wordbookId: string, wordId: string, input: UpdateWordInput, rematched?: StudyWordEntry, options?: { lookupFailed?: boolean }): Promise<UpdateWordResult>;
+  batchWords(clientId: string, wordbookId: string, input: BatchWordInput): Promise<BatchWordResult | null>;
   createImportDrafts(clientId: string, input: CreateImportDraftInput): Promise<ImportDraft[]>;
   resolveImportDraftEntries(clientId: string, id: string, entries: ResolvedImportDraftEntry[]): Promise<ImportDraft | null>;
   listImportDrafts(clientId: string): Promise<ImportDraft[]>;

@@ -2,7 +2,7 @@ import { isValidWordQuery, normalizeWord } from "../words/normalize.js";
 import {
   WORD_SOURCES, type CatalogExam, type CatalogQuery, type CatalogSort, type CommitImportDraftInput, type CreateImportDraftInput,
   type CreateMyWordbookInput, type ImportLineInput, type ImportResolution, type LearningEventInput, type LearningGoal,
-  type StudyMeaning, type StudyWordEntry, type UpdateCatalogWordbookInput, type UpdateWordInput, type UploadCatalogWordbookInput,
+  type BatchWordAction, type StudyMeaning, type StudyWordEntry, type UpdateCatalogWordbookInput, type UpdateWordInput, type UploadCatalogWordbookInput,
   type WordLearningStatus, type WordLevel, type WordSource, type ZhMeaningSource,
 } from "./types.js";
 
@@ -25,6 +25,16 @@ export function parseResourceId(value: unknown): string | null {
 export function parseWordId(value: unknown): string | null {
   const id = typeof value === "string" ? value.trim() : "";
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id) ? id : null;
+}
+export function parseBatchWords(value: unknown): { action: BatchWordAction; wordIds: string[] } | null {
+  if (!isJsonObject(value)) return null;
+  const action = value.action;
+  if (action !== "refresh-meanings" && action !== "delete" && action !== "mark-mastered") return null;
+  if (!Array.isArray(value.wordIds) || value.wordIds.length === 0 || value.wordIds.length > 10_000) return null;
+  const wordIds = value.wordIds.map(parseWordId);
+  if (wordIds.some((id) => id === null)) return null;
+  const unique = [...new Set(wordIds as string[])];
+  return unique.length === wordIds.length ? { action, wordIds: unique } : null;
 }
 export function parseShareCode(value: unknown): string | null {
   const code = typeof value === "string" ? value.trim().toUpperCase() : "";

@@ -42,6 +42,7 @@ export function Flashcard({
     meaningPreference: 'zh',
     showExamples: true,
     showPhonetic: true,
+    autoPlayAudio: true,
   },
 }: FlashcardProps) {
   const meanings = preferredMeanings(item, preferences.meaningPreference)

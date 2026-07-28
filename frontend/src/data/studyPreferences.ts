@@ -7,6 +7,7 @@ export type StudyDisplayPreferences = {
   meaningPreference: MeaningPreference
   showExamples: boolean
   showPhonetic: boolean
+  autoPlayAudio: boolean
 }
 
 export type DictationDisplayPreferences = StudyDisplayPreferences & {
@@ -40,11 +41,13 @@ export const DEFAULT_STUDY_PREFERENCES: WordbookStudyPreferences = {
       meaningPreference: 'zh',
       showExamples: true,
       showPhonetic: true,
+      autoPlayAudio: true,
     },
     review: {
       meaningPreference: 'zh',
       showExamples: true,
       showPhonetic: true,
+      autoPlayAudio: true,
     },
     dictation: {
       meaningPreference: 'zh',
@@ -85,6 +88,9 @@ function displayPreferences(
     showPhonetic: typeof value.showPhonetic === 'boolean'
       ? value.showPhonetic
       : fallback.showPhonetic,
+    autoPlayAudio: typeof value.autoPlayAudio === 'boolean'
+      ? value.autoPlayAudio
+      : fallback.autoPlayAudio,
   }
 }
 

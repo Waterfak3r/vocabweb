@@ -25,7 +25,12 @@ export function toWordbookWords(words: StudyWordEntry[], at: string): WordbookWo
 export function toCatalogWords(words: WordbookWord[]): StudyWordEntry[] { return words.map(({ id: _id, addedAt: _addedAt, ...word }) => clone(word)); }
 export function defaultClient(): ClientData { return { favorites: [], wordbooks: [], events: [], drafts: [] }; }
 
-export interface WordLadderState { level: WordLevel; levelReachedAt?: string; lastStudiedAt?: string; }
+export interface WordLadderState {
+  level: WordLevel;
+  levelReachedAt?: string;
+  lastStudiedAt?: string;
+  recognitionStreak: 0 | 1 | 2;
+}
 /**
  * Replay one word's full event history into its proficiency ladder state. Events must arrive
  * oldest-first (ties keep insertion order). `levelReachedAt` is the occurredAt of the event that
@@ -35,11 +40,21 @@ export interface WordLadderState { level: WordLevel; levelReachedAt?: string; la
 export function replayLadder(events: LearningEvent[], onEvent?: (event: LearningEvent, level: WordLevel) => void): WordLadderState {
   let level: WordLevel = 0;
   let levelReachedAt: string | undefined;
+  let recognitionStreak: 0 | 1 | 2 = 0;
   for (const event of events) {
     const previous: WordLevel = level;
     switch (event.kind) {
-      case "new": // Seeing a word (any verdict, absent = know) confirms 初识.
-        level = Math.max(level, 1) as WordLevel; break;
+      case "new":
+        // New words require three consecutive recognition passes. Legacy events
+        // without a verdict count as "know", preserving forward progress.
+        if (level === 0) {
+          if (event.verdict === "unknown") recognitionStreak = 0;
+          else if (recognitionStreak === 2) {
+            level = 1;
+            recognitionStreak = 0;
+          } else recognitionStreak = (recognitionStreak + 1) as 1 | 2;
+        }
+        break;
       case "flashcard": // 认识 climbs one rung but flashcards can never pass L2; 不认识 demotes to a floor of L1.
         level = event.verdict === "know" ? (level < 2 ? (level + 1) as WordLevel : level) : Math.max(1, level - 1) as WordLevel; break;
       case "dictation":
@@ -50,7 +65,9 @@ export function replayLadder(events: LearningEvent[], onEvent?: (event: Learning
         } else level = Math.max(1, level - 1) as WordLevel;
         break;
       case "mark": // Manual override to an exact rung.
-        level = event.level; break;
+        level = event.level;
+        recognitionStreak = 0;
+        break;
     }
     if (level !== previous || event.kind === "mark") levelReachedAt = event.occurredAt;
     onEvent?.(event, level);
@@ -58,7 +75,7 @@ export function replayLadder(events: LearningEvent[], onEvent?: (event: Learning
   // Events arrive oldest-first, so the tail is the most recent touch of ANY kind (mark included) —
   // the spaced-review clock's "last studied" stamp.
   const lastStudiedAt = events.length ? events[events.length - 1]!.occurredAt : undefined;
-  return { level, ...(levelReachedAt !== undefined ? { levelReachedAt } : {}), ...(lastStudiedAt !== undefined ? { lastStudiedAt } : {}) };
+  return { level, recognitionStreak, ...(levelReachedAt !== undefined ? { levelReachedAt } : {}), ...(lastStudiedAt !== undefined ? { lastStudiedAt } : {}) };
 }
 /**
  * Bucket a wordbook's events by wordId in one pass. Each bucket is stable-sorted by occurredAt so
@@ -85,10 +102,10 @@ export function ladderEventLevels(events: LearningEvent[]): Map<string, WordLeve
   for (const bucket of bucketByWord(events).values()) replayLadder(bucket, (event, level) => after.set(event.id, level));
   return after;
 }
-export function ladderOf(states: Map<string, WordLadderState>, wordId: string): WordLadderState { return states.get(wordId) ?? { level: 0 }; }
+export function ladderOf(states: Map<string, WordLadderState>, wordId: string): WordLadderState { return states.get(wordId) ?? { level: 0, recognitionStreak: 0 }; }
 // Legacy 4-status compat kept for the ?status= filter: L0 new / L1 learning / L2 review / L3-L4 mastered.
 function statusFromLevel(level: WordLevel): WordLearningStatus { return level === 0 ? "new" : level === 1 ? "learning" : level === 2 ? "review" : "mastered"; }
-function studiedWordOf(word: WordbookWord, state: WordLadderState): StudiedWord { return { ...clone(word), level: state.level, ...(state.levelReachedAt !== undefined ? { levelReachedAt: state.levelReachedAt } : {}), ...(state.lastStudiedAt !== undefined ? { lastStudiedAt: state.lastStudiedAt } : {}) }; }
+function studiedWordOf(word: WordbookWord, state: WordLadderState): StudiedWord { return { ...clone(word), level: state.level, recognitionStreak: state.recognitionStreak, ...(state.levelReachedAt !== undefined ? { levelReachedAt: state.levelReachedAt } : {}), ...(state.lastStudiedAt !== undefined ? { lastStudiedAt: state.lastStudiedAt } : {}) }; }
 export { studiedWordOf as studiedWord };
 export function queueItem(word: WordbookWord, state: WordLadderState): LearningQueueItem { return { ...studiedWordOf(word, state), status: statusFromLevel(state.level) }; }
 /**

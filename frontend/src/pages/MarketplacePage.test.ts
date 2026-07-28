@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   filterMarketplaceBooks,
   marketplaceCatalogQuery,
+  parseMarketplaceCollection,
   type MarketplaceBook,
 } from './MarketplacePage'
 
@@ -32,6 +33,12 @@ function book(
 }
 
 describe('MarketplacePage catalog filtering', () => {
+  it('supports direct favorite/upload collection URLs and safely falls back', () => {
+    expect(parseMarketplaceCollection('favorites')).toBe('favorites')
+    expect(parseMarketplaceCollection('uploads')).toBe('uploads')
+    expect(parseMarketplaceCollection('unknown')).toBe('all')
+  })
+
   it('narrows a single selection server-side but never lets multi-select OR get cropped', () => {
     expect(marketplaceCatalogQuery(['IELTS'], ['阅读'], 'popular')).toEqual({
       exam: 'IELTS',

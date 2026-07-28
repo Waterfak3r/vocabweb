@@ -11,7 +11,7 @@ import {
 } from "./ladder.js";
 import type { ClientData, State } from "./ladder.js";
 import type {
-  AccountUser, CatalogCard, CatalogQuery, CatalogWordbook, CommitImportDraftInput, CreateImportDraftInput, CreateMyWordbookInput,
+  AccountUser, BatchWordInput, BatchWordResult, CatalogCard, CatalogQuery, CatalogWordbook, CommitImportDraftInput, CreateImportDraftInput, CreateMyWordbookInput,
   ImportDraft, ImportDraftEntry, LearningEvent, LearningEventInput, LearningQueueItem, MyWordbook, MyWordbookCard,
   ResolvedImportDraftEntry, StudyDashboard, StudyStore, StudyWordEntry, UpdateCatalogWordbookInput, UpdateWordInput,
   UpdateWordResult, UploadCatalogWordbookInput, WordbookWord, WordLearningStatus, WordLevel,
@@ -302,6 +302,61 @@ export abstract class BaseStore implements StudyStore {
     const ladderState = ladderOf(ladderStates(client.events.filter((event) => event.wordbookId === wordbookId)), target.id);
     return { kind: "updated", word: studiedWord(target, ladderState) };
   }); }
+  async batchWords(clientId: string, wordbookId: string, input: BatchWordInput): Promise<BatchWordResult | null> { return await this.mutate((state) => {
+    const client = this.client(state, clientId);
+    const book = client.wordbooks.find((item) => item.id === wordbookId && !item.deletedAt);
+    if (!book) return null;
+    const succeededIds: string[] = [];
+    const failed: BatchWordResult["failed"] = [];
+    const requested = new Set(input.wordIds);
+    const existingIds = new Set(book.words.filter((word) => requested.has(word.id)).map((word) => word.id));
+    for (const wordId of input.wordIds) if (!existingIds.has(wordId)) failed.push({ wordId, code: "WORD_NOT_FOUND" });
+
+    if (input.action === "delete") {
+      book.words = book.words.filter((word) => {
+        if (!existingIds.has(word.id)) return true;
+        succeededIds.push(word.id);
+        return false;
+      });
+      client.events = client.events.filter((event) => event.wordbookId !== wordbookId || !existingIds.has(event.wordId));
+    } else if (input.action === "mark-mastered") {
+      const at = this.now().toISOString();
+      for (const word of book.words) {
+        if (!existingIds.has(word.id)) continue;
+        client.events.push({
+          kind: "mark", wordbookId, word: word.word, wordId: word.id,
+          level: 4, id: randomUUID(), occurredAt: at,
+        });
+        succeededIds.push(word.id);
+      }
+    } else {
+      for (const word of book.words) {
+        if (!existingIds.has(word.id)) continue;
+        const rematched = input.rematched?.[word.id];
+        if (!rematched) {
+          failed.push({ wordId: word.id, code: "DICTIONARY_UNAVAILABLE" });
+          continue;
+        }
+        const customChinese = word.zhMeaningSource === "user";
+        word.phonetic = rematched.phonetic;
+        word.meanings = clone(rematched.meanings);
+        word.source = rematched.source;
+        if (rematched.audioUrl) word.audioUrl = rematched.audioUrl; else delete word.audioUrl;
+        if (!customChinese) {
+          if (rematched.zhMeaning) {
+            word.zhMeaning = rematched.zhMeaning;
+            word.zhMeaningSource = rematched.zhMeaningSource;
+          } else {
+            delete word.zhMeaning;
+            delete word.zhMeaningSource;
+          }
+        }
+        succeededIds.push(word.id);
+      }
+    }
+    if (succeededIds.length) book.updatedAt = this.now().toISOString();
+    return { action: input.action, succeededIds, failed };
+  }); }
   async createImportDrafts(clientId: string, input: CreateImportDraftInput): Promise<ImportDraft[]> { return await this.mutate((state) => {
     const client = this.client(state, clientId);
     const cutoff = this.now().getTime() - RETENTION_MS;
@@ -398,8 +453,12 @@ export abstract class BaseStore implements StudyStore {
     // today's completed tallies, but still surfaced in recentActivity (with their level) below.
     const studyEvents = events.filter((event) => event.kind !== "mark");
     const todayEvents = studyEvents.filter((event) => day(new Date(event.occurredAt)) === today);
+    const afterById = ladderEventLevels(events);
     const count = (items: LearningEvent[], kind: LearningEvent["kind"]) => items.filter((event) => event.kind === kind).length;
-    const completedNew = count(todayEvents, "new"); const completedReview = count(todayEvents, "flashcard"); const completedDictation = count(todayEvents, "dictation");
+    // Three recognition taps belong to one learned word. Count only the event
+    // that actually crosses L0 -> L1 so daily progress remains word-based.
+    const completedNew = todayEvents.filter((event) => event.kind === "new" && afterById.get(event.id) === 1).length;
+    const completedReview = count(todayEvents, "flashcard"); const completedDictation = count(todayEvents, "dictation");
     const states = ladderStates(events); const bookProgress = progress(book, events); const { levels } = bookProgress;
     // Availability per contract: 新词学习 from l0, 听写训练 from l2+l3+l4; 复习巩固 is the DUE count (below).
     const newAvailable = levels.l0; const dictationAvailable = levels.l2 + levels.l3 + levels.l4;
@@ -418,9 +477,9 @@ export abstract class BaseStore implements StudyStore {
     // Same 7 calendar days as the calendar block so both widgets always agree.
     const weekDays = new Set(calendar.map((item) => item.date));
     const weekEvents = studyEvents.filter((event) => weekDays.has(day(new Date(event.occurredAt))));
-    const weekNew = count(weekEvents, "new"); const weekReview = count(weekEvents, "flashcard"); const weekDictation = count(weekEvents, "dictation");
+    const weekNew = weekEvents.filter((event) => event.kind === "new" && afterById.get(event.id) === 1).length;
+    const weekReview = count(weekEvents, "flashcard"); const weekDictation = count(weekEvents, "dictation");
     // The 结果 column shows the proficiency a word held right after each study action.
-    const afterById = ladderEventLevels(events);
     // Reverse first so equal-millisecond events retain newest-insertion-first
     // ordering under JavaScript's stable sort.
     return { wordbook: card(book, events), todayPlan: { new: { target: Math.min(20, Math.max(completedNew, newAvailable)), completed: completedNew }, review: { target: Math.min(30, Math.max(completedReview, reviewAvailable)), completed: completedReview }, dictation: { target: Math.min(15, Math.max(completedDictation, dictationAvailable)), completed: completedDictation } }, recentActivity: clone([...events].reverse().sort((a, b) => b.occurredAt.localeCompare(a.occurredAt)).slice(0, 5)).map((event) => ({ ...event, levelAfter: afterById.get(event.id) ?? 0 as WordLevel })), calendar, week: { newCount: weekNew, reviewCount: weekReview, dictationCount: weekDictation, total: weekNew + weekReview + weekDictation }, streakDays: streak, finalCheckDue, updatedAt: book.updatedAt };

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import {
   getWorkspaceApi,
   WorkspaceApiError,
@@ -67,6 +67,10 @@ const VISIBILITY_OPTIONS: Array<{ value: CatalogVisibility; label: string; hint:
 const VISIBILITY_LABELS: Record<CatalogVisibility, string> = { public: '公开', unlisted: '邀请码', private: '私密' }
 const PUBLIC_LOGIN_HINT = '公开上传需要登录账号'
 const MODAL_FOCUSABLE = 'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [href], [tabindex]:not([tabindex="-1"])'
+
+export function parseMarketplaceCollection(value: string | null): 'all' | 'favorites' | 'uploads' {
+  return value === 'favorites' || value === 'uploads' ? value : 'all'
+}
 
 // Prefer the structured API status; retain the message fallback for older
 // injected repositories used by tests and local integrations.
@@ -160,6 +164,9 @@ function Toggle({ checked, onChange, label }: { checked: boolean; onChange: () =
 
 export function MarketplacePage() {
   useDocumentTitle('单词广场')
+  const [searchParams] = useSearchParams()
+  const collection = parseMarketplaceCollection(searchParams.get('collection'))
+  const focusId = searchParams.get('focus')
   const [query, setQuery] = useState('')
   const [activeCategory, setActiveCategory] = useState('全部')
   const [examFilters, setExamFilters] = useState<string[]>([])
@@ -266,7 +273,22 @@ export function MarketplacePage() {
     }
   }, [showPublish])
 
-  const books = useMemo(() => (remoteCatalog ?? []).map(catalogToMarketplace), [remoteCatalog])
+  const activeCatalog = useMemo(() => collection === 'favorites'
+    ? (favoritesCatalog ?? (remoteCatalog ?? []).filter((book) => book.favorited))
+    : collection === 'uploads'
+      ? (uploadsCatalog ?? (remoteCatalog ?? []).filter((book) => book.uploaded))
+      : remoteCatalog, [collection, favoritesCatalog, remoteCatalog, uploadsCatalog])
+  const books = useMemo(() => {
+    const source = [...(activeCatalog ?? [])]
+    if (collection !== 'all') {
+      source.sort((left, right) => sort === 'latest'
+        ? right.createdAt.localeCompare(left.createdAt)
+        : sort === 'rating'
+          ? right.rating - left.rating
+          : right.uses - left.uses)
+    }
+    return source.map(catalogToMarketplace)
+  }, [activeCatalog, collection, sort])
   // Preserve the server's hot/newest/rating order; filtering must never replace
   // "热门" with an unrelated word-count ordering.
   const filtered = useMemo(
@@ -287,6 +309,11 @@ export function MarketplacePage() {
   const myFavorites = (favoritesCatalog ?? (remoteCatalog ?? []).filter((book) => book.favorited)).map(catalogToMarketplace)
   const findOwnUpload = (id: string): CatalogWordbook | null => (uploadsCatalog ?? []).find((book) => book.id === id) ?? remoteCatalog?.find((book) => book.id === id) ?? null
   const selectedSource = personalWordbooks.find((book) => book.id === publishForm.sourceWordbookId)
+
+  useEffect(() => {
+    if (!focusId || !filtered.some((book) => book.id === focusId)) return
+    window.requestAnimationFrame(() => document.getElementById(`market-book-${focusId}`)?.scrollIntoView({ block: 'center', behavior: 'smooth' }))
+  }, [filtered, focusId])
 
   function toggleFilter(value: string, setValue: Dispatch<SetStateAction<string[]>>) {
     setValue((values) => values.includes(value) ? values.filter((item) => item !== value) : [...values, value])
@@ -505,13 +532,15 @@ export function MarketplacePage() {
 
         <div className="market-content">
           {(syncMessage || loadError) && <p className="market-sync-note" role="status">{syncMessage || loadError}</p>}
+          {collection !== 'all' && <div className="market-collection-heading"><div><p className="marginal">个人集合</p><h2>{collection === 'favorites' ? '我的全部收藏' : '我的全部上传'}</h2></div><Link to="/marketplace">返回全部词库</Link></div>}
           <div className="market-toolbar"><div className="category-tabs" role="tablist" aria-label="词库类别">{MARKETPLACE_CATEGORIES.map((category) => <button key={category} type="button" role="tab" aria-selected={activeCategory === category} className={activeCategory === category ? 'active' : ''} onClick={() => setActiveCategory(category)}>{category}</button>)}</div><div className="view-controls"><select value={sort} onChange={(event) => setSort(event.target.value as typeof sort)} aria-label="排序"><option value="popular">推荐排序</option><option value="latest">最新上传</option><option value="rating">评分最高</option></select><button className={view === 'grid' ? 'active' : ''} type="button" aria-label="网格视图" onClick={() => setView('grid')}><MarketplaceIcon name="grid" /></button><button className={view === 'list' ? 'active' : ''} type="button" aria-label="列表视图" onClick={() => setView('list')}><MarketplaceIcon name="list" /></button></div></div>
-          {remoteCatalog === null ? <div className="market-empty"><h2>正在加载词库</h2></div> : filtered.length ? <div className={`market-book-grid ${view === 'list' ? 'list-view' : ''}`}>{filtered.map((book) => <article className="market-book-card" key={book.id}><div className="market-card-cover"><BookCover tone={book.tone} label={book.shortLabel} /></div><div className="market-card-body"><h2>{book.title}</h2><p>{book.description}</p><small>作者：{book.author}</small><div className="market-metrics"><span><MarketplaceIcon name="book" />{book.wordCount}词</span><span><MarketplaceIcon name="star" />{book.rating}</span><span><MarketplaceIcon name="people" />{book.learners}</span></div>{book.uploaded && book.visibility && <div className="market-own-meta"><span className={`visibility-badge visibility-${book.visibility}`}>{VISIBILITY_LABELS[book.visibility]}</span>{book.visibility === 'unlisted' && <button type="button" className="copy-invite" onClick={() => void copyShareCode(book)}>复制邀请码</button>}</div>}<div className="market-card-actions"><button type="button" className={favoriteIds.has(book.id) ? 'liked' : ''} aria-label="切换收藏" onClick={() => void toggleFavorite(book.id)}><MarketplaceIcon name="heart" /></button>{book.uploaded ? <span className="market-upload-actions"><button type="button" className="refresh-snapshot" onClick={() => void openPublish(remoteCatalog.find((item) => item.id === book.id) ?? null)}><MarketplaceIcon name="refresh" />更新快照</button><button type="button" className="delete-upload" onClick={() => void deleteUpload(book)}>删除</button></span> : <button type="button" className="join-book" onClick={() => void joinBook(book)}>{book.added ? '已加入词本' : '加入词本'}</button>}</div></div></article>)}</div> : <div className="market-empty"><h2>{loadError ? '单词广场加载失败' : hasActiveFilters ? '没有找到匹配的词库' : '单词广场还是空的'}</h2><p>{loadError || (hasActiveFilters ? '试试放宽筛选条件。' : '上传第一本共享词库，或使用分享码导入。')}</p>{loadError || hasActiveFilters ? <button type="button" onClick={() => void refreshRemote()}>重新加载</button> : <button type="button" onClick={() => void openPublish()}>上传第一本词库</button>}</div>}
+          {activeCatalog === null ? <div className="market-empty"><h2>正在加载词库</h2></div> : filtered.length ? <div className={`market-book-grid ${view === 'list' ? 'list-view' : ''}`}>{filtered.map((book) => <article id={`market-book-${book.id}`} className={`market-book-card${focusId === book.id ? ' is-focused' : ''}`} key={book.id}><div className="market-card-cover"><BookCover tone={book.tone} label={book.shortLabel} /></div><div className="market-card-body"><h2>{book.title}</h2><p>{book.description}</p><small>作者：{book.author}</small><div className="market-metrics"><span><MarketplaceIcon name="book" />{book.wordCount}词</span><span><MarketplaceIcon name="star" />{book.rating}</span><span><MarketplaceIcon name="people" />{book.learners}</span></div>{book.uploaded && book.visibility && <div className="market-own-meta"><span className={`visibility-badge visibility-${book.visibility}`}>{VISIBILITY_LABELS[book.visibility]}</span>{book.visibility === 'unlisted' && <button type="button" className="copy-invite" onClick={() => void copyShareCode(book)}>复制邀请码</button>}</div>}<div className="market-card-actions"><button type="button" className={favoriteIds.has(book.id) ? 'liked' : ''} aria-label="切换收藏" onClick={() => void toggleFavorite(book.id)}><MarketplaceIcon name="heart" /></button>{book.uploaded ? <span className="market-upload-actions"><button type="button" className="refresh-snapshot" onClick={() => void openPublish(findOwnUpload(book.id))}><MarketplaceIcon name="refresh" />更新快照</button><button type="button" className="delete-upload" onClick={() => void deleteUpload(book)}>删除</button></span> : <button type="button" className="join-book" onClick={() => void joinBook(book)}>{book.added ? '已加入词本' : '加入词本'}</button>}</div></div></article>)}</div> : <div className="market-empty"><h2>{loadError ? '单词广场加载失败' : hasActiveFilters ? '没有找到匹配的词库' : collection === 'favorites' ? '还没有收藏词库' : collection === 'uploads' ? '还没有上传词库' : '单词广场还是空的'}</h2><p>{loadError || (hasActiveFilters ? '试试放宽筛选条件。' : collection === 'favorites' ? '在广场点击爱心后，收藏会出现在这里。' : collection === 'uploads' ? '上传个人词本后，可在这里统一管理。' : '上传第一本共享词库，或使用分享码导入。')}</p>{loadError || hasActiveFilters ? <button type="button" onClick={() => void refreshRemote()}>重新加载</button> : collection === 'all' ? <button type="button" onClick={() => void openPublish()}>上传第一本词库</button> : null}</div>}
           <div className="market-collections">
-            <Collection title="我的收藏" icon="star" books={myFavorites} favorites={favoriteIds} onToggleFavorite={(id) => void toggleFavorite(id)} />
+            <Collection title="我的收藏" icon="star" collection="favorites" books={myFavorites} favorites={favoriteIds} onToggleFavorite={(id) => void toggleFavorite(id)} />
             <Collection
               title="我的上传"
               icon="cloud"
+              collection="uploads"
               books={myUploads}
               favorites={favoriteIds}
               canPublishPublic={isLoggedIn}
@@ -534,6 +563,7 @@ export function MarketplacePage() {
 type CollectionProps = {
   title: string
   icon: 'star' | 'cloud'
+  collection: 'favorites' | 'uploads'
   books: MarketplaceBook[]
   favorites: Set<string>
   canPublishPublic?: boolean
@@ -545,6 +575,6 @@ type CollectionProps = {
   onSetVisibility?: (id: string, visibility: CatalogVisibility) => void
 }
 
-function Collection({ title, icon, books, favorites, canPublishPublic = false, updatingVisibilityIds = new Set(), onToggleFavorite, onUpdate, onDelete, onCopyInvite, onSetVisibility }: CollectionProps) {
-  return <section className="mini-collection"><header><h2><MarketplaceIcon name={icon} />{title}</h2><Link to="/wordbook">查看全部 ›</Link></header>{books.length ? <div>{books.slice(0, 2).map((book) => <article key={book.id}><BookCover tone={book.tone} label={book.shortLabel} /><span><strong>{book.title}</strong><small>{book.wordCount || '新建'}词 ｜ {book.author}</small>{(onUpdate || onDelete || onCopyInvite || (onSetVisibility && book.visibility)) && <span className="collection-manage">{onSetVisibility && book.visibility && <select className="collection-visibility" value={book.visibility} aria-label={`修改「${book.title}」的可见性`} disabled={updatingVisibilityIds.has(book.id)} onChange={(event) => onSetVisibility(book.id, event.target.value as CatalogVisibility)}>{VISIBILITY_OPTIONS.map((option) => <option key={option.value} value={option.value} disabled={option.value === 'public' && !canPublishPublic}>{option.label}</option>)}</select>}{onCopyInvite && book.visibility === 'unlisted' && <button className="collection-copy-invite" type="button" onClick={() => onCopyInvite(book.id)}>复制邀请码</button>}{onUpdate && <button className="collection-update" type="button" onClick={() => onUpdate(book.id)}>更新快照</button>}{onDelete && <button className="collection-delete" type="button" onClick={() => onDelete(book.id)}>删除</button>}</span>}</span><button type="button" className={favorites.has(book.id) ? 'liked' : ''} aria-label="切换收藏" onClick={() => onToggleFavorite(book.id)}><MarketplaceIcon name="heart" /></button></article>)}</div> : <p className="collection-empty">还没有内容，去发现一本喜欢的词库吧。</p>}</section>
+function Collection({ title, icon, collection, books, favorites, canPublishPublic = false, updatingVisibilityIds = new Set(), onToggleFavorite, onUpdate, onDelete, onCopyInvite, onSetVisibility }: CollectionProps) {
+  return <section className="mini-collection"><header><h2><MarketplaceIcon name={icon} />{title}</h2><Link to={`/marketplace?collection=${collection}`}>查看全部 ›</Link></header>{books.length ? <div>{books.slice(0, 2).map((book) => <article key={book.id}><BookCover tone={book.tone} label={book.shortLabel} /><span><strong>{book.title}</strong><small>{book.wordCount || '新建'}词 ｜ {book.author}</small>{(onUpdate || onDelete || onCopyInvite || (onSetVisibility && book.visibility)) && <span className="collection-manage">{onSetVisibility && book.visibility && <select className="collection-visibility" value={book.visibility} aria-label={`修改「${book.title}」的可见性`} disabled={updatingVisibilityIds.has(book.id)} onChange={(event) => onSetVisibility(book.id, event.target.value as CatalogVisibility)}>{VISIBILITY_OPTIONS.map((option) => <option key={option.value} value={option.value} disabled={option.value === 'public' && !canPublishPublic}>{option.label}</option>)}</select>}{onCopyInvite && book.visibility === 'unlisted' && <button className="collection-copy-invite" type="button" onClick={() => onCopyInvite(book.id)}>复制邀请码</button>}{onUpdate && <button className="collection-update" type="button" onClick={() => onUpdate(book.id)}>更新快照</button>}{onDelete && <button className="collection-delete" type="button" onClick={() => onDelete(book.id)}>删除</button>}</span>}</span><button type="button" className={favorites.has(book.id) ? 'liked' : ''} aria-label="切换收藏" onClick={() => onToggleFavorite(book.id)}><MarketplaceIcon name="heart" /></button></article>)}</div> : <p className="collection-empty">还没有内容，去发现一本喜欢的词库吧。</p>}</section>
 }

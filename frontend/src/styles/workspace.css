@@ -43,8 +43,24 @@
 }
 
 /* Custom study system */
+.workspace-catalog-group { margin-top: 1rem; padding-top: .8rem; border-top: 1px solid var(--rule); }
+.workspace-catalog-group > header { display: flex; align-items: center; justify-content: space-between; gap: .5rem; }
+.workspace-catalog-group > header h2 { display: flex; align-items: center; gap: .35rem; margin: 0; font-size: .82rem; }
+.workspace-catalog-group > header h2 .workspace-icon { width: .95rem; height: .95rem; color: var(--accent-strong); }
+.workspace-catalog-group > header a { color: var(--accent-strong); font-size: .68rem; font-weight: 650; }
+.workspace-catalog-group > div { display: grid; gap: .2rem; margin-top: .35rem; }
+.workspace-catalog-group > div > a { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: .35rem; padding: .42rem .35rem; border-radius: .4rem; }
+.workspace-catalog-group > div > a:hover { background: var(--hover-bg); }
+.workspace-catalog-group strong, .workspace-catalog-group small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workspace-catalog-group strong { font-size: .75rem; }
+.workspace-catalog-group small, .workspace-catalog-group > p { margin-top: .1rem; color: var(--muted); font-size: .65rem; }
+.workspace-catalog-group > div > a > .workspace-icon { width: .8rem; height: .8rem; color: var(--muted); }
 .overview-actions { align-self: start; }
 .overview-actions .overview-plan-settings { border: 1px solid var(--input-border); background: var(--accent-soft); color: var(--accent-strong); }
+.workspace-overview { position: relative; padding-bottom: 2.7rem; }
+.overview-recycle { position: absolute; right: 1rem; bottom: .7rem; display: inline-flex; align-items: center; gap: .35rem; padding: .3rem .45rem; border-radius: .35rem; color: var(--muted); font-size: .72rem; transition: background-color .2s ease, color .2s ease; }
+.overview-recycle .workspace-icon { width: .95rem; height: .95rem; }
+.overview-recycle:hover { background: var(--danger-soft); color: var(--danger); }
 .workspace-plan > header button { display: inline-flex; align-items: center; gap: .35rem; color: var(--accent-strong); font-size: .78rem; }
 .workspace-plan > header button .workspace-icon { width: 1rem; height: 1rem; }
 
@@ -191,6 +207,12 @@
 .dictation-given-word { color: var(--ink); text-decoration: none; }
 .dictation-given-word.show-mistakes { display: inline-flex; gap: .04em; }
 .dictation-given-word .incorrect-letter { color: var(--danger); text-decoration: underline 2px var(--danger); text-underline-offset: .22em; }
+.dictation-live-input { position: relative; }
+.dictation-live-input .field-input { position: relative; z-index: 1; width: 100%; }
+.dictation-live-input.is-live .field-input { color: transparent; caret-color: var(--ink); }
+.dictation-input-overlay { position: absolute; z-index: 2; inset: 0; display: flex; align-items: center; overflow: hidden; padding: .55rem 2.75rem .55rem 1rem; color: var(--ink); font-family: var(--font-mono); font-size: var(--text-md); line-height: 1.4; letter-spacing: .02em; pointer-events: none; white-space: pre; }
+.dictation-input-overlay .incorrect-letter { color: var(--danger); text-decoration: underline 2px var(--danger); text-underline-offset: .22em; }
+.study-recognition-progress { grid-column: 1 / -1; margin-top: -.15rem; color: var(--muted); font-size: .76rem; text-align: center; font-variant-numeric: tabular-nums; }
 .dictation-answer-details { display: grid; gap: .55rem; margin-top: .65rem; padding: .75rem; border-radius: .55rem; background: var(--hover-bg); }
 .dictation-answer-phonetic { color: var(--muted); font-family: var(--font-mono); font-size: .82rem; }
 

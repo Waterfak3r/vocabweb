@@ -10,7 +10,7 @@ import { FixedWindowRateLimiter, type RateLimiter } from "./http/rate-limit.js";
 import { WiktApiProvider } from "./providers/wiktapi.js";
 import { CsvLocalChineseDictionary, type LocalChineseLookup } from "./study/local-dictionary.js";
 import { JsonFileStudyStore } from "./study/store.js";
-import { parseAddWord, parseCatalogQuery, parseClientId, parseCommitImportDraft, parseCreateImportDraft, parseCreateMyWordbook, parseLearningEvent, parseResourceId, parseShareCode, parseStatus, parseUpdateCatalog, parseUpdateWord, parseUploadCatalog, parseWordId } from "./study/validation.js";
+import { parseAddWord, parseBatchWords, parseCatalogQuery, parseClientId, parseCommitImportDraft, parseCreateImportDraft, parseCreateMyWordbook, parseLearningEvent, parseResourceId, parseShareCode, parseStatus, parseUpdateCatalog, parseUpdateWord, parseUploadCatalog, parseWordId } from "./study/validation.js";
 import type { AccountUser, ImportLineInput, PreparedImportLine, ResolvedImportDraftEntry, StudyStore, StudyWordEntry } from "./study/types.js";
 import { isValidWordQuery, normalizeWord } from "./words/normalize.js";
 import { WordService, type WordLookup } from "./words/word-service.js";
@@ -710,6 +710,37 @@ export function createApp(options: CreateAppOptions = {}) {
       else if (result.kind === "duplicate") response.status(409).json(apiError("DUPLICATE_WORD", "The word already exists in this wordbook"));
       else if (result.kind === "lookup-failed") response.status(503).json(apiError("DICTIONARY_UNAVAILABLE", "Dictionary lookup is temporarily unavailable; retry the rename later"));
       else response.status(200).json(result.word);
+    } catch (error) { next(error); }
+  });
+  app.post("/api/my/wordbooks/:id/words/batch", async (request, response, next) => {
+    const clientId = readClientId(request, response);
+    const wordbookId = parseResourceId(request.params.id);
+    const input = parseBatchWords(request.body);
+    if (!clientId) return;
+    if (!wordbookId || !input) {
+      response.status(400).json(apiError("INVALID_BATCH_WORD_ACTION", "Batch word action is invalid"));
+      return;
+    }
+    try {
+      let rematched: Record<string, StudyWordEntry> | undefined;
+      if (input.action === "refresh-meanings") {
+        const words = await studyStore.listWords(clientId, wordbookId);
+        if (!words) {
+          response.status(404).json(apiError("WORDBOOK_NOT_FOUND", "Wordbook was not found"));
+          return;
+        }
+        const requested = new Set(input.wordIds);
+        const matches = await Promise.all(words.filter((word) => requested.has(word.id)).map(async (word) => {
+          const prepared = await resolveOneImportLine({ line: 1, word: word.word });
+          return prepared.status !== "ready" || !prepared.entry
+            ? null
+            : [word.id, prepared.entry] as const;
+        }));
+        rematched = Object.fromEntries(matches.filter((match): match is readonly [string, StudyWordEntry] => match !== null));
+      }
+      const result = await studyStore.batchWords(clientId, wordbookId, { ...input, ...(rematched ? { rematched } : {}) });
+      if (!result) response.status(404).json(apiError("WORDBOOK_NOT_FOUND", "Wordbook was not found"));
+      else response.status(200).json(result);
     } catch (error) { next(error); }
   });
   app.get("/api/my/import-drafts", async (request, response, next) => {

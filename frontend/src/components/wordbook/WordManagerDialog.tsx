@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import type { WordbookItem } from '../../domain/types'
-import type { WordLevel, WordStatus } from '../../data/workspaceApi'
+import type { BatchWordAction, BatchWordResult, WordLevel, WordStatus } from '../../data/workspaceApi'
 import './word-manager-dialog.css'
 
 export type EditableWordbookItem = WordbookItem & {
@@ -35,6 +35,7 @@ type Props = {
   onSave: (id: string, patch: WordbookWordPatch) => Promise<void>
   /** 标熟: marks the word 精通 (L4) and stops it appearing in study decks. Absent -> button hidden. */
   onMarkKnown?: (id: string) => Promise<void>
+  onBatch: (action: BatchWordAction, ids: string[]) => Promise<BatchWordResult>
 }
 
 function meaningsToText(item: EditableWordbookItem) {
@@ -60,7 +61,7 @@ export function parseEditableMeanings(value: string): EditableWordbookItem['mean
     .filter((meaning) => meaning.definition)
 }
 
-export function WordManagerDialog({ title, entries, saving = false, onClose, onSave, onMarkKnown }: Props) {
+export function WordManagerDialog({ title, entries, saving = false, onClose, onSave, onMarkKnown, onBatch }: Props) {
   const [query, setQuery] = useState('')
   const [selectedId, setSelectedId] = useState(entries[0]?.id ?? '')
   const selected = entries.find((entry) => entry.id === selectedId) ?? entries[0]
@@ -70,6 +71,9 @@ export function WordManagerDialog({ title, entries, saving = false, onClose, onS
   const [zhMeaning, setZhMeaning] = useState(selected?.zhMeaning ?? '')
   const [meaningsText, setMeaningsText] = useState(selected ? meaningsToText(selected) : '')
   const [error, setError] = useState('')
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set())
+  const [batching, setBatching] = useState<BatchWordAction | null>(null)
+  const [batchMessage, setBatchMessage] = useState('')
 
   const visible = useMemo(() => {
     const normalized = query.trim().toLowerCase()
@@ -80,6 +84,9 @@ export function WordManagerDialog({ title, entries, saving = false, onClose, onS
       || entry.meanings.some((meaning) => meaning.definition.toLowerCase().includes(normalized)),
     )
   }, [entries, query])
+  const visibleIds = visible.map((entry) => entry.id)
+  const selectedVisibleCount = visibleIds.filter((id) => selectedIds.has(id)).length
+  const allVisibleSelected = visibleIds.length > 0 && selectedVisibleCount === visibleIds.length
 
   useEffect(() => {
     const previousOverflow = document.body.style.overflow
@@ -109,6 +116,49 @@ export function WordManagerDialog({ title, entries, saving = false, onClose, onS
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedFingerprint])
 
+  useEffect(() => {
+    const currentIds = new Set(entries.map((entry) => entry.id))
+    setSelectedIds((ids) => new Set([...ids].filter((id) => currentIds.has(id))))
+  }, [entries])
+
+  function toggleSelected(id: string) {
+    setSelectedIds((ids) => {
+      const next = new Set(ids)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+    setBatchMessage('')
+  }
+
+  function toggleAllVisible() {
+    setSelectedIds((ids) => {
+      const next = new Set(ids)
+      if (allVisibleSelected) visibleIds.forEach((id) => next.delete(id))
+      else visibleIds.forEach((id) => next.add(id))
+      return next
+    })
+    setBatchMessage('')
+  }
+
+  async function runBatch(action: BatchWordAction) {
+    const ids = [...selectedIds]
+    if (!ids.length || batching) return
+    if (action === 'delete' && !window.confirm(`永久删除选中的 ${ids.length} 个单词及其学习记录？此操作无法恢复。`)) return
+    setBatching(action)
+    setBatchMessage('')
+    try {
+      const result = await onBatch(action, ids)
+      if (action === 'delete') setSelectedIds((current) => new Set([...current].filter((id) => !result.succeededIds.includes(id))))
+      const actionLabel = action === 'refresh-meanings' ? '更新释义' : action === 'mark-mastered' ? '标熟' : '删除'
+      setBatchMessage(`${actionLabel}完成：成功 ${result.succeededIds.length} 个${result.failed.length ? `，失败 ${result.failed.length} 个` : ''}。`)
+    } catch {
+      setBatchMessage('批量操作失败，所选词条未全部更新。')
+    } finally {
+      setBatching(null)
+    }
+  }
+
   async function submit(event: FormEvent) {
     event.preventDefault()
     if (!selected) return
@@ -136,7 +186,7 @@ export function WordManagerDialog({ title, entries, saving = false, onClose, onS
       <section className="word-manager-dialog" role="dialog" aria-modal="true" aria-labelledby="word-manager-title">
         <header>
           <div>
-            <p>管理词条</p>
+            <p>浏览词条</p>
             <h2 id="word-manager-title">{title}</h2>
           </div>
           <button type="button" className="workspace-modal-close" aria-label="关闭" onClick={onClose}>×</button>
@@ -147,20 +197,34 @@ export function WordManagerDialog({ title, entries, saving = false, onClose, onS
               <span className="sr-only">搜索词条</span>
               <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索英文或释义" />
             </label>
+            <div className="word-manager-select-all">
+              <label>
+                <input
+                  type="checkbox"
+                  checked={allVisibleSelected}
+                  ref={(node) => { if (node) node.indeterminate = selectedVisibleCount > 0 && !allVisibleSelected }}
+                  onChange={toggleAllVisible}
+                  disabled={!visible.length}
+                />
+                <span>全选当前结果</span>
+              </label>
+              <small>已选 {selectedIds.size} / 当前 {visible.length} / 全部 {entries.length}</small>
+            </div>
             <div className="word-manager-list">
               {visible.map((entry) => (
-                <button
+                <div
                   key={entry.id}
-                  type="button"
-                  className={entry.id === selected?.id ? 'selected' : ''}
-                  onClick={() => setSelectedId(entry.id)}
+                  className={`word-manager-list-row${entry.id === selected?.id ? ' selected' : ''}${selectedIds.has(entry.id) ? ' checked' : ''}`}
                 >
-                  <span className="word-manager-list-head">
-                    <strong>{entry.word}</strong>
-                    <span className="word-manager-level" data-level={levelOf(entry)}>{LEVEL_NAMES[levelOf(entry)]}</span>
-                  </span>
-                  <small>{entry.zhMeaning || entry.meanings[0]?.definition || '暂无释义'}</small>
-                </button>
+                  <input type="checkbox" checked={selectedIds.has(entry.id)} aria-label={`选择 ${entry.word}`} onChange={() => toggleSelected(entry.id)} />
+                  <button type="button" onClick={() => setSelectedId(entry.id)}>
+                    <span className="word-manager-list-head">
+                      <strong>{entry.word}</strong>
+                      <span className="word-manager-level" data-level={levelOf(entry)}>{LEVEL_NAMES[levelOf(entry)]}</span>
+                    </span>
+                    <small>{entry.zhMeaning || entry.meanings[0]?.definition || '暂无释义'}</small>
+                  </button>
+                </div>
               ))}
               {!visible.length && <p>没有匹配的词条。</p>}
             </div>
@@ -190,18 +254,29 @@ export function WordManagerDialog({ title, entries, saving = false, onClose, onS
                   <button
                     type="button"
                     className="word-manager-mark"
-                    disabled={saving}
+                    disabled={saving || Boolean(batching)}
                     onClick={() => { void onMarkKnown(selected.id) }}
                   >
                     标熟（不再学习）
                   </button>
                 )}
                 <button type="button" onClick={onClose}>取消</button>
-                <button type="submit" disabled={saving}>{saving ? '保存中…' : '保存此词条'}</button>
+                <button type="submit" disabled={saving || Boolean(batching)}>{saving ? '保存中…' : '保存此词条'}</button>
               </footer>
             </form>
           ) : <div className="word-manager-empty"><p>当前词本还没有单词。</p></div>}
         </div>
+        {selectedIds.size > 0 && (
+          <footer className="word-manager-batch-bar">
+            <span><strong>{selectedIds.size}</strong> 个词条已选</span>
+            {batchMessage && <p role="status">{batchMessage}</p>}
+            <div>
+              <button type="button" disabled={Boolean(batching)} onClick={() => void runBatch('refresh-meanings')}>{batching === 'refresh-meanings' ? '更新中…' : '更新释义'}</button>
+              <button type="button" disabled={Boolean(batching)} onClick={() => void runBatch('mark-mastered')}>{batching === 'mark-mastered' ? '标熟中…' : '批量标熟'}</button>
+              <button type="button" className="danger" disabled={Boolean(batching)} onClick={() => void runBatch('delete')}>{batching === 'delete' ? '删除中…' : '批量删除'}</button>
+            </div>
+          </footer>
+        )}
       </section>
     </div>
   )

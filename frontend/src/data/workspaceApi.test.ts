@@ -93,3 +93,24 @@ describe('WorkspaceApi marketplace owner feeds', () => {
     ])
   })
 })
+
+describe('WorkspaceApi batch word actions', () => {
+  it('posts selected ids and preserves partial failures', async () => {
+    const payload = {
+      action: 'refresh-meanings',
+      succeededIds: ['word-1'],
+      failed: [{ wordId: 'word-2', code: 'DICTIONARY_UNAVAILABLE' }],
+    }
+    const fetch = vi.fn<FetchLike>().mockResolvedValue(new Response(JSON.stringify(payload)))
+    const api = new WorkspaceApi('https://api.example.test/', { fetch, clientId: () => 'learner' })
+
+    await expect(api.batchWords('my-book', 'refresh-meanings', ['word-1', 'word-2'])).resolves.toEqual(payload)
+    expect(fetch).toHaveBeenCalledWith(
+      new URL('https://api.example.test/api/my/wordbooks/my-book/words/batch'),
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ action: 'refresh-meanings', wordIds: ['word-1', 'word-2'] }),
+      }),
+    )
+  })
+})

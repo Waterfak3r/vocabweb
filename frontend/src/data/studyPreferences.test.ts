@@ -30,6 +30,10 @@ describe('study preferences', () => {
       showMeaning: false,
       showCharacterMask: true,
     })
+    expect(normalizeStudyPreferences({ modes: { new: {}, review: {} } }).modes).toMatchObject({
+      new: { autoPlayAudio: true },
+      review: { autoPlayAudio: true },
+    })
   })
 
   it('keeps settings isolated per wordbook', () => {

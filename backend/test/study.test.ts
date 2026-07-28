@@ -492,6 +492,62 @@ test("adding a word resolves dictionary data, dedupes, and never blocks on a fai
   } finally { await app.close(); }
 });
 
+test("batch word actions refresh independently, preserve custom Chinese, mark mastered, and delete history", async () => {
+  const app = await server({
+    wordLookup: {
+      async lookup(word) {
+        if (word === "offline") throw new Error("temporary dictionary outage");
+        return dictionaryEntry(word);
+      },
+    },
+  });
+  try {
+    const created = await fetch(`${app.baseUrl}/api/my/wordbooks`, {
+      method: "POST", headers,
+      body: JSON.stringify({ title: "批量管理", words: [
+        { word: "alpha", phonetic: "", source: "user", zhMeaning: "自定义中文", zhMeaningSource: "user", meanings: [] },
+        { word: "offline", phonetic: "", source: "user", meanings: [] },
+      ] }),
+    });
+    const book = await created.json() as { id: string };
+    const initial = await (await fetch(`${app.baseUrl}/api/my/wordbooks/${book.id}/words`, { headers })).json() as Array<{ id: string; word: string }>;
+    const alpha = initial.find((word) => word.word === "alpha")!;
+    const offline = initial.find((word) => word.word === "offline")!;
+
+    const refresh = await fetch(`${app.baseUrl}/api/my/wordbooks/${book.id}/words/batch`, {
+      method: "POST", headers,
+      body: JSON.stringify({ action: "refresh-meanings", wordIds: [alpha.id, offline.id] }),
+    });
+    assert.equal(refresh.status, 200);
+    const refreshResult = await refresh.json() as { succeededIds: string[]; failed: Array<{ wordId: string; code: string }> };
+    assert.deepEqual(refreshResult.succeededIds, [alpha.id]);
+    assert.deepEqual(refreshResult.failed, [{ wordId: offline.id, code: "DICTIONARY_UNAVAILABLE" }]);
+    const refreshed = await (await fetch(`${app.baseUrl}/api/my/wordbooks/${book.id}/words`, { headers })).json() as Array<{ id: string; phonetic: string; zhMeaning?: string; meanings: unknown[] }>;
+    assert.equal(refreshed.find((word) => word.id === alpha.id)!.phonetic, "/alpha/");
+    assert.equal(refreshed.find((word) => word.id === alpha.id)!.zhMeaning, "自定义中文");
+    assert.ok(refreshed.find((word) => word.id === alpha.id)!.meanings.length > 0);
+    assert.equal(refreshed.find((word) => word.id === offline.id)!.phonetic, "");
+
+    const mark = await fetch(`${app.baseUrl}/api/my/wordbooks/${book.id}/words/batch`, {
+      method: "POST", headers,
+      body: JSON.stringify({ action: "mark-mastered", wordIds: [alpha.id, offline.id] }),
+    });
+    assert.equal(mark.status, 200);
+    const mastered = await (await fetch(`${app.baseUrl}/api/my/wordbooks/${book.id}/words`, { headers })).json() as Array<{ id: string; level: number }>;
+    assert.ok(mastered.every((word) => word.level === 4));
+
+    const remove = await fetch(`${app.baseUrl}/api/my/wordbooks/${book.id}/words/batch`, {
+      method: "POST", headers,
+      body: JSON.stringify({ action: "delete", wordIds: [alpha.id] }),
+    });
+    assert.equal(remove.status, 200);
+    const remaining = await (await fetch(`${app.baseUrl}/api/my/wordbooks/${book.id}/words`, { headers })).json() as Array<{ id: string }>;
+    assert.deepEqual(remaining.map((word) => word.id), [offline.id]);
+    const dashboard = await (await fetch(`${app.baseUrl}/api/study/dashboard/${book.id}`, { headers })).json() as { recentActivity: Array<{ wordId: string }> };
+    assert.ok(dashboard.recentActivity.every((event) => event.wordId !== alpha.id));
+  } finally { await app.close(); }
+});
+
 test("purging removes only a trashed wordbook and drops its study events", async () => {
   const app = await server();
   try {
@@ -597,16 +653,25 @@ test("word level follows the proficiency ladder over HTTP", async () => {
     assert.equal(fresh.initialStatus, "new");
     assert.equal(fresh.initialLevel, 0);
 
-    // Any finished "new" session (know, unknown, or legacy verdict-less) establishes L1 初识.
-    for (const [title, extra] of [["新词已会", { verdict: "know" }], ["新词不会", { verdict: "unknown" }], ["旧数据无判定", {}]] as const) {
-      const book = await make(title);
-      await record(book.id, { kind: "new", wordId: book.wordId, ...extra });
-      assert.deepEqual(await wordOf(book.id), { status: "learning", level: 1 });
-    }
+    // New words stay L0 for the first two consecutive recognition passes.
+    const known = await make("连续认识");
+    await record(known.id, { kind: "new", wordId: known.wordId, verdict: "know" });
+    assert.deepEqual(await wordOf(known.id), { status: "new", level: 0 });
+    await record(known.id, { kind: "new", wordId: known.wordId, verdict: "know" });
+    assert.deepEqual(await wordOf(known.id), { status: "new", level: 0 });
+    await record(known.id, { kind: "new", wordId: known.wordId, verdict: "unknown" });
+    assert.deepEqual(await wordOf(known.id), { status: "new", level: 0 });
+    for (let pass = 0; pass < 3; pass += 1) await record(known.id, { kind: "new", wordId: known.wordId, verdict: "know" });
+    assert.deepEqual(await wordOf(known.id), { status: "learning", level: 1 });
+
+    // Legacy verdict-less events count as recognition passes for compatibility.
+    const legacy = await make("旧数据无判定");
+    for (let pass = 0; pass < 3; pass += 1) await record(legacy.id, { kind: "new", wordId: legacy.wordId });
+    assert.deepEqual(await wordOf(legacy.id), { status: "learning", level: 1 });
 
     // Flashcards climb one rung per 掌握 but can never pass L2 熟悉.
     const cards = await make("单词卡封顶");
-    await record(cards.id, { kind: "new", wordId: cards.wordId, verdict: "know" });
+    for (let pass = 0; pass < 3; pass += 1) await record(cards.id, { kind: "new", wordId: cards.wordId, verdict: "know" });
     await record(cards.id, { kind: "flashcard", wordId: cards.wordId, verdict: "know" });
     assert.deepEqual(await wordOf(cards.id), { status: "review", level: 2 });
     await record(cards.id, { kind: "flashcard", wordId: cards.wordId, verdict: "know" });
@@ -637,12 +702,12 @@ test("word level follows the proficiency ladder over HTTP", async () => {
     // recentActivity reports the level the word held right AFTER each event (newest first),
     // so the dashboard's 结果 column can speak the ladder's vocabulary honestly.
     const traced = await make("结果档位");
-    await record(traced.id, { kind: "new", wordId: traced.wordId, verdict: "know" });
+    for (let pass = 0; pass < 3; pass += 1) await record(traced.id, { kind: "new", wordId: traced.wordId, verdict: "know" });
     await record(traced.id, { kind: "flashcard", wordId: traced.wordId, verdict: "know" });
     const dashboard = await (await fetch(`${app.baseUrl}/api/study/dashboard/${traced.id}`, { headers })).json() as { recentActivity: Array<{ kind: string; levelAfter: number }> };
     assert.deepEqual(
       dashboard.recentActivity.map((entry) => ({ kind: entry.kind, levelAfter: entry.levelAfter })),
-      [{ kind: "flashcard", levelAfter: 2 }, { kind: "new", levelAfter: 1 }],
+      [{ kind: "flashcard", levelAfter: 2 }, { kind: "new", levelAfter: 1 }, { kind: "new", levelAfter: 0 }, { kind: "new", levelAfter: 0 }],
     );
   } finally { await app.close(); }
 });
@@ -661,7 +726,7 @@ test("store ladder: an L3 word promotes to L4 only once the 7-day final-check wi
   const store = new InMemoryStudyStore({ now: () => clock });
   const book = await singleWordBook(store, "七天终审");
   const level = async () => (await store.listWords(CLIENT, book.id))![0]!.level;
-  await store.recordEvent(CLIENT, { kind: "new", wordbookId: book.id, wordId: book.wordId });
+  for (let pass = 0; pass < 3; pass += 1) await store.recordEvent(CLIENT, { kind: "new", wordbookId: book.id, wordId: book.wordId });
   await store.recordEvent(CLIENT, { kind: "flashcard", wordbookId: book.id, wordId: book.wordId, verdict: "know" });
   await store.recordEvent(CLIENT, { kind: "dictation", wordbookId: book.id, wordId: book.wordId, correct: true });
   assert.equal(await level(), 3);
@@ -682,7 +747,7 @@ test("store dashboard: finalCheckDue turns on at 7 days and clears again after t
   const store = new InMemoryStudyStore({ now: () => clock });
   const book = await singleWordBook(store, "终审待办");
   const finalCheckDue = async () => (await store.getDashboard(CLIENT, book.id))!.finalCheckDue;
-  await store.recordEvent(CLIENT, { kind: "new", wordbookId: book.id, wordId: book.wordId });
+  for (let pass = 0; pass < 3; pass += 1) await store.recordEvent(CLIENT, { kind: "new", wordbookId: book.id, wordId: book.wordId });
   await store.recordEvent(CLIENT, { kind: "flashcard", wordbookId: book.id, wordId: book.wordId, verdict: "know" });
   await store.recordEvent(CLIENT, { kind: "dictation", wordbookId: book.id, wordId: book.wordId, correct: true });
   assert.equal(await finalCheckDue(), 0); // just reached L3
@@ -751,10 +816,10 @@ test("store progress: levels tally l0..l4 and the weighted mastery percent", asy
   const items = (await store.listWords(CLIENT, book.id))!;
   const idOf = (word: string) => items.find((item) => item.word === word)!.id;
   // alpha stays L0. bravo -> L1. charlie -> L2. delta -> L3. echo -> L4 (mark).
-  await store.recordEvent(CLIENT, { kind: "new", wordbookId: book.id, wordId: idOf("bravo") });
-  await store.recordEvent(CLIENT, { kind: "new", wordbookId: book.id, wordId: idOf("charlie") });
+  for (let pass = 0; pass < 3; pass += 1) await store.recordEvent(CLIENT, { kind: "new", wordbookId: book.id, wordId: idOf("bravo") });
+  for (let pass = 0; pass < 3; pass += 1) await store.recordEvent(CLIENT, { kind: "new", wordbookId: book.id, wordId: idOf("charlie") });
   await store.recordEvent(CLIENT, { kind: "flashcard", wordbookId: book.id, wordId: idOf("charlie"), verdict: "know" });
-  await store.recordEvent(CLIENT, { kind: "new", wordbookId: book.id, wordId: idOf("delta") });
+  for (let pass = 0; pass < 3; pass += 1) await store.recordEvent(CLIENT, { kind: "new", wordbookId: book.id, wordId: idOf("delta") });
   await store.recordEvent(CLIENT, { kind: "flashcard", wordbookId: book.id, wordId: idOf("delta"), verdict: "know" });
   await store.recordEvent(CLIENT, { kind: "dictation", wordbookId: book.id, wordId: idOf("delta"), correct: true });
   await store.recordEvent(CLIENT, { kind: "mark", wordbookId: book.id, wordId: idOf("echo"), level: 4 });

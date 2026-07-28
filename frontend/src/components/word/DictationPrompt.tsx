@@ -1,8 +1,7 @@
-import { useEffect, useRef, type FormEvent } from 'react'
+import { useEffect, useId, useRef, type FormEvent } from 'react'
 import type { DictationDisplayPreferences } from '../../data/studyPreferences'
 import type { DictationGrade, WordbookItem } from '../../domain/types'
 import { Button } from '../ui/Button'
-import { TextField } from '../ui/TextField'
 import { preferredMeanings } from './Flashcard'
 import { MeaningList } from './MeaningList'
 import { PronounceButton } from './PronounceButton'
@@ -30,6 +29,60 @@ export function spellingCharacters(given: string, expected: string) {
 
 export function characterMask(word: string) {
   return Array.from(word).map((character) => /[a-z]/i.test(character) ? '□' : character).join('')
+}
+
+function DictationSpellingField({
+  value,
+  expected,
+  onChange,
+  error,
+  readOnly,
+  underlineMistakes,
+  inputRef,
+}: {
+  value: string
+  expected: string
+  onChange: (value: string) => void
+  error?: string
+  readOnly: boolean
+  underlineMistakes: boolean
+  inputRef: React.RefObject<HTMLInputElement | null>
+}) {
+  const id = useId()
+  const errorId = `${id}-error`
+  const live = !readOnly && underlineMistakes && value.length > 0
+  return (
+    <div className={`field ${error ? 'field-error-state' : ''}`}>
+      <label className="field-label" htmlFor={id}>你的拼写</label>
+      <div className={`dictation-live-input ${live ? 'is-live' : ''}`}>
+        {live && (
+          <span className="dictation-input-overlay" aria-hidden="true">
+            {spellingCharacters(value, expected).map(({ character, incorrect }, index) => (
+              <span className={incorrect ? 'incorrect-letter' : ''} key={`${character}-${index}`}>
+                {character}
+              </span>
+            ))}
+          </span>
+        )}
+        <input
+          id={id}
+          ref={inputRef}
+          className="field-input field-input-mono"
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          aria-invalid={Boolean(error)}
+          aria-describedby={error ? errorId : undefined}
+          placeholder="输入听到的单词"
+          autoComplete="off"
+          autoCapitalize="off"
+          spellCheck={false}
+          readOnly={readOnly}
+          autoFocus
+        />
+      </div>
+      {error && <p className="field-error" id={errorId} role="alert">{error}</p>}
+    </div>
+  )
 }
 
 export function DictationPrompt({
@@ -100,19 +153,14 @@ export function DictationPrompt({
         )}
       </div>
 
-      <TextField
-        label="你的拼写"
-        mono
-        ref={inputRef}
+      <DictationSpellingField
+        inputRef={inputRef}
         value={answer}
         onChange={onAnswerChange}
         error={error}
-        placeholder="输入听到的单词"
-        autoComplete="off"
-        autoCapitalize="off"
-        spellCheck={false}
         readOnly={phase === 'feedback'}
-        autoFocus
+        expected={item.word}
+        underlineMistakes={preferences.underlineMistakes}
       />
 
       {phase === 'prompt' ? (

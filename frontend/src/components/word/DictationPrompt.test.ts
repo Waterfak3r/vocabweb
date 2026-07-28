@@ -13,6 +13,10 @@ describe('spellingCharacters', () => {
       { character: 'e', incorrect: false },
     ])
   })
+
+  it('marks characters typed beyond the expected word', () => {
+    expect(spellingCharacters('wordx', 'word').at(-1)).toEqual({ character: 'x', incorrect: true })
+  })
 })
 
 describe('characterMask', () => {

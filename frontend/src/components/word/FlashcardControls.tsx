@@ -5,6 +5,7 @@ export type FlashcardControlsProps = {
   onUnknown: () => void
   /** True until the card has been flipped — enforces recall */
   disableVerdicts: boolean
+  recognitionProgress?: { current: number; required: number }
 }
 
 export function FlashcardControls({
@@ -13,6 +14,7 @@ export function FlashcardControls({
   onKnow,
   onUnknown,
   disableVerdicts,
+  recognitionProgress,
 }: FlashcardControlsProps) {
   return (
     <div className="study-actions study-verdicts">
@@ -29,6 +31,11 @@ export function FlashcardControls({
         <span>认识</span>
         <i aria-hidden="true" />
       </button>
+      {recognitionProgress && (
+        <p className="study-recognition-progress" aria-live="polite">
+          连续认识 {recognitionProgress.current} / {recognitionProgress.required}
+        </p>
+      )}
     </div>
   )
 }
