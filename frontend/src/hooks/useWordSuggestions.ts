@@ -35,7 +35,8 @@ export function useWordSuggestions(
   }, [])
 
   useEffect(() => {
-    const query = normalizeWord(rawQuery)
+    const trimmed = rawQuery.trim().replace(/\s+/g, ' ')
+    const query = /^[\p{Script=Han}\s]+$/u.test(trimmed) ? trimmed : normalizeWord(trimmed)
     const requestId = ++requestRef.current
     if (!repository || query.length < 2 || query === dismissedFor) {
       setState({ suggestions: [], status: 'idle' })

@@ -2,7 +2,22 @@
 
 本目录保存的是为网站后续词典、查词与单词本功能准备的**来源清单、字段约定和极小样例**；它不是完整词典发行包。完整数据应在导入任务中按发布版本下载、校验、记录来源并写入独立的 staging 表，避免把不同许可证的文本混在无来源字段中。
 
-调研日期：2026-07-26。每个来源的机器可读信息见 [sources.json](./sources.json)，统一导入字段见 [schema/word-record.schema.json](./schema/word-record.schema.json)，可运行前端/后端格式验证的小样例见 [samples/](./samples/)。
+调研日期：2026-07-26，接入状态更新于 2026-07-28。每个来源的机器可读信息见 [sources.json](./sources.json)，统一导入字段见 [schema/word-record.schema.json](./schema/word-record.schema.json)，可运行前端/后端格式验证的小样例见 [samples/](./samples/)。
+
+## 当前生产导入策略
+
+- Open English WordNet 2025 是英文义项首选，ECDICT 提供中文释义、音标与频率字段。
+- 构建器可流式读取固定 dump 日期和 SHA-256 的 Kaikki/Wiktextract `JSONL.gz`；只导入 OEWN 未覆盖的英语多词词条，不覆盖或混合 OEWN 义项。
+- `dictionary_meanings.source_id` 保留每条英文义项来源；构建元数据记录 OEWN/ECDICT 版本、Wiktextract dump 日期、校验值及各类记录数。
+- 未配置 Wiktextract 文件时构建仍可完成，但元数据会明确写入 `not-imported`。WiktAPI 只作为运行时本地未命中的在线兜底。
+
+构建离线词组补充时设置：
+
+```text
+WIKTEXTRACT_JSONL_GZ=<仓库外的固定快照路径>
+WIKTEXTRACT_DUMP_DATE=YYYY-MM-DD
+WIKTEXTRACT_SHA256=<64 位十六进制校验值>
+```
 
 ## 建议采用的分层
 

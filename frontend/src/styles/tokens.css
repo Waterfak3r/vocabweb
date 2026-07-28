@@ -61,6 +61,22 @@
   --ease-paper: cubic-bezier(0.4, 0, 0.2, 1);
 }
 
+@media (min-width: 901px) {
+  /* 75% desktop density without CSS zoom/transform; mobile keeps the 16px root. */
+  html { font-size: 12px; }
+  :root {
+    /* Preserve readable 12–14px supporting/body copy while compacting geometry. */
+    --text-xs: 1rem;
+    --text-sm: 1.083rem;
+    --text-base: 1.167rem;
+    --text-md: 1.25rem;
+    --text-lg: 1.5rem;
+    --text-xl: 1.833rem;
+    --text-2xl: 2.5rem;
+    --page-width: 128.333rem;
+  }
+}
+
 /* Ink dark — the same desk at night, lamplight on dark navy */
 [data-theme='dark'] {
   color-scheme: dark;

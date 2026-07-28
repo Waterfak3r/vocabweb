@@ -9,6 +9,46 @@ describe('wordbook import parser', () => {
     ])
   })
 
+  it('accepts conventional sb./sth. placeholders without allowing arbitrary punctuation', () => {
+    const parsed = parseWordbookText([
+      'agree with sb.',
+      'be devoted to sth.',
+      'be habitual to sb.',
+      'be linked to sth.',
+      'ordinary.',
+    ].join('\n'))
+    expect(parsed.entries.map((entry) => entry.status))
+      .toEqual(['ready', 'ready', 'ready', 'ready', 'invalid'])
+  })
+
+  it('accepts ellipsis slots and normalizes genuine hyphen variants', () => {
+    const parsed = parseWordbookText([
+      'connect...with...',
+      'provide sb. with …',
+      'well ‑ known',
+      'two..dots',
+      'word—word',
+    ].join('\n'))
+    expect(parsed.entries.map(({ word, status }) => ({ word, status }))).toEqual([
+      { word: 'connect...with...', status: 'ready' },
+      { word: 'provide sb. with ...', status: 'ready' },
+      { word: 'well-known', status: 'ready' },
+      { word: 'two..dots', status: 'invalid' },
+      { word: 'word—word', status: 'invalid' },
+    ])
+  })
+
+  it('accepts a controlled trailing abbreviation and normalizes its spacing', () => {
+    const parsed = parseWordbookText([
+      'initial public offering(IPO),n.,,公司上市；首次公开发行公司股份',
+      'research and development(R&D),abbr.,,研究与开发',
+    ].join('\n'))
+    expect(parsed.entries.map(({ word, status }) => ({ word, status }))).toEqual([
+      { word: 'initial public offering (ipo)', status: 'ready' },
+      { word: 'research and development (r&d)', status: 'ready' },
+    ])
+  })
+
   it('understands quoted commas and flags invalid and duplicate rows without dropping them', () => {
     const parsed = parseWordbookText('achieve,verb,\"reach, gain\",达到\nachieve,verb,accomplish,达成\n123,unknown,not a word')
     expect(parsed.acceptedCount).toBe(1)

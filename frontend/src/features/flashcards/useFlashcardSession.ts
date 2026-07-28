@@ -40,7 +40,7 @@ export function advanceRecognition(current: number, verdict: FlashcardVerdict, r
 /**
  * Session-only flashcard queue:
  * 掌握 removes the card; 不熟 sends it to the back of the queue.
- * A verdict requires the card to be flipped first — recall before recognition.
+ * A verdict can be made from either face; flipping is a learner aid, not a gate.
  */
 export function useFlashcardSession(
   items: readonly (WordbookItem & { recognitionStreak?: 0 | 1 | 2 })[],
@@ -63,7 +63,7 @@ export function useFlashcardSession(
   const flip = useCallback(() => setFlipped((value) => !value), [])
 
   const markKnown = useCallback(() => {
-    if (!current || !flipped) return
+    if (!current) return
     const { streak: nextStreak, completed } = advanceRecognition(recognitionStreaks[current.id] ?? 0, 'know', requiredRecognitions)
     setRecognitionStreaks((streaks) => ({ ...streaks, [current.id]: nextStreak }))
     if (completed) {
@@ -80,10 +80,10 @@ export function useFlashcardSession(
     } catch {
       // Reporting learning activity must never interrupt the card session.
     }
-  }, [current, flipped, onVerdict, recognitionStreaks, requiredRecognitions])
+  }, [current, onVerdict, recognitionStreaks, requiredRecognitions])
 
   const markUnknown = useCallback(() => {
-    if (!current || !flipped) return
+    if (!current) return
     setUnknownIds((ids) => (ids.includes(current.id) ? ids : [...ids, current.id]))
     setRecognitionStreaks((streaks) => ({ ...streaks, [current.id]: 0 }))
     // Re-queue at the end; don't advance the counter — we'll see it again.
@@ -95,7 +95,7 @@ export function useFlashcardSession(
     } catch {
       // Reporting learning activity must never interrupt the card session.
     }
-  }, [current, flipped, totalCount, onVerdict])
+  }, [current, totalCount, onVerdict])
 
   const markMastered = useCallback(() => {
     if (!current || !flipped) return

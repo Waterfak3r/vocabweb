@@ -3,8 +3,6 @@ export type FlashcardControlsProps = {
   onFlip: () => void
   onKnow: () => void
   onUnknown: () => void
-  /** True until the card has been flipped — enforces recall */
-  disableVerdicts: boolean
   recognitionProgress?: { current: number; required: number }
 }
 
@@ -13,12 +11,11 @@ export function FlashcardControls({
   onFlip,
   onKnow,
   onUnknown,
-  disableVerdicts,
   recognitionProgress,
 }: FlashcardControlsProps) {
   return (
     <div className="study-actions study-verdicts">
-      <button className="study-verdict unknown" type="button" onClick={onUnknown} disabled={disableVerdicts}>
+      <button className="study-verdict unknown" type="button" onClick={onUnknown}>
         <span>不认识</span>
         <i aria-hidden="true" />
       </button>
@@ -27,7 +24,7 @@ export function FlashcardControls({
           翻面
         </button>
       )}
-      <button className="study-verdict known" type="button" onClick={onKnow} disabled={disableVerdicts}>
+      <button className="study-verdict known" type="button" onClick={onKnow}>
         <span>认识</span>
         <i aria-hidden="true" />
       </button>

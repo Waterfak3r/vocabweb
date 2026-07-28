@@ -1,9 +1,24 @@
 import { normalizeWord } from './normalize'
 import type { DictationAnswer, DictationGrade, WordbookItem } from './types'
 
-/** Dictation grading: exact normalized match. */
+/**
+ * Dictation compares what can reasonably be heard. Headword notation remains
+ * visible, but periods, ellipsis slots, and lexical hyphens are not required.
+ */
+export function normalizeDictationText(value: string): string {
+  return normalizeWord(value)
+    .replace(/ \((?:[a-z0-9]{2,12}|[a-z0-9]{1,8}(?:[&/-][a-z0-9]{1,8}){1,3})\)$/i, '')
+    .replace(/\.{3}/g, ' ')
+    .replace(/\./g, '')
+    .replace(/-/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
 export function gradeAnswer(given: string, item: WordbookItem): DictationGrade {
-  return normalizeWord(given) === item.word ? 'correct' : 'incorrect'
+  return normalizeDictationText(given) === normalizeDictationText(item.word)
+    ? 'correct'
+    : 'incorrect'
 }
 
 export function countCorrect(answers: DictationAnswer[]): number {

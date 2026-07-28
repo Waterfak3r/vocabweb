@@ -20,6 +20,18 @@ const wordLookup = new WordService(provider, {
   cacheTtlMs: config.wordCacheTtlMs,
   cacheMaxEntries: config.wordCacheMaxEntries,
 });
+const pronunciationLookup = new WordService(remoteProvider, {
+  cacheTtlMs: config.wordCacheTtlMs,
+  cacheMaxEntries: config.wordCacheMaxEntries,
+});
+const americanPronunciationLookup = new WordService(new WiktApiProvider({
+  baseUrl: config.wiktApiBaseUrl,
+  timeoutMs: config.wiktApiTimeoutMs,
+  accent: "us",
+}), {
+  cacheTtlMs: config.wordCacheTtlMs,
+  cacheMaxEntries: config.wordCacheMaxEntries,
+});
 const wordRateLimiter = new FixedWindowRateLimiter({
   windowMs: config.wordRateLimitWindowMs,
   maxRequests: config.wordRateLimitMaxRequests,
@@ -37,6 +49,7 @@ const engagementStore = new SqliteEngagementStore(config.databaseFile);
 const app = createApp({
   frontendOrigins: config.frontendOrigins,
   wordLookup,
+  pronunciationLookups: { gb: pronunciationLookup, us: americanPronunciationLookup },
   wordRateLimiter,
   wordSuggestionLookup: localProvider,
   wordSuggestionRateLimiter,

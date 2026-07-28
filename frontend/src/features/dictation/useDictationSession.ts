@@ -1,13 +1,13 @@
 import { useCallback, useMemo, useState } from 'react'
-import { countCorrect, gradeAnswer, shuffled, wrongItems } from '../../domain/score'
+import { gradeAnswer, shuffled } from '../../domain/score'
 import type { DictationAnswer, WordbookItem } from '../../domain/types'
 
 export type DictationPhase = 'prompt' | 'feedback' | 'summary'
+export const REQUIRED_DICTATION_STREAK = 3
 
 export type DictationSession = {
   deck: WordbookItem[]
   current: WordbookItem | undefined
-  /** 0-based index into the deck */
   index: number
   isLast: boolean
   phase: DictationPhase
@@ -15,6 +15,12 @@ export type DictationSession = {
   answers: DictationAnswer[]
   inputError: string
   correctCount: number
+  passedCount: number
+  remainingCount: number
+  currentStreak: number
+  requiredStreak: number
+  attemptCount: number
+  incorrectCount: number
   wrongDeck: WordbookItem[]
   setAnswer: (value: string) => void
   submit: () => void
@@ -25,20 +31,30 @@ export type DictationSession = {
 
 export type DictationGradeReporter = (word: string, correct: boolean) => void
 
-/** Session-only dictation: grade each spelling, then review the misses. */
+export function advanceDictationStreak(current: number, correct: boolean) {
+  const streak = correct ? Math.min(REQUIRED_DICTATION_STREAK, current + 1) : 0
+  return { streak, passed: correct && streak === REQUIRED_DICTATION_STREAK }
+}
+
+/** A word passes after three consecutive correct attempts in this open session. */
 export function useDictationSession(
   items: readonly WordbookItem[],
   onGrade?: DictationGradeReporter,
 ): DictationSession {
   const [deck, setDeck] = useState<WordbookItem[]>(() => shuffled(items))
-  const [index, setIndex] = useState(0)
+  const [queue, setQueue] = useState<WordbookItem[]>(() => deck)
   const [phase, setPhase] = useState<DictationPhase>('prompt')
   const [answer, setAnswerState] = useState('')
   const [answers, setAnswers] = useState<DictationAnswer[]>([])
   const [inputError, setInputError] = useState('')
+  const [streaks, setStreaks] = useState<Record<string, number>>({})
+  const [passedIds, setPassedIds] = useState<string[]>([])
+  const [troubleIds, setTroubleIds] = useState<string[]>([])
+  const [lastPassed, setLastPassed] = useState(false)
 
-  const current = deck[index]
-  const isLast = index === deck.length - 1
+  const current = queue[0]
+  const currentStreak = current ? streaks[current.id] ?? 0 : 0
+  const isLast = phase === 'feedback' && lastPassed && queue.length === 1
 
   const setAnswer = useCallback((value: string) => {
     setAnswerState(value)
@@ -52,64 +68,76 @@ export function useDictationSession(
       return
     }
     const grade = gradeAnswer(answer, current)
-    setAnswers((list) => [
-      ...list,
-      { itemId: current.id, word: current.word, given: answer.trim(), grade },
-    ])
+    const { streak: nextStreak, passed } = advanceDictationStreak(
+      streaks[current.id] ?? 0,
+      grade === 'correct',
+    )
+    setAnswers((list) => [...list, { itemId: current.id, word: current.word, given: answer.trim(), grade }])
+    setStreaks((value) => ({ ...value, [current.id]: nextStreak }))
+    setLastPassed(passed)
+    if (passed) setPassedIds((ids) => ids.includes(current.id) ? ids : [...ids, current.id])
+    if (grade === 'incorrect') setTroubleIds((ids) => ids.includes(current.id) ? ids : [...ids, current.id])
     setPhase('feedback')
     try {
-      onGrade?.(current.word, grade === 'correct')
+      if (passed) onGrade?.(current.word, true)
+      else if (grade === 'incorrect') onGrade?.(current.word, false)
     } catch {
-      // Grading remains available if the optional backend is offline.
+      // Local grading remains available when reporting is offline.
     }
-  }, [current, phase, answer, onGrade])
+  }, [answer, current, onGrade, phase, streaks])
 
   const next = useCallback(() => {
-    if (phase !== 'feedback') return
+    if (phase !== 'feedback' || !current) return
+    const nextQueue = lastPassed ? queue.slice(1) : [...queue.slice(1), current]
+    setQueue(nextQueue)
     setAnswerState('')
     setInputError('')
-    if (isLast) {
-      setPhase('summary')
-    } else {
-      setIndex((i) => i + 1)
-      setPhase('prompt')
-    }
-  }, [phase, isLast])
+    setLastPassed(false)
+    setPhase(nextQueue.length ? 'prompt' : 'summary')
+  }, [current, lastPassed, phase, queue])
 
-  const startDeck = useCallback((items_: WordbookItem[]) => {
-    setDeck(shuffled(items_))
-    setIndex(0)
-    setPhase('prompt')
+  const startDeck = useCallback((nextItems: WordbookItem[]) => {
+    const nextDeck = shuffled(nextItems)
+    setDeck(nextDeck)
+    setQueue(nextDeck)
+    setPhase(nextDeck.length ? 'prompt' : 'summary')
     setAnswerState('')
     setAnswers([])
     setInputError('')
+    setStreaks({})
+    setPassedIds([])
+    setTroubleIds([])
+    setLastPassed(false)
   }, [])
 
   const retryAll = useCallback(() => startDeck([...items]), [items, startDeck])
-
+  const wrongDeck = useMemo(() => deck.filter((item) => troubleIds.includes(item.id)), [deck, troubleIds])
   const retryWrong = useCallback(() => {
-    const wrong = wrongItems(answers, deck)
-    if (wrong.length > 0) startDeck(wrong)
-  }, [answers, deck, startDeck])
+    if (wrongDeck.length) startDeck(wrongDeck)
+  }, [startDeck, wrongDeck])
 
-  return useMemo(
-    () => ({
-      deck,
-      current,
-      index,
-      isLast,
-      phase,
-      answer,
-      answers,
-      inputError,
-      correctCount: countCorrect(answers),
-      wrongDeck: wrongItems(answers, deck),
-      setAnswer,
-      submit,
-      next,
-      retryAll,
-      retryWrong,
-    }),
-    [deck, current, index, isLast, phase, answer, answers, inputError, setAnswer, submit, next, retryAll, retryWrong],
-  )
+  const incorrectCount = answers.filter((entry) => entry.grade === 'incorrect').length
+  return useMemo(() => ({
+    deck,
+    current,
+    index: passedIds.length,
+    isLast,
+    phase,
+    answer,
+    answers,
+    inputError,
+    correctCount: passedIds.length,
+    passedCount: passedIds.length,
+    remainingCount: queue.length,
+    currentStreak,
+    requiredStreak: REQUIRED_DICTATION_STREAK,
+    attemptCount: answers.length,
+    incorrectCount,
+    wrongDeck,
+    setAnswer,
+    submit,
+    next,
+    retryAll,
+    retryWrong,
+  }), [answer, answers, current, currentStreak, deck, incorrectCount, inputError, isLast, next, passedIds.length, phase, queue.length, retryAll, retryWrong, setAnswer, submit, wrongDeck])
 }

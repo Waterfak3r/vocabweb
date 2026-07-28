@@ -12,6 +12,7 @@ import { wordOfTheDay } from '../data/ieltsWords'
 import { selectWordbookItems, useWordbook } from '../data/wordbookStore'
 import type { WordEntry } from '../domain/types'
 import { getEngagementApi, type PopularSearch } from '../data/engagementApi'
+import { wordRepository } from '../data/createRepositories'
 
 type StudyStepIconName = 'search' | 'bookmark' | 'practice'
 
@@ -50,7 +51,13 @@ export function HomePage() {
   const [activeSuggestion, setActiveSuggestion] = useState(-1)
   const inputRef = useRef<HTMLInputElement>(null)
 
-  const today = wordOfTheDay()
+  const [todayHeadword, setTodayHeadword] = useState(() => wordOfTheDay())
+  const [todayState, setTodayState] = useState<
+    | { status: 'loading' }
+    | { status: 'ready'; entry: WordEntry }
+    | { status: 'error' }
+  >({ status: 'loading' })
+  const todayRequest = useRef(0)
   const wordbookItems = useWordbook(selectWordbookItems)
   const { summary, source: summarySource, isRefreshing, refresh } = useStudySummary(wordbookItems)
   const loadPopular = useCallback(async () => {
@@ -102,7 +109,37 @@ export function HomePage() {
     void loadPopular()
   }, [loadPopular])
 
+  const loadToday = useCallback(async (headword = todayHeadword) => {
+    const request = ++todayRequest.current
+    setTodayState({ status: 'loading' })
+    try {
+      const entry = await wordRepository.lookup(headword)
+      if (request === todayRequest.current) {
+        setTodayState(entry ? { status: 'ready', entry } : { status: 'error' })
+      }
+    } catch {
+      if (request === todayRequest.current) setTodayState({ status: 'error' })
+    }
+  }, [todayHeadword])
+
+  useEffect(() => {
+    void loadToday()
+  }, [loadToday])
+
+  useEffect(() => {
+    const now = new Date()
+    const next = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1)
+    const timer = window.setTimeout(() => {
+      setTodayHeadword(wordOfTheDay(new Date()))
+    }, Math.max(1_000, next.getTime() - now.getTime() + 50))
+    return () => window.clearTimeout(timer)
+  }, [todayHeadword])
+
   function runLookup(raw: string) {
+    if (/^[\p{Script=Han}\s]+$/u.test(raw.trim())) {
+      setInputError('请先从候选中选择对应的英文单词或词组。')
+      return
+    }
     suggestionState.dismiss(raw)
     setActiveSuggestion(-1)
     const error = lookup(raw)
@@ -233,7 +270,7 @@ export function HomePage() {
                     runLookup(suggestion.word)
                   }}
                 >
-                  <span>{suggestion.word}</span>
+                  <span>{suggestion.word}<em>{suggestion.kind === 'phrase' ? '词组' : '单词'}</em></span>
                   {suggestion.zhMeaning && <small>{suggestion.zhMeaning}</small>}
                 </li>
               ))}
@@ -295,7 +332,15 @@ export function HomePage() {
           {state.status === 'idle' && (
             <>
               <InkRule label="今日词头" />
-              <WordResultCard entry={today} />
+              {todayState.status === 'loading' && <div className="word-card-skeleton" role="status">正在读取今日词条…</div>}
+              {todayState.status === 'ready' && <WordResultCard entry={todayState.entry} />}
+              {todayState.status === 'error' && (
+                <EmptyState
+                  title={`暂时无法读取 ${todayHeadword}`}
+                  body="今日词头已选定，但词典服务暂时不可用。"
+                  action={<Button variant="secondary" onClick={() => void loadToday()}>重试</Button>}
+                />
+              )}
             </>
           )}
 

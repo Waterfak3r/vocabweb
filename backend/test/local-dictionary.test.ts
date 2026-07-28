@@ -58,12 +58,18 @@ test("local dictionary looks up phrases and ranks exact, prefix, then contains s
   assert.equal(phrase?.zhMeaning, "许多\n大量的");
 
   assert.deepEqual(await provider.suggest("res", 3), [
-    { word: "resilient", zhMeaning: "有韧性的" },
-    { word: "resilience", zhMeaning: "恢复力" },
-    { word: "irresilient", zhMeaning: "无弹性的" },
+    { word: "resilient", zhMeaning: "有韧性的", kind: "word" },
+    { word: "resilience", zhMeaning: "恢复力", kind: "word" },
+    { word: "irresilient", zhMeaning: "无弹性的", kind: "word" },
   ]);
   assert.deepEqual(await provider.suggest("a lot", 1), [
-    { word: "a lot of", zhMeaning: "许多" },
+    { word: "a lot of", zhMeaning: "许多", kind: "phrase" },
+  ]);
+  assert.deepEqual(await provider.suggest("许多", 8), [
+    { word: "a lot of", zhMeaning: "许多", kind: "phrase" },
+  ]);
+  assert.deepEqual(await provider.suggest("恢复", 8), [
+    { word: "resilience", zhMeaning: "恢复力", kind: "word" },
   ]);
   provider.close();
 });

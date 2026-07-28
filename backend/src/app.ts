@@ -7,11 +7,11 @@ import {
   readSessionToken, sessionCookie, sessionExpiresAt, verifyPassword,
 } from "./auth.js";
 import { FixedWindowRateLimiter, type RateLimiter } from "./http/rate-limit.js";
-import type { WordSuggestionLookup } from "./providers/local-dictionary.js";
+import { isChineseSuggestionQuery, type WordSuggestionLookup } from "./providers/local-dictionary.js";
 import { WiktApiProvider } from "./providers/wiktapi.js";
 import { CsvLocalChineseDictionary, type LocalChineseLookup } from "./study/local-dictionary.js";
 import { JsonFileStudyStore } from "./study/store.js";
-import { parseAddWord, parseBatchWords, parseCatalogQuery, parseClientId, parseCommitImportDraft, parseCreateImportDraft, parseCreateMyWordbook, parseLearningEvent, parseResourceId, parseShareCode, parseStatus, parseUpdateCatalog, parseUpdateWord, parseUploadCatalog, parseWordId } from "./study/validation.js";
+import { parseAddWord, parseBatchWords, parseCatalogQuery, parseClientId, parseCommitImportDraft, parseCreateImportDraft, parseCreateMyWordbook, parseLearningEvent, parseResourceId, parseShareCode, parseStatus, parseUpdateCatalog, parseUpdateMyWordbook, parseUpdateWord, parseUploadCatalog, parseWordId } from "./study/validation.js";
 import type { AccountUser, ImportLineInput, PreparedImportLine, ResolvedImportDraftEntry, StudyStore, StudyWordEntry } from "./study/types.js";
 import { isValidWordQuery, normalizeWord } from "./words/normalize.js";
 import { WordService, type WordLookup } from "./words/word-service.js";
@@ -20,6 +20,9 @@ import { WordProviderError } from "./words/types.js";
 export interface CreateAppOptions {
   frontendOrigins?: string[];
   wordLookup?: WordLookup;
+  /** Online pronunciation lookup, separate from the offline-first definition path. */
+  pronunciationLookup?: WordLookup;
+  pronunciationLookups?: Partial<Record<"gb" | "us", WordLookup>>;
   wordRateLimiter?: RateLimiter;
   wordSuggestionLookup?: WordSuggestionLookup;
   wordSuggestionRateLimiter?: RateLimiter;
@@ -60,6 +63,30 @@ function apiError(code: string, message: string): ApiErrorBody {
   return { error: { code, message } };
 }
 
+const POS_ALIASES: Record<string, string> = {
+  n: "noun", noun: "noun",
+  v: "verb", vi: "verb", vt: "verb", verb: "verb",
+  a: "adjective", s: "adjective", adj: "adjective", adjective: "adjective",
+  r: "adverb", adv: "adverb", adverb: "adverb",
+  prep: "preposition", preposition: "preposition",
+  pron: "pronoun", pronoun: "pronoun",
+  conj: "conjunction", conjunction: "conjunction",
+  interj: "interjection", int: "interjection", interjection: "interjection",
+  aux: "auxiliary", auxiliary: "auxiliary",
+  det: "determiner", determiner: "determiner",
+  num: "numeral", numeral: "numeral",
+  phr: "phrase", phrase: "phrase",
+};
+
+function comparablePos(value: string): string {
+  const compact = value.trim().toLowerCase().replace(/\./g, "").replace(/\s+/g, " ");
+  return POS_ALIASES[compact] ?? compact;
+}
+
+function dictionaryHeadword(value: string): string {
+  return value.replace(/ \((?:[a-z0-9]{2,12}|[a-z0-9]{1,8}(?:[&/-][a-z0-9]{1,8}){1,3})\)$/i, "");
+}
+
 type RequestIdentity = {
   user: AccountUser | null;
   clientId: string | null;
@@ -93,6 +120,14 @@ export function createApp(options: CreateAppOptions = {}) {
   const app = express();
   const allowedOrigins = options.frontendOrigins ?? ["http://localhost:5173", "http://127.0.0.1:5173"];
   const wordLookup = options.wordLookup ?? new WordService(new WiktApiProvider());
+  const pronunciationLookupGb = options.pronunciationLookups?.gb
+    ?? options.pronunciationLookup
+    ?? options.wordLookup
+    ?? new WordService(new WiktApiProvider({ accent: "gb" }));
+  const pronunciationLookupUs = options.pronunciationLookups?.us
+    ?? options.pronunciationLookup
+    ?? options.wordLookup
+    ?? new WordService(new WiktApiProvider({ accent: "us" }));
   const wordSuggestionLookup = options.wordSuggestionLookup ?? {
     async suggest() { return []; },
   };
@@ -185,30 +220,40 @@ export function createApp(options: CreateAppOptions = {}) {
     if (!isValidWordQuery(normalized)) {
       return { ...line, status: "invalid", reason: "英文单词格式无效" };
     }
+    const lookupWord = dictionaryHeadword(normalized);
     let matched: Awaited<ReturnType<WordLookup["lookup"]>> | null = null;
     let lookupFailed = false;
-    try { matched = await limitedLookup(normalized); } catch { lookupFailed = true; }
+    try { matched = await limitedLookup(lookupWord); } catch { lookupFailed = true; }
     let zhMeaning = line.zhMeaning;
     if (!zhMeaning) {
-      try { zhMeaning = await localChineseLookup.lookup(normalized); } catch { /* Local dictionaries are optional. */ }
-    }
-    if (!line.enDefinition && (line.pos || line.example) && !matched?.meanings[0]) {
-      return { ...line, word: normalized, status: "invalid", reason: "填写词性或例句时需要同时提供英文释义" };
+      try { zhMeaning = await localChineseLookup.lookup(lookupWord); } catch { /* Local dictionaries are optional. */ }
     }
     let meanings = matched?.meanings ?? [];
+    const matchedMeaningIndex = line.pos
+      ? meanings.findIndex((meaning) => comparablePos(meaning.pos) === comparablePos(line.pos!))
+      : -1;
+    const preferredMeaningIndex = matchedMeaningIndex >= 0 ? matchedMeaningIndex : 0;
     if (line.enDefinition) {
-      const fallback = meanings[0];
+      const fallback = meanings[preferredMeaningIndex];
       meanings = [{
         pos: line.pos || fallback?.pos || "unknown",
         definition: line.enDefinition,
         ...((line.example || fallback?.example) ? { example: line.example || fallback?.example } : {}),
       }];
-    } else if ((line.pos || line.example) && meanings[0]) {
-      meanings = meanings.map((meaning, index) => index === 0 ? {
-        ...meaning,
-        ...(line.pos ? { pos: line.pos } : {}),
-        ...(line.example ? { example: line.example } : {}),
-      } : meaning);
+    } else if (line.pos || line.example) {
+      if (!meanings.length || (line.pos && matchedMeaningIndex < 0)) {
+        meanings = [...meanings, {
+          pos: line.pos || "unknown",
+          definition: "",
+          ...(line.example ? { example: line.example } : {}),
+        }];
+      } else {
+        meanings = meanings.map((meaning, index) => index === preferredMeaningIndex ? {
+          ...meaning,
+          ...(line.pos ? { pos: line.pos } : {}),
+          ...(line.example ? { example: line.example } : {}),
+        } : meaning);
+      }
     }
     const entry: StudyWordEntry = {
       ...(matched ?? { word: normalized, phonetic: "", source: "user" as const }),
@@ -586,16 +631,18 @@ export function createApp(options: CreateAppOptions = {}) {
     },
     enforceWordSuggestionRateLimit,
     async (request, response, next) => {
-      const query = typeof request.query.q === "string"
-        ? normalizeWord(request.query.q)
+      const rawQuery = typeof request.query.q === "string"
+        ? request.query.q.trim().replace(/\s+/g, " ")
         : "";
+      const chinese = isChineseSuggestionQuery(rawQuery);
+      const query = chinese ? rawQuery : normalizeWord(rawQuery);
       const limit = request.query.limit === undefined ? 8 : Number(request.query.limit);
       if (
         query.length < 2
-        || !isValidWordQuery(query)
+        || (!chinese && !isValidWordQuery(query))
         || !Number.isInteger(limit)
         || limit < 1
-        || limit > 10
+        || limit > 8
       ) {
         response.status(400).json(apiError("INVALID_SUGGESTION_QUERY", "Word suggestion query is invalid"));
         return;
@@ -614,6 +661,42 @@ export function createApp(options: CreateAppOptions = {}) {
   app.get(["/api/words", "/api/words/"], enforceWordRateLimit, (_request, response) => {
     response.status(400).json(apiError("INVALID_WORD", "Word query is invalid"));
   });
+
+  app.get(
+    "/api/pronunciations/:word",
+    enforceWordSuggestionRateLimit,
+    async (request, response, next) => {
+      const rawWord = request.params.word;
+      const word = typeof rawWord === "string" ? normalizeWord(rawWord) : "";
+      if (!isValidWordQuery(word)) {
+        response.status(400).json(apiError("INVALID_WORD", "Word query is invalid"));
+        return;
+      }
+      const rawAccent = request.query.accent;
+      if (rawAccent !== undefined && rawAccent !== "gb" && rawAccent !== "us") {
+        response.status(400).json(apiError("INVALID_ACCENT", "Accent must be gb or us"));
+        return;
+      }
+      const accent = rawAccent === "us" ? "us" : "gb";
+      const pronunciationLookup = accent === "us" ? pronunciationLookupUs : pronunciationLookupGb;
+      try {
+        const entry = await pronunciationLookup.lookup(dictionaryHeadword(word));
+        if (!entry || (!entry.phonetic && !entry.audioUrl)) {
+          response.status(404).json(apiError("PRONUNCIATION_NOT_FOUND", "Pronunciation was not found"));
+          return;
+        }
+        response.setHeader("Cache-Control", "public, max-age=86400");
+        response.status(200).json({
+          word,
+          accent,
+          phonetic: entry.phonetic,
+          ...(entry.audioUrl ? { audioUrl: entry.audioUrl } : {}),
+        });
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
 
   app.get(
     "/api/words/:word",
@@ -757,6 +840,12 @@ export function createApp(options: CreateAppOptions = {}) {
     if (!clientId) return;
     if (!id) { response.status(400).json(apiError("INVALID_RESOURCE_ID", "Resource id is invalid")); return; }
     try { const book = await studyStore.getMyWordbook(clientId, id); if (!book) response.status(404).json(apiError("WORDBOOK_NOT_FOUND", "Wordbook was not found")); else response.status(200).json(book); } catch (error) { next(error); }
+  });
+  app.patch("/api/my/wordbooks/:id", async (request, response, next) => {
+    const clientId = readClientId(request, response); const id = parseResourceId(request.params.id); const input = parseUpdateMyWordbook(request.body);
+    if (!clientId) return;
+    if (!id || !input) { response.status(400).json(apiError("INVALID_WORDBOOK_UPDATE", "Wordbook update is invalid")); return; }
+    try { const book = await studyStore.updateMyWordbook(clientId, id, input); if (!book) response.status(404).json(apiError("WORDBOOK_NOT_FOUND", "Wordbook was not found")); else response.status(200).json(book); } catch (error) { next(error); }
   });
   app.delete("/api/my/wordbooks/:id", async (request, response, next) => {
     const clientId = readClientId(request, response); const id = parseResourceId(request.params.id);

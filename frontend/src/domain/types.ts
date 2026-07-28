@@ -7,6 +7,7 @@ export type WordMeaning = {
   /** English gloss (dictionary data stays EN; UI chrome is ZH) */
   definition: string
   example?: string
+  sourceId?: 'open_english_wordnet' | 'wiktionary' | 'wiktapi'
 }
 
 /** Canonical dictionary record — pure data, no UI/bookkeeping */
@@ -25,7 +26,7 @@ export type WordEntry = {
   zhMeaningSource?: 'user' | 'dictionary'
   availableLanguages?: Array<'zh' | 'en'>
   sources?: Array<{
-    id: 'open_english_wordnet' | 'ecdict' | 'wiktapi'
+    id: 'open_english_wordnet' | 'ecdict' | 'wiktionary' | 'wiktapi'
     name: string
     version: string
     license: string

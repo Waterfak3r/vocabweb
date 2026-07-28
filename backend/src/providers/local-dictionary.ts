@@ -4,12 +4,13 @@ import { normalizeWord } from "../words/normalize.js";
 import type { WordEntry, WordMeaning, WordProvider } from "../words/types.js";
 
 type EntryRow = { lemma: string; phonetic: string; zh_meaning: string | null };
-type MeaningRow = { pos: string; definition: string; example: string | null };
+type MeaningRow = { pos: string; definition: string; example: string | null; source_id?: string };
 type SuggestionRow = { lemma: string; zh_meaning: string | null };
 
 export type WordSuggestion = {
   word: string;
   zhMeaning?: string;
+  kind: "word" | "phrase";
 };
 
 export interface WordSuggestionLookup {
@@ -36,8 +37,10 @@ export class SqliteLocalDictionaryProvider implements WordProvider, WordSuggesti
     const lemma = normalizeWord(word);
     const entry = db.prepare("SELECT lemma, phonetic, zh_meaning FROM dictionary_entries WHERE lemma = ?").get(lemma) as EntryRow | undefined;
     if (!entry) return null;
+    const hasSourceId = db.prepare("PRAGMA table_info(dictionary_meanings)").all()
+      .some((column) => (column as { name?: string }).name === "source_id");
     const rows = db.prepare(`
-      SELECT pos, definition, example
+      SELECT pos, definition, example${hasSourceId ? ", source_id" : ""}
       FROM dictionary_meanings
       WHERE lemma = ?
       ORDER BY sort_order
@@ -47,11 +50,17 @@ export class SqliteLocalDictionaryProvider implements WordProvider, WordSuggesti
       pos: POS[row.pos] ?? row.pos,
       definition: row.definition,
       ...(row.example ? { example: row.example } : {}),
+      ...(row.source_id === "wiktionary"
+        ? { sourceId: "wiktionary" as const }
+        : { sourceId: "open_english_wordnet" as const }),
     }));
     const availableLanguages: Array<"zh" | "en"> = [];
     if (entry.zh_meaning) availableLanguages.push("zh");
     if (meanings.length) availableLanguages.push("en");
     if (!availableLanguages.length) return null;
+    const wiktionaryVersion = rows.some((row) => row.source_id === "wiktionary")
+      ? (db.prepare("SELECT value FROM dictionary_metadata WHERE key = 'wiktextract_dump_date'").get() as { value?: string } | undefined)?.value
+      : undefined;
     return {
       word: entry.lemma,
       phonetic: entry.phonetic ? `/${entry.phonetic.replace(/^[/\[]/, "").replace(/[/\]]$/, "")}/` : "",
@@ -59,12 +68,21 @@ export class SqliteLocalDictionaryProvider implements WordProvider, WordSuggesti
       ...(entry.zh_meaning ? { zhMeaning: entry.zh_meaning, zhMeaningSource: "dictionary" as const } : {}),
       availableLanguages,
       sources: [
-        ...(meanings.length ? [{
+        ...(rows.some((row) => !row.source_id || row.source_id === "open_english_wordnet") ? [{
           id: "open_english_wordnet" as const,
           name: "Open English WordNet",
           version: "2025",
           license: "CC BY 4.0",
           url: "https://en-word.net/",
+        }] : []),
+        ...(rows.some((row) => row.source_id === "wiktionary") ? [{
+          id: "wiktionary" as const,
+          name: "English Wiktionary",
+          version: wiktionaryVersion && wiktionaryVersion !== "not-imported"
+            ? `Kaikki ${wiktionaryVersion}`
+            : "offline extract",
+          license: "CC BY-SA 4.0 / GFDL",
+          url: `https://en.wiktionary.org/wiki/${encodeURIComponent(entry.lemma.replaceAll(" ", "_"))}`,
         }] : []),
         ...(entry.zh_meaning ? [{
           id: "ecdict" as const,
@@ -85,8 +103,25 @@ export class SqliteLocalDictionaryProvider implements WordProvider, WordSuggesti
   async suggest(rawQuery: string, limit: number): Promise<WordSuggestion[]> {
     const db = this.open();
     if (!db) return [];
-    const query = normalizeWord(rawQuery);
-    const upperBound = `${query}\uffff`;
+    const query = rawQuery.trim().replace(/\s+/g, " ");
+    if (isChineseSuggestionQuery(query)) {
+      const rows = db.prepare(`
+        SELECT lemma, zh_meaning
+        FROM dictionary_entries
+        WHERE zh_meaning IS NOT NULL AND instr(zh_meaning, ?) > 0
+        ORDER BY
+          CASE WHEN trim(zh_meaning) = ? THEN 0 ELSE 1 END,
+          CASE WHEN instr(trim(zh_meaning), ?) = 1 THEN 0 ELSE 1 END,
+          CASE WHEN frq IS NULL THEN 1 ELSE 0 END,
+          frq,
+          length(lemma),
+          lemma
+        LIMIT ?
+      `).all(query, query, query, limit) as SuggestionRow[];
+      return rows.map(toSuggestion);
+    }
+    const normalizedQuery = normalizeWord(query);
+    const upperBound = `${normalizedQuery}\uffff`;
     const prefixRows = db.prepare(`
       SELECT lemma, zh_meaning
       FROM dictionary_entries
@@ -100,7 +135,7 @@ export class SqliteLocalDictionaryProvider implements WordProvider, WordSuggesti
         length(lemma),
         lemma
       LIMIT ?
-    `).all(query, upperBound, query, limit) as SuggestionRow[];
+    `).all(normalizedQuery, upperBound, normalizedQuery, limit) as SuggestionRow[];
 
     const remaining = limit - prefixRows.length;
     const containsRows = remaining > 0
@@ -117,13 +152,10 @@ export class SqliteLocalDictionaryProvider implements WordProvider, WordSuggesti
             length(lemma),
             lemma
           LIMIT ?
-        `).all(query, query, upperBound, remaining) as SuggestionRow[]
+        `).all(normalizedQuery, normalizedQuery, upperBound, remaining) as SuggestionRow[]
       : [];
 
-    return [...prefixRows, ...containsRows].map((row) => ({
-      word: row.lemma,
-      ...(row.zh_meaning ? { zhMeaning: summarizeChineseMeaning(row.zh_meaning) } : {}),
-    }));
+    return [...prefixRows, ...containsRows].map(toSuggestion);
   }
 
   private open(): Database.Database | undefined {
@@ -136,6 +168,18 @@ export class SqliteLocalDictionaryProvider implements WordProvider, WordSuggesti
       return undefined;
     }
   }
+}
+
+export function isChineseSuggestionQuery(value: string): boolean {
+  return value.length >= 2 && value.length <= 24 && /^[\p{Script=Han}\s]+$/u.test(value);
+}
+
+function toSuggestion(row: SuggestionRow): WordSuggestion {
+  return {
+    word: row.lemma,
+    kind: row.lemma.includes(" ") ? "phrase" : "word",
+    ...(row.zh_meaning ? { zhMeaning: summarizeChineseMeaning(row.zh_meaning) } : {}),
+  };
 }
 
 function summarizeChineseMeaning(value: string): string {

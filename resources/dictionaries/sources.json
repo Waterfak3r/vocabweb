@@ -1,13 +1,14 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "schema_version": "1.0.0",
-  "generated_at": "2026-07-26",
+  "generated_at": "2026-07-28",
   "purpose": "英语学习网站词典原始资源选型与导入追踪；不包含完整上游数据。",
   "default_import_order": [
     "open_english_wordnet",
     "cmudict",
     "wikidata_lexemes",
-    "ecdict"
+    "ecdict",
+    "kaikki_wiktextract"
   ],
   "sources": [
     {
@@ -217,7 +218,7 @@
       "id": "english_wiktionary",
       "name": "English Wiktionary dumps",
       "maintainer_or_rightsholder": "Wiktionary contributors",
-      "status": "conditional_long_tail",
+      "status": "enabled_phrase_fallback",
       "scope": [
         "definitions",
         "etymologies",
@@ -267,7 +268,7 @@
       "id": "kaikki_wiktextract",
       "name": "Kaikki.org raw Wiktextract data",
       "maintainer_or_rightsholder": "Kaikki.org / Wiktextract; underlying content from Wiktionary contributors",
-      "status": "conditional_distribution_channel",
+      "status": "enabled_pinned_phrase_import",
       "scope": [
         "pre-parsed Wiktionary JSONL",
         "definitions",

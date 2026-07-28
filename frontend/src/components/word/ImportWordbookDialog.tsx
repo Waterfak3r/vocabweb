@@ -11,6 +11,7 @@ type ImportDraftApi = {
   getImportDraft: (id: string) => Promise<ImportDraft>
   processImportDraft: (id: string) => Promise<ImportDraft>
   deleteImportDraft: (id: string) => Promise<void>
+  updateMyWordbook: (id: string, input: { category: string | null }) => Promise<MyWordbook>
 }
 
 export type ImportWordbookDialogProps = {
@@ -20,6 +21,7 @@ export type ImportWordbookDialogProps = {
   onCreated: (wordbook: MyWordbook) => void
   initialTitle?: string
   initialDescription?: string
+  initialCategory?: string
   targetWordbookId?: string
   targetWords?: string[]
 }
@@ -70,10 +72,11 @@ export function nextImportDraft(drafts: readonly ImportDraft[], current: Pick<Im
  * after onCreated; all file reading, preview, draft creation and conflict
  * decisions remain here so creation and future community flows stay identical.
  */
-export function ImportWordbookDialog({ open, api, onClose, onCreated, initialTitle = '', initialDescription = '', targetWordbookId, targetWords = [] }: ImportWordbookDialogProps) {
+export function ImportWordbookDialog({ open, api, onClose, onCreated, initialTitle = '', initialDescription = '', initialCategory = '', targetWordbookId, targetWords = [] }: ImportWordbookDialogProps) {
   const [step, setStep] = useState<Step>(targetWordbookId ? 'source' : 'details')
   const [title, setTitle] = useState(initialTitle)
   const [description, setDescription] = useState(initialDescription)
+  const [category, setCategory] = useState(initialCategory)
   const [content, setContent] = useState('')
   const [parsed, setParsed] = useState<ParsedImport | null>(null)
   const [draft, setDraft] = useState<ImportDraft | null>(null)
@@ -88,8 +91,9 @@ export function ImportWordbookDialog({ open, api, onClose, onCreated, initialTit
     if (!open) return
     setTitle(initialTitle)
     setDescription(initialDescription)
+    setCategory(initialCategory)
     setStep(targetWordbookId ? 'source' : 'details')
-  }, [initialDescription, initialTitle, open, targetWordbookId])
+  }, [initialCategory, initialDescription, initialTitle, open, targetWordbookId])
 
   useEffect(() => {
     if (!open) return
@@ -114,8 +118,8 @@ export function ImportWordbookDialog({ open, api, onClose, onCreated, initialTit
   useEffect(() => {
     if (open) return
     setStep(targetWordbookId ? 'source' : 'details'); setContent(''); setParsed(null); setDraft(null); setSavedDrafts([]); setDecisions({}); setError(''); setBusy(false); setCommitMode('append'); setOverwriteImpact(null)
-    setTitle(initialTitle); setDescription(initialDescription)
-  }, [initialDescription, initialTitle, open, targetWordbookId])
+    setTitle(initialTitle); setDescription(initialDescription); setCategory(initialCategory)
+  }, [initialCategory, initialDescription, initialTitle, open, targetWordbookId])
 
   useEffect(() => {
     if (!open || !api || draft?.status !== 'processing') return
@@ -179,7 +183,7 @@ export function ImportWordbookDialog({ open, api, onClose, onCreated, initialTit
     }
     const nextParsed = parseWordbookText(content)
     setParsed(nextParsed); setDraft(null); setDecisions({})
-    if (nextParsed.acceptedCount === 0) { setError('没有找到可导入的英文词条，请按“五列 CSV、每行一个词条”的格式检查。'); return }
+    if (nextParsed.acceptedCount === 0) { setError('没有找到可导入的英文词条，请确认每行首列填写了合法的英文单词或词组。'); return }
     if (!api) { setError('当前未连接词本服务，暂时不能保存导入草稿。'); return }
 
     setBusy(true); setError('')
@@ -207,7 +211,10 @@ export function ImportWordbookDialog({ open, api, onClose, onCreated, initialTit
     if (!api || !draft) return
     setBusy(true); setError('')
     try {
-      const wordbook = await api.commitImportDraft(draft.id, decisions, mode)
+      let wordbook = await api.commitImportDraft(draft.id, decisions, mode)
+      if (!targetWordbookId && category.trim()) {
+        wordbook = await api.updateMyWordbook(wordbook.id, { category: category.trim() })
+      }
       if (mode === 'overwrite') {
         onCreated(wordbook)
         onClose()
@@ -310,6 +317,10 @@ export function ImportWordbookDialog({ open, api, onClose, onCreated, initialTit
               <label htmlFor="import-description">说明（可选）</label>
               <input id="import-description" value={description} maxLength={240} onChange={(event) => setDescription(event.target.value)} placeholder="记录这个词本的用途" />
             </div>
+            <div className={styles.field}>
+              <label htmlFor="import-category">分类（可选）</label>
+              <input id="import-category" value={category} maxLength={30} onChange={(event) => setCategory(event.target.value)} placeholder="例如：考试、写作、生词" />
+            </div>
             {savedDrafts.length > 0 && <section className={styles.savedDrafts} aria-label="未完成的导入草稿">
               <h3>继续未完成的导入</h3>
               <p className={styles.hint}>超出单批上限的内容会留在这里，继续后会追加到同一本词本。</p>
@@ -327,7 +338,7 @@ export function ImportWordbookDialog({ open, api, onClose, onCreated, initialTit
             <div className={styles.field}>
               <label htmlFor="import-content">粘贴单词</label>
               <textarea id="import-content" value={content} onChange={(event) => { setContent(event.target.value); setParsed(null); setDraft(null) }} placeholder={'a lot of,phrase,a large amount,许多,We had a lot of time.\nresilient,adjective,,有韧性的'} />
-              <span className={styles.hint}>每行 CSV：词条, 词性, 英文释义, 中文释义, 例句。后四列可留空；字段内含逗号时请用双引号包裹。一次最多导入 {MAX_IMPORT_ENTRIES} 个有效词，更多内容会分批处理。</span>
+              <span className={styles.hint}>每行 CSV：词条, 词性, 英文释义, 中文释义, 例句。只有词条必填，后四列可任意留空；字段内含逗号时请用双引号包裹。一次最多导入 {MAX_IMPORT_ENTRIES} 个有效词，更多内容会分批处理。</span>
             </div>
             <div className={styles.upload}>
               <strong>或选择文件</strong>
@@ -350,7 +361,7 @@ export function ImportWordbookDialog({ open, api, onClose, onCreated, initialTit
               {conflictCount > 0 && <span className={styles.pill}>与词本冲突 {conflictCount} 词</span>}
               {continuationCount > 1 && <span className={styles.pill}>将生成 {continuationCount - 1} 个后续草稿</span>}
             </div>
-            <p className={styles.hint}>你填写的词性、释义和例句优先，空缺字段由词典补齐。返回上一步可改正格式无效或重复的行。</p>
+            <p className={styles.hint}>你填写的词性、释义和例句优先，空缺字段由词典补齐；词性会优先匹配对应义项。返回上一步可改正词条格式无效或重复的行。</p>
             {draft?.targetWordbookId && <fieldset className={styles.commitMode}>
               <legend>写入方式</legend>
               <label className={commitMode === 'append' ? styles.modeActive : ''}>

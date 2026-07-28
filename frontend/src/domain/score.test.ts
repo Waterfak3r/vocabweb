@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { DictationAnswer, WordbookItem } from './types'
-import { countCorrect, gradeAnswer, shuffled, wrongItems } from './score'
+import { countCorrect, gradeAnswer, normalizeDictationText, shuffled, wrongItems } from './score'
 
 const ITEMS: WordbookItem[] = [
   {
@@ -25,6 +25,20 @@ describe('dictation scoring', () => {
   it('grades normalized exact matches', () => {
     expect(gradeAnswer('  RESILIENT ', ITEMS[0])).toBe('correct')
     expect(gradeAnswer('resilience', ITEMS[0])).toBe('incorrect')
+  })
+
+  it('does not require punctuation that cannot be heard', () => {
+    const phrase = (word: string): WordbookItem => ({ ...ITEMS[0], id: word, word })
+    expect(gradeAnswer('agree with sb', phrase('agree with sb.'))).toBe('correct')
+    expect(gradeAnswer('connect with', phrase('connect...with...'))).toBe('correct')
+    expect(gradeAnswer('provide sb with', phrase('provide sb. with ...'))).toBe('correct')
+    expect(gradeAnswer('well known', phrase('well-known'))).toBe('correct')
+    expect(gradeAnswer('well-known', phrase('well known'))).toBe('correct')
+    expect(gradeAnswer('initial public offering', phrase('initial public offering (ipo)'))).toBe('correct')
+    expect(gradeAnswer('initial public offering (IPO)', phrase('initial public offering (ipo)'))).toBe('correct')
+    expect(gradeAnswer('research and development', phrase('research and development (r&d)'))).toBe('correct')
+    expect(normalizeDictationText('  CONNECT...WITH... ')).toBe('connect with')
+    expect(gradeAnswer('connect to', phrase('connect...with...'))).toBe('incorrect')
   })
 
   it('counts correct answers and returns the wrong deck in deck order', () => {

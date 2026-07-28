@@ -36,6 +36,11 @@ export function WordResultCard({ entry, showAddAction = true }: WordResultCardPr
     setLanguage(next)
     try { localStorage.setItem('vocab-dictionary-language-v1', next) } catch { /* Storage is optional. */ }
   }
+  const englishSource = entry.sources?.some((source) => source.id === 'open_english_wordnet')
+    ? 'OEWN 2025'
+    : entry.sources?.some((source) => source.id === 'wiktionary')
+      ? 'Wiktionary'
+      : '在线补充'
 
   return (
     <article className={`${styles.card} home-word-card`}>
@@ -51,7 +56,7 @@ export function WordResultCard({ entry, showAddAction = true }: WordResultCardPr
           <button type="button" className={activeLanguage === 'zh' ? 'active' : ''} disabled={!available.includes('zh')} onClick={() => chooseLanguage('zh')}>中文释义</button>
           <button type="button" className={activeLanguage === 'en' ? 'active' : ''} disabled={!available.includes('en')} onClick={() => chooseLanguage('en')}>English</button>
         </div>
-        {entry.sources?.length ? <span className="dictionary-source-note">{activeLanguage === 'zh' ? 'ECDICT' : entry.sources.some((source) => source.id === 'open_english_wordnet') ? 'OEWN 2025' : '在线补充'}</span> : null}
+        {entry.sources?.length ? <span className="dictionary-source-note">{activeLanguage === 'zh' ? 'ECDICT' : englishSource}</span> : null}
       </div>
       {activeLanguage === 'zh' && entry.zhMeaning ? (
         <div className="chinese-meaning-list">

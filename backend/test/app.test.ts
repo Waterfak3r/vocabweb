@@ -186,6 +186,51 @@ test("GET /api/words/:word returns the exact normalized DTO", async () => {
   }
 });
 
+test("GET /api/pronunciations/:word returns recorded audio from its dedicated lookup", async () => {
+  const lookedUp: string[] = [];
+  const server = await startServer({
+    wordLookup: { async lookup() { return resilientEntry(); } },
+    pronunciationLookups: {
+      gb: {
+        async lookup(word) {
+          lookedUp.push(`gb:${word}`);
+          return {
+            word, phonetic: "/steɪt/", audioUrl: "https://audio.example/en-gb/state.mp3",
+            meanings: [{ pos: "noun", definition: "A condition." }], source: "backend",
+          };
+        },
+      },
+      us: {
+        async lookup(word) {
+          lookedUp.push(`us:${word}`);
+          return {
+            word, phonetic: "/steɪt/", audioUrl: "https://audio.example/en-us/state.mp3",
+            meanings: [{ pos: "noun", definition: "A condition." }], source: "backend",
+          };
+        },
+      },
+    },
+  });
+  try {
+    const response = await fetch(`${server.baseUrl}/api/pronunciations/STATE`);
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("cache-control"), "public, max-age=86400");
+    assert.deepEqual(await response.json(), {
+      word: "state",
+      accent: "gb",
+      phonetic: "/steɪt/",
+      audioUrl: "https://audio.example/en-gb/state.mp3",
+    });
+    const american = await fetch(`${server.baseUrl}/api/pronunciations/state?accent=us`);
+    assert.equal(american.status, 200);
+    assert.equal((await american.json() as { audioUrl: string }).audioUrl, "https://audio.example/en-us/state.mp3");
+    assert.equal((await fetch(`${server.baseUrl}/api/pronunciations/state?accent=au`)).status, 400);
+    assert.deepEqual(lookedUp, ["gb:state", "us:state"]);
+  } finally {
+    await server.close();
+  }
+});
+
 test("CORS rejects origins outside the configured allowlist", async () => {
   const server = await startServer({
     frontendOrigins: ["https://frontend.example"],
@@ -273,7 +318,7 @@ test("GET /api/words/suggestions validates, normalizes, caches, and uses its own
     wordSuggestionLookup: {
       async suggest(query, limit) {
         calls.push({ query, limit });
-        return [{ word: "a lot of", zhMeaning: "许多" }];
+        return [{ word: "a lot of", zhMeaning: "许多", kind: "phrase" }];
       },
     },
     wordSuggestionRateLimiter: new FixedWindowRateLimiter({
@@ -291,7 +336,7 @@ test("GET /api/words/suggestions validates, normalizes, caches, and uses its own
     assert.equal(response.status, 200);
     assert.equal(response.headers.get("cache-control"), "public, max-age=300");
     assert.deepEqual(await response.json(), {
-      suggestions: [{ word: "a lot of", zhMeaning: "许多" }],
+      suggestions: [{ word: "a lot of", zhMeaning: "许多", kind: "phrase" }],
     });
     assert.deepEqual(calls, [{ query: "a lot", limit: 6 }]);
 
@@ -322,6 +367,33 @@ test("GET /api/words/suggestions without q remains an exact headword lookup", as
     const response = await fetch(`${server.baseUrl}/api/words/suggestions`);
     assert.equal(response.status, 200);
     assert.equal((await response.json() as { word: string }).word, "suggestions");
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /api/words/suggestions accepts 2–24 Chinese characters without English normalization", async () => {
+  const calls: Array<{ query: string; limit: number }> = [];
+  const server = await startServer({
+    wordSuggestionLookup: {
+      async suggest(query, limit) {
+        calls.push({ query, limit });
+        return [{ word: "give up", zhMeaning: "放弃", kind: "phrase" }];
+      },
+    },
+  });
+  try {
+    const response = await fetch(`${server.baseUrl}/api/words/suggestions?q=${encodeURIComponent("  放弃  ")}&limit=8`);
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      suggestions: [{ word: "give up", zhMeaning: "放弃", kind: "phrase" }],
+    });
+    assert.deepEqual(calls, [{ query: "放弃", limit: 8 }]);
+
+    const tooLong = "中".repeat(25);
+    assert.equal((await fetch(`${server.baseUrl}/api/words/suggestions?q=${tooLong}`)).status, 400);
+    assert.equal((await fetch(`${server.baseUrl}/api/words/suggestions?q=${encodeURIComponent("放 a")}`)).status, 400);
+    assert.equal((await fetch(`${server.baseUrl}/api/words/suggestions?q=ab&limit=9`)).status, 400);
   } finally {
     await server.close();
   }

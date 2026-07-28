@@ -4,6 +4,7 @@ import { resolveApiBase } from './resolveApiBase'
 export type WordSuggestion = {
   word: string
   zhMeaning?: string
+  kind: 'word' | 'phrase'
 }
 
 export interface WordSuggestionRepository {
@@ -29,8 +30,10 @@ export class BackendWordSuggestionRepository implements WordSuggestionRepository
   }
 
   async suggest(rawQuery: string, limit = 8, signal?: AbortSignal): Promise<WordSuggestion[]> {
-    const query = normalizeWord(rawQuery)
-    if (query.length < 2 || !isValidWordQuery(query)) return []
+    const trimmed = rawQuery.trim().replace(/\s+/g, ' ')
+    const chinese = /^[\p{Script=Han}\s]{2,24}$/u.test(trimmed)
+    const query = chinese ? trimmed : normalizeWord(trimmed)
+    if (query.length < 2 || (!chinese && !isValidWordQuery(query))) return []
 
     const url = new URL('api/words/suggestions', this.baseUrl)
     url.searchParams.set('q', query)
@@ -49,7 +52,12 @@ export class BackendWordSuggestionRepository implements WordSuggestionRepository
       if (!isValidWordQuery(word)) return []
       if (value.zhMeaning !== undefined && typeof value.zhMeaning !== 'string') return []
       const zhMeaning = value.zhMeaning?.trim()
-      return [{ word, ...(zhMeaning ? { zhMeaning } : {}) }]
+      // Keep rolling deployments usable when the frontend is updated before an
+      // older backend that does not yet emit `kind`.
+      const kind = value.kind === 'word' || value.kind === 'phrase'
+        ? value.kind
+        : word.includes(' ') ? 'phrase' : 'word'
+      return [{ word, kind, ...(zhMeaning ? { zhMeaning } : {}) }]
     })
   }
 }

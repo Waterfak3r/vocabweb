@@ -26,6 +26,7 @@ export function matchShortcut(
   event: KeyboardEvent,
   shortcuts: Array<Shortcut & { allowInInput?: boolean }>,
 ): boolean {
+  if (event.isComposing || event.altKey || event.shiftKey) return false
   if (isTypingTarget(event.target)) {
     const allowed = shortcuts.find(
       (s) =>

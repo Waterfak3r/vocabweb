@@ -47,7 +47,8 @@ function fullEntryPayload(): Record<string, unknown> {
         sounds: [
           {
             ipa: "ˌsɛɹənˈdɪpɪti",
-            mp3_url: "http://audio.example/us.mp3",
+            mp3_url: "https://audio.example/us.mp3",
+            tags: ["US"],
           },
           {
             ipa: "/ˌsɛɹənˈdɪpɪti/",
@@ -79,11 +80,13 @@ test("definitions are authoritative for meanings and full entry supplies pronunc
         pos: "noun",
         definition: "An unsought, unintended, and unexpected discovery.",
         example: "The discovery was pure serendipity.",
+        sourceId: "wiktapi",
       },
       {
         pos: "noun",
         definition: "A combination of events which are not individually beneficial.",
         example: undefined,
+        sourceId: "wiktapi",
       },
     ],
     source: "backend",
@@ -92,6 +95,10 @@ test("definitions are authoritative for meanings and full entry supplies pronunc
   assert.deepEqual(pronunciation, {
     phonetic: "/ˌsɛɹənˈdɪpɪti/",
     audioUrl: "https://audio.example/en-gb/serendipity.mp3",
+  });
+  assert.deepEqual(mapWiktApiPronunciationPayload(fullEntryPayload(), "us"), {
+    phonetic: "/ˌsɛɹənˈdɪpɪti/",
+    audioUrl: "https://audio.example/us.mp3",
   });
 });
 
@@ -133,11 +140,12 @@ test("definitions mapping preserves multiple parts of speech and filters empty g
       ],
     })?.meanings,
     [
-      { pos: "noun", definition: "A noun definition.", example: undefined },
+      { pos: "noun", definition: "A noun definition.", example: undefined, sourceId: "wiktapi" },
       {
         pos: "verb",
         definition: "A verb definition.",
         example: "They test the result.",
+        sourceId: "wiktapi",
       },
     ],
   );
@@ -201,11 +209,13 @@ test("WiktApiProvider requests definitions and full entry in parallel with lang=
         pos: "noun",
         definition: "An unsought, unintended, and unexpected discovery.",
         example: "The discovery was pure serendipity.",
+        sourceId: "wiktapi",
       },
       {
         pos: "noun",
         definition: "A combination of events which are not individually beneficial.",
         example: undefined,
+        sourceId: "wiktapi",
       },
     ],
     source: "backend",

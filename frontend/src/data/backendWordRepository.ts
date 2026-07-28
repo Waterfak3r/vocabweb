@@ -61,7 +61,12 @@ function parseMeaning(value: unknown): WordMeaning | null {
   const example = value.example?.trim() || undefined
   if (!pos || !definition) return null
 
-  return { pos, definition, example }
+  const sourceId = value.sourceId === 'open_english_wordnet'
+    || value.sourceId === 'wiktionary'
+    || value.sourceId === 'wiktapi'
+    ? value.sourceId
+    : undefined
+  return { pos, definition, example, sourceId }
 }
 
 function parseAudioUrl(value: unknown): string | undefined | null {
@@ -107,11 +112,11 @@ function parseBackendWordEntry(
   const sources = Array.isArray(value.sources)
     ? value.sources.flatMap((source) => {
         if (!isRecord(source)
-          || !['open_english_wordnet', 'ecdict', 'wiktapi'].includes(String(source.id))
+          || !['open_english_wordnet', 'ecdict', 'wiktionary', 'wiktapi'].includes(String(source.id))
           || typeof source.name !== 'string' || typeof source.version !== 'string'
           || typeof source.license !== 'string' || typeof source.url !== 'string') return []
         return [{
-          id: source.id as 'open_english_wordnet' | 'ecdict' | 'wiktapi',
+          id: source.id as 'open_english_wordnet' | 'ecdict' | 'wiktionary' | 'wiktapi',
           name: source.name,
           version: source.version,
           license: source.license,

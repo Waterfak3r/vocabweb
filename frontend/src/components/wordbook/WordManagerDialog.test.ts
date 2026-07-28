@@ -9,8 +9,9 @@ describe('parseEditableMeanings', () => {
     ])
   })
 
-  it('drops blank and definition-less rows', () => {
+  it('keeps a standalone part of speech when the definition is intentionally blank', () => {
     expect(parseEditableMeanings('\nverb |\n | usable definition')).toEqual([
+      { pos: 'verb', definition: '' },
       { pos: 'unknown', definition: 'usable definition' },
     ])
   })

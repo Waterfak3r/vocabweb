@@ -41,10 +41,10 @@ export type CatalogCard = Omit<CatalogWordbook, "words" | "ownerClientId" | "sou
 export type CatalogDetail = CatalogCard & { words: StudyWordEntry[]; };
 export interface MyWordbook {
   id: string; title: string; description: string; sourceCatalogId?: string;
-  createdAt: string; updatedAt: string; deletedAt?: string; words: WordbookWord[];
+  category?: string; createdAt: string; updatedAt: string; deletedAt?: string; words: WordbookWord[];
 }
 export interface MyWordbookCard {
-  id: string; title: string; description: string; sourceCatalogId?: string; createdAt: string; updatedAt: string;
+  id: string; title: string; description: string; sourceCatalogId?: string; category?: string; createdAt: string; updatedAt: string;
   wordCount: number; progress: WordbookProgress;
 }
 
@@ -99,7 +99,8 @@ export interface StudyDashboard {
 }
 
 export interface CatalogQuery { q?: string; exam?: CatalogExam; goal?: LearningGoal; sort?: CatalogSort; }
-export interface CreateMyWordbookInput { title: string; description?: string; words?: StudyWordEntry[]; }
+export interface CreateMyWordbookInput { title: string; description?: string; category?: string; words?: StudyWordEntry[]; }
+export interface UpdateMyWordbookInput { category: string | null; }
 /** The uploading account, supplied by the auth layer; drives the author display name and authorUserId. */
 export interface CatalogAuthor { userId: string; username: string; }
 /** Legacy direct upload remains supported; modern uploads reference the private wordbook. */
@@ -187,6 +188,7 @@ export interface StudyStore {
   importShareCode(clientId: string, shareCode: string): Promise<{ wordbook: MyWordbookCard; created: boolean } | null>;
   listMyWordbooks(clientId: string, trash: boolean): Promise<MyWordbookCard[]>;
   createMyWordbook(clientId: string, input: CreateMyWordbookInput): Promise<MyWordbookCard>;
+  updateMyWordbook(clientId: string, id: string, input: UpdateMyWordbookInput): Promise<MyWordbookCard | null>;
   getMyWordbook(clientId: string, id: string): Promise<MyWordbookCard | null>;
   deleteMyWordbook(clientId: string, id: string): Promise<boolean>;
   restoreMyWordbook(clientId: string, id: string): Promise<MyWordbookCard | null>;

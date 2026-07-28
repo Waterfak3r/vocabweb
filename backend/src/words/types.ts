@@ -2,6 +2,7 @@ export interface WordMeaning {
   pos: string;
   definition: string;
   example?: string;
+  sourceId?: "open_english_wordnet" | "wiktionary" | "wiktapi";
 }
 
 export interface WordEntry {
@@ -13,7 +14,7 @@ export interface WordEntry {
   zhMeaningSource?: "dictionary";
   availableLanguages?: Array<"zh" | "en">;
   sources?: Array<{
-    id: "open_english_wordnet" | "ecdict" | "wiktapi";
+    id: "open_english_wordnet" | "ecdict" | "wiktionary" | "wiktapi";
     name: string;
     version: string;
     license: string;

@@ -54,6 +54,7 @@ export type MyWordbook = {
   id: string
   title: string
   description: string
+  category?: string
   sourceCatalogId?: string
   createdAt: string
   updatedAt: string
@@ -187,8 +188,8 @@ function parseProgress(value: unknown): WordbookProgress | null {
 function parseMyWordbook(value: unknown): MyWordbook | null {
   if (!isRecord(value) || !isText(value.id) || !isText(value.title) || !isText(value.description) || !isText(value.createdAt) || !isText(value.updatedAt) || !isCount(value.wordCount)) return null
   const progress = parseProgress(value.progress)
-  if (!progress || (value.sourceCatalogId !== undefined && !isText(value.sourceCatalogId))) return null
-  return { id: value.id, title: value.title, description: value.description, sourceCatalogId: value.sourceCatalogId, createdAt: value.createdAt, updatedAt: value.updatedAt, wordCount: value.wordCount, progress }
+  if (!progress || (value.sourceCatalogId !== undefined && !isText(value.sourceCatalogId)) || (value.category !== undefined && !isText(value.category))) return null
+  return { id: value.id, title: value.title, description: value.description, category: value.category, sourceCatalogId: value.sourceCatalogId, createdAt: value.createdAt, updatedAt: value.updatedAt, wordCount: value.wordCount, progress }
 }
 
 function parseCatalog(value: unknown): CatalogWordbook | null {
@@ -212,7 +213,10 @@ function parseAuthUser(value: unknown): AuthUser | null {
 
 function parseMeaning(value: unknown): WordMeaning | null {
   if (!isRecord(value) || !isText(value.pos) || !isText(value.definition) || (value.example !== undefined && !isText(value.example))) return null
-  return { pos: value.pos, definition: value.definition, example: value.example }
+  const sourceId = value.sourceId === 'open_english_wordnet' || value.sourceId === 'wiktionary' || value.sourceId === 'wiktapi'
+    ? value.sourceId
+    : undefined
+  return { pos: value.pos, definition: value.definition, example: value.example, sourceId }
 }
 
 function parseCatalogEntry(value: unknown): WordEntry | null {
@@ -396,7 +400,8 @@ export class WorkspaceApi {
   updateCatalogSnapshot(catalogId: string, input: { sourceWordbookId?: string; title?: string; description?: string; exams?: string[]; goals?: string[]; visibility?: CatalogVisibility }) { return this.json(`api/catalog/wordbooks/${encodeURIComponent(catalogId)}`, { method: 'PATCH', body: JSON.stringify(input) }, parseCatalog) }
   async importShareCode(shareCode: string) { return this.json<{ wordbook: MyWordbook; created: boolean }>('api/catalog/imports', { method: 'POST', body: JSON.stringify({ shareCode }) }, (value) => isRecord(value) && typeof value.created === 'boolean' && parseMyWordbook(value.wordbook) ? { wordbook: parseMyWordbook(value.wordbook)!, created: value.created } : null) }
   listMyWordbooks(trash = false) { const url = new URL('api/my/wordbooks', this.baseUrl); if (trash) url.searchParams.set('view', 'trash'); return this.list(url, parseMyWordbook, 'wordbook list') }
-  createMyWordbook(input: { title: string; description?: string; words?: WordEntry[] }) { return this.json('api/my/wordbooks', { method: 'POST', body: JSON.stringify(input) }, parseMyWordbook) }
+  createMyWordbook(input: { title: string; description?: string; category?: string; words?: WordEntry[] }) { return this.json('api/my/wordbooks', { method: 'POST', body: JSON.stringify(input) }, parseMyWordbook) }
+  updateMyWordbook(id: string, input: { category: string | null }) { return this.json(`api/my/wordbooks/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(input) }, parseMyWordbook) }
   createImportDraft(input: { title: string; description?: string; targetWordbookId?: string; lines: ImportDraftLine[] }) {
     return this.json('api/my/import-drafts', { method: 'POST', body: JSON.stringify(input) }, parseImportDraft)
   }

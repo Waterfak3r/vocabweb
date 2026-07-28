@@ -17,10 +17,13 @@ interface Pronunciation {
   audioUrl?: string;
 }
 
+export type EnglishAccent = "gb" | "us";
+
 export interface WiktApiProviderOptions {
   baseUrl?: string;
   timeoutMs?: number;
   fetchFn?: typeof fetch;
+  accent?: EnglishAccent;
 }
 
 function isJsonObject(value: unknown): value is JsonObject {
@@ -108,7 +111,7 @@ function appendGlosses(
 
     const definition = rawGloss.trim();
     if (definition && meanings.length < MAX_MEANINGS) {
-      meanings.push({ pos, definition, example });
+      meanings.push({ pos, definition, example, sourceId: "wiktapi" });
     }
   }
 }
@@ -123,6 +126,19 @@ function isBritishSound(sound: JsonObject, audioUrl: string): boolean {
     (tag) =>
       typeof tag === "string" &&
       ["uk", "british", "received-pronunciation"].includes(tag.toLowerCase()),
+  );
+}
+
+function isAmericanSound(sound: JsonObject, audioUrl: string): boolean {
+  const url = audioUrl.toLowerCase();
+  if (url.includes("en-us") || url.includes("_us_") || url.includes("/us/")) {
+    return true;
+  }
+
+  return readOptionalArray(sound, "tags").some(
+    (tag) =>
+      typeof tag === "string" &&
+      ["us", "american", "general-american"].includes(tag.toLowerCase()),
   );
 }
 
@@ -181,7 +197,10 @@ export function mapWiktApiDefinitionsPayload(payload: unknown): WordEntry | null
   };
 }
 
-export function mapWiktApiPronunciationPayload(payload: unknown): Pronunciation {
+export function mapWiktApiPronunciationPayload(
+  payload: unknown,
+  accent: EnglishAccent = "gb",
+): Pronunciation {
   if (!isJsonObject(payload)) {
     throw new WordProviderError("UPSTREAM_PARSE_ERROR", "WiktApi full entry is not an object");
   }
@@ -211,13 +230,22 @@ export function mapWiktApiPronunciationPayload(payload: unknown): Pronunciation 
     return {
       phonetic: normalizePhonetic(readOptionalString(sound, "ipa")),
       audioUrl,
-      british: audioUrl ? isBritishSound(sound, audioUrl) : false,
+      accent: audioUrl
+        ? isBritishSound(sound, audioUrl)
+          ? "gb"
+          : isAmericanSound(sound, audioUrl)
+            ? "us"
+            : undefined
+        : undefined,
     };
   });
 
-  const phonetic = soundDetails.find((sound) => sound.phonetic)?.phonetic ?? "";
+  const phonetic =
+    soundDetails.find((sound) => sound.phonetic && sound.accent === accent)?.phonetic ??
+    soundDetails.find((sound) => sound.phonetic)?.phonetic ??
+    "";
   const audioUrl =
-    soundDetails.find((sound) => sound.audioUrl && sound.british)?.audioUrl ??
+    soundDetails.find((sound) => sound.audioUrl && sound.accent === accent)?.audioUrl ??
     soundDetails.find((sound) => sound.audioUrl)?.audioUrl;
 
   return {
@@ -239,11 +267,13 @@ export class WiktApiProvider implements WordProvider {
   private readonly baseUrl: string;
   private readonly timeoutMs: number;
   private readonly fetchFn: typeof fetch;
+  private readonly accent: EnglishAccent;
 
   constructor(options: WiktApiProviderOptions = {}) {
     this.baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.fetchFn = options.fetchFn ?? fetch;
+    this.accent = options.accent ?? "gb";
 
     if (!Number.isInteger(this.timeoutMs) || this.timeoutMs < 1 || this.timeoutMs > 5_000) {
       throw new RangeError("WiktApi timeout must be an integer between 1 and 5000 ms");
@@ -349,7 +379,7 @@ export class WiktApiProvider implements WordProvider {
       }
 
       const payload: unknown = await response.json();
-      return mapWiktApiPronunciationPayload(payload);
+      return mapWiktApiPronunciationPayload(payload, this.accent);
     } catch {
       return { phonetic: "" };
     }

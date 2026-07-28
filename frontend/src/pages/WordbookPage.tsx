@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { Button } from '../components/ui/Button'
 import { EmptyState } from '../components/ui/EmptyState'
@@ -7,6 +7,7 @@ import { DictationSummary } from '../components/word/DictationSummary'
 import { Flashcard } from '../components/word/Flashcard'
 import { FlashcardControls } from '../components/word/FlashcardControls'
 import { ImportWordbookDialog } from '../components/word/ImportWordbookDialog'
+import { ShortcutHint } from '../components/word/ShortcutHint'
 import {
   WordManagerDialog,
   type WordbookWordPatch,
@@ -31,20 +32,42 @@ import {
   type StudyModeKey,
   type WordbookStudyPreferences,
 } from '../data/studyPreferences'
+import {
+  readWordbookFilters,
+  writeWordbookFilters,
+  type WordbookSort,
+} from '../data/wordbookFilters'
+import {
+  DEFAULT_STUDY_SHORTCUTS,
+  normalizeShortcutKey,
+  readStudyShortcuts,
+  shortcutLabel,
+  writeStudyShortcuts,
+  type StudyShortcutAction,
+  type StudyShortcutPreferences,
+} from '../data/studyShortcuts'
+import {
+  readPronunciationPreferences,
+  writePronunciationPreferences,
+  type EnglishAccent,
+  type PronunciationPreferences,
+} from '../data/pronunciationPreferences'
 import type { WordbookItem } from '../domain/types'
 import { useDictationSession } from '../features/dictation/useDictationSession'
 import { useFlashcardSession } from '../features/flashcards/useFlashcardSession'
 import { useDocumentTitle } from '../hooks/useDocumentTitle'
 import { usePronounce } from '../hooks/usePronounce'
+import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts'
 
 type StudyMode = StudyModeKey
-type SettingsSection = 'plan' | StudyMode
+type SettingsSection = 'plan' | 'pronunciation' | 'shortcuts' | StudyMode
 type WorkspaceIconName = 'plus' | 'trash' | 'star' | 'edit' | 'book' | 'repeat' | 'headphones' | 'card' | 'settings' | 'chevron' | 'clock' | 'calendar' | 'fire' | 'dots'
 type CoverTone = 'blue' | 'amber' | 'green' | 'lavender' | 'rose' | 'slate'
 type WorkspaceBook = {
   id: string
   title: string
   description: string
+  category?: string
   wordCount: number
   progress: WordbookProgress
   tone: CoverTone
@@ -179,6 +202,7 @@ function remoteToWorkspaceBook(book: MyWordbook, index: number): WorkspaceBook {
     id: book.id,
     title: book.title,
     description: book.description,
+    category: book.category,
     wordCount: book.wordCount,
     progress: book.progress,
     tone: tones[index % tones.length],
@@ -237,11 +261,49 @@ export function WordbookPage() {
   const [recycleCandidate, setRecycleCandidate] = useState<WorkspaceBook | null>(null)
   const [showWordManager, setShowWordManager] = useState(false)
   const [wordSaving, setWordSaving] = useState(false)
+  const [bookQuery, setBookQuery] = useState(() => readWordbookFilters().query)
+  const [bookCategory, setBookCategory] = useState(() => readWordbookFilters().category)
+  const [bookSort, setBookSort] = useState<WordbookSort>(() => readWordbookFilters().sort)
+  const [categoryDraft, setCategoryDraft] = useState('')
+  const [categoryEditing, setCategoryEditing] = useState(false)
+  const [categorySaving, setCategorySaving] = useState(false)
+  const categoryInputRef = useRef<HTMLInputElement>(null)
   const [preferences, setPreferences] = useState<WordbookStudyPreferences>(
     () => structuredClone(DEFAULT_STUDY_PREFERENCES),
   )
+  const [shortcuts, setShortcuts] = useState<StudyShortcutPreferences>(() => readStudyShortcuts())
+  const [pronunciationPreferences, setPronunciationPreferences] = useState<PronunciationPreferences>(
+    () => readPronunciationPreferences(),
+  )
   const dashboardRequest = useRef(0)
-  const selectedBook = books.find((book) => book.id === selectedId) ?? books[0]
+  const categories = useMemo(() => [...new Set(books.map((book) => book.category).filter((value): value is string => Boolean(value)))].sort((a, b) => a.localeCompare(b, 'zh-CN')), [books])
+  const filteredBooks = useMemo(() => {
+    const query = bookQuery.trim().toLocaleLowerCase()
+    return books
+      .filter((book) => !query || `${book.title} ${book.description}`.toLocaleLowerCase().includes(query))
+      .filter((book) => bookCategory === '全部' || (bookCategory === '未分类' ? !book.category : book.category === bookCategory))
+      .sort((left, right) => {
+        if (bookSort === 'name') return left.title.localeCompare(right.title, 'zh-CN')
+        if (bookSort === 'count') return right.wordCount - left.wordCount
+        if (bookSort === 'progress') return right.progress.percent - left.progress.percent
+        return right.updatedAt.localeCompare(left.updatedAt)
+      })
+  }, [bookCategory, bookQuery, bookSort, books])
+  const selectedBook = filteredBooks.find((book) => book.id === selectedId) ?? filteredBooks[0]
+
+  useEffect(() => {
+    writeWordbookFilters({ query: bookQuery, category: bookCategory, sort: bookSort })
+  }, [bookCategory, bookQuery, bookSort])
+
+  useEffect(() => {
+    if (
+      loading
+      || bookCategory === '全部'
+      || bookCategory === '未分类'
+      || categories.includes(bookCategory)
+    ) return
+    setBookCategory('全部')
+  }, [bookCategory, categories, loading])
 
   const refreshMyWordbooks = useCallback(async (preferId?: string) => {
     if (!api) {
@@ -314,11 +376,45 @@ export function WordbookPage() {
 
   useEffect(() => {
     if (!selectedBook) return
+    setCategoryDraft(selectedBook.category ?? '')
+    setCategoryEditing(false)
     setPreferences(readStudyPreferences(selectedBook.id))
     setStudyMode(null)
     setReviewScope('due')
     setSettingsSection(null)
   }, [selectedBook?.id])
+
+  useEffect(() => {
+    if (!categoryEditing) return
+    categoryInputRef.current?.focus()
+    categoryInputRef.current?.select()
+  }, [categoryEditing])
+
+  async function saveCategory() {
+    if (!api || !selectedBook || categorySaving) return
+    const category = categoryDraft.trim()
+    if (category.length > 30) { setNotice('分类名称最多 30 个字符。'); return }
+    setCategorySaving(true)
+    try {
+      await api.updateMyWordbook(selectedBook.id, { category: category || null })
+      await refreshMyWordbooks(selectedBook.id)
+      setCategoryDraft(category)
+      setCategoryEditing(false)
+      setNotice(category ? `已归入「${category}」。` : '已设为未分类。')
+    } catch {
+      setNotice('分类保存失败，请稍后重试。')
+    } finally {
+      setCategorySaving(false)
+    }
+  }
+
+  function toggleCategoryEditing() {
+    if (categoryEditing) {
+      void saveCategory()
+      return
+    }
+    setCategoryEditing(true)
+  }
 
   async function exitStudy() {
     setStudyMode(null)
@@ -330,6 +426,14 @@ export function WordbookPage() {
     if (!selectedBook) return
     setPreferences(next)
     writeStudyPreferences(selectedBook.id, next)
+  }
+
+  function saveShortcuts(next: StudyShortcutPreferences) {
+    setShortcuts(writeStudyShortcuts(next))
+  }
+
+  function savePronunciationPreferences(next: PronunciationPreferences) {
+    setPronunciationPreferences(writePronunciationPreferences(next))
   }
 
   function createBook() {
@@ -461,7 +565,19 @@ export function WordbookPage() {
     <aside className="workspace-sidebar" aria-label="我的词库">
       <button type="button" className="workspace-create" onClick={createBook}><WorkspaceIcon name="plus" />创建单词本</button>
       <h2>学习词本</h2>
-      <div className="workspace-book-list">{books.map((book) => <button key={book.id} type="button" className={book.id === selectedBook?.id ? 'selected' : ''} onClick={() => setSelectedId(book.id)}><WorkspaceCover tone={book.tone} label={book.shortLabel} small /><span><strong>{book.title}</strong><small>{book.wordCount} 词</small></span></button>)}</div>
+      <div className="workspace-book-tools">
+        <input aria-label="搜索单词本" value={bookQuery} onChange={(event) => setBookQuery(event.target.value)} placeholder="搜索名称或说明" />
+        <div>
+          <select aria-label="按分类筛选" value={bookCategory} onChange={(event) => setBookCategory(event.target.value)}>
+            <option>全部</option><option>未分类</option>{categories.map((category) => <option key={category}>{category}</option>)}
+          </select>
+          <select aria-label="单词本排序" value={bookSort} onChange={(event) => setBookSort(event.target.value as typeof bookSort)}>
+            <option value="updated">最近更新</option><option value="name">名称</option><option value="count">单词数</option><option value="progress">学习进度</option>
+          </select>
+        </div>
+      </div>
+      <div className="workspace-book-list">{filteredBooks.map((book) => <button key={book.id} type="button" className={book.id === selectedBook?.id ? 'selected' : ''} onClick={() => setSelectedId(book.id)}><WorkspaceCover tone={book.tone} label={book.shortLabel} small /><span><strong>{book.title}</strong><small>{book.category ?? '未分类'} · {book.wordCount} 词</small></span></button>)}</div>
+      {!filteredBooks.length && <div className="workspace-filter-empty"><p>没有匹配的单词本</p><button type="button" onClick={() => { setBookQuery(''); setBookCategory('全部') }}>清除筛选</button></div>}
       <WorkspaceCatalogGroup title="广场收藏" icon="star" collection="favorites" books={favoriteCatalog} />
       <WorkspaceCatalogGroup title="我的上传" icon="book" collection="uploads" books={uploadCatalog} />
       <button type="button" className="workspace-recycle" onClick={() => void toggleRecycle()}><WorkspaceIcon name="trash" />回收站{remoteTrash.length ? ` (${remoteTrash.length})` : ''}</button>
@@ -572,10 +688,10 @@ export function WordbookPage() {
         {notice && <p className="workspace-notice" role="status">{notice}</p>}
         <section className="workspace-overview">
           <WorkspaceCover tone={selectedBook.tone} label={selectedBook.shortLabel} />
-          <div className="workspace-overview-main"><div className="workspace-title-row"><h1 id="workspace-title">{selectedBook.title}</h1></div><p>{wordCount} 个单词　|　创建于 {new Date(selectedBook.createdAt).toLocaleDateString('zh-CN')}　|　最后更新：{new Date(selectedBook.updatedAt).toLocaleString('zh-CN')}</p><div className="workspace-progress-label"><span>学习进度</span><strong>{progress.percent}%</strong></div><div className="workspace-progress" role="progressbar" aria-label="词本学习进度" aria-valuenow={progress.percent} aria-valuemin={0} aria-valuemax={100}><i style={{ width: `${progress.percent}%` }} /></div><div className="workspace-summary-stats levels-5"><span>未学习<strong>{progress.levels.l0}</strong></span><span>初识<strong className="blue">{progress.levels.l1}</strong></span><span>熟悉<strong className="orange">{progress.levels.l2}</strong></span><span>掌握<strong className="green">{progress.levels.l3}</strong></span><span>精通<strong className="violet">{progress.levels.l4}</strong></span></div></div><div className="overview-actions"><button type="button" className="overview-plan-settings" onClick={() => setSettingsSection('plan')}><WorkspaceIcon name="settings" />学习计划</button><button type="button" disabled={!wordCount || dashboardLoading} onClick={() => setShowWordManager(true)}><WorkspaceIcon name="edit" />浏览词条</button><button type="button" onClick={supplementBook}><WorkspaceIcon name="plus" />补充上传</button></div><button type="button" className="overview-recycle" onClick={() => moveToRecycle(selectedBook.id)}><WorkspaceIcon name="trash" />移入回收站</button>
+          <div className="workspace-overview-main"><div className="workspace-title-row"><h1 id="workspace-title">{selectedBook.title}</h1></div><p>{wordCount} 个单词　|　创建于 {new Date(selectedBook.createdAt).toLocaleDateString('zh-CN')}　|　最后更新：{new Date(selectedBook.updatedAt).toLocaleString('zh-CN')}</p><div className={`workspace-category-editor ${categoryEditing ? 'is-editing' : ''}`}><label htmlFor="wordbook-category">分类</label><div className="workspace-category-field"><input ref={categoryInputRef} id="wordbook-category" list={categoryEditing ? 'wordbook-categories' : undefined} value={categoryDraft} maxLength={30} readOnly={!categoryEditing} onChange={(event) => setCategoryDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && categoryEditing) { event.preventDefault(); void saveCategory() } else if (event.key === 'Escape' && categoryEditing) { setCategoryDraft(selectedBook.category ?? ''); setCategoryEditing(false) } }} placeholder="未分类" aria-label={categoryEditing ? '编辑单词本分类' : '单词本分类'} /><button type="button" onClick={toggleCategoryEditing} disabled={categorySaving} aria-label={categoryEditing ? '保存分类' : '修改分类'} title={categoryEditing ? '保存分类（Enter）' : '修改分类'}><WorkspaceIcon name="edit" /></button></div><datalist id="wordbook-categories">{categories.map((category) => <option key={category} value={category} />)}</datalist></div><div className="workspace-progress-label"><span>学习进度</span><strong>{progress.percent}%</strong></div><div className="workspace-progress" role="progressbar" aria-label="词本学习进度" aria-valuenow={progress.percent} aria-valuemin={0} aria-valuemax={100}><i style={{ width: `${progress.percent}%` }} /></div><div className="workspace-summary-stats levels-5"><span>未学习<strong>{progress.levels.l0}</strong></span><span>初识<strong className="blue">{progress.levels.l1}</strong></span><span>熟悉<strong className="orange">{progress.levels.l2}</strong></span><span>掌握<strong className="green">{progress.levels.l3}</strong></span><span>精通<strong className="violet">{progress.levels.l4}</strong></span></div></div><div className="overview-actions"><button type="button" className="overview-plan-settings" onClick={() => setSettingsSection('plan')}><WorkspaceIcon name="settings" />学习计划</button><button type="button" disabled={!wordCount || dashboardLoading} onClick={() => setShowWordManager(true)}><WorkspaceIcon name="edit" />浏览词条</button><button type="button" onClick={supplementBook}><WorkspaceIcon name="plus" />补充上传</button></div><button type="button" className="overview-recycle" onClick={() => moveToRecycle(selectedBook.id)}><WorkspaceIcon name="trash" />移入回收站</button>
         </section>
 
-        <section className="workspace-plan"><header><h2>今日学习计划</h2><button type="button" onClick={() => setSettingsSection('plan')}><WorkspaceIcon name="settings" />调整计划</button></header><div className="plan-cards"><PlanCard icon="book" title="新词学习" count={planCounts.new} available={entriesForMode('new').length} loading={entriesLoading} completed={completedNew} detail="学习新词，建立印象" button="开始学习" onClick={() => openStudy('new')} onSettings={() => setSettingsSection('new')} /><PlanCard icon="repeat" title="复习巩固" count={planCounts.review} available={reviewDueCount} aheadAvailable={reviewAheadCount} aheadButton="提前复习" loading={entriesLoading} completed={completedReview} detail={reviewDetail} button="开始复习" onClick={() => openStudy('review')} onSettings={() => setSettingsSection('review')} /><PlanCard icon="headphones" title="听写训练" count={planCounts.dictation} available={entriesForMode('dictation').length} loading={entriesLoading} completed={completedDictation} detail={dictationDetail} button="开始听写" onClick={() => openStudy('dictation')} onSettings={() => setSettingsSection('dictation')} /></div></section>
+        <section className="workspace-plan"><header><h2>今日学习计划</h2><span><button type="button" onClick={() => setSettingsSection('pronunciation')}><WorkspaceIcon name="headphones" />发音</button><button type="button" onClick={() => setSettingsSection('shortcuts')}><WorkspaceIcon name="settings" />快捷键</button><button type="button" onClick={() => setSettingsSection('plan')}><WorkspaceIcon name="settings" />调整计划</button></span></header><div className="plan-cards"><PlanCard icon="book" title="新词学习" count={planCounts.new} available={entriesForMode('new').length} loading={entriesLoading} completed={completedNew} detail="学习新词，建立印象" button="开始学习" onClick={() => openStudy('new')} onSettings={() => setSettingsSection('new')} /><PlanCard icon="repeat" title="复习巩固" count={planCounts.review} available={reviewDueCount} aheadAvailable={reviewAheadCount} aheadButton="提前复习" loading={entriesLoading} completed={completedReview} detail={reviewDetail} button="开始复习" onClick={() => openStudy('review')} onSettings={() => setSettingsSection('review')} /><PlanCard icon="headphones" title="听写训练" count={planCounts.dictation} available={entriesForMode('dictation').length} loading={entriesLoading} completed={completedDictation} detail={dictationDetail} button="开始听写" onClick={() => openStudy('dictation')} onSettings={() => setSettingsSection('dictation')} /></div></section>
 
         <div className="workspace-lower">
           <RecentStudy
@@ -598,6 +714,10 @@ export function WordbookPage() {
         preferences={preferences}
         wordCount={wordCount}
         onChange={savePreferences}
+        shortcuts={shortcuts}
+        onShortcutsChange={saveShortcuts}
+        pronunciationPreferences={pronunciationPreferences}
+        onPronunciationChange={savePronunciationPreferences}
         onClose={() => setSettingsSection(null)}
       />}
       {studyMode && <StudySessionDialog
@@ -605,6 +725,8 @@ export function WordbookPage() {
         book={{ ...activeBook, entries: studyMode === 'review' ? reviewSessionEntries : entriesForMode(studyMode) }}
         mode={studyMode}
         preferences={preferences.modes[studyMode]}
+        shortcuts={shortcuts}
+        accent={pronunciationPreferences.accent}
         reviewAheadCount={studyMode === 'review' && reviewScope === 'due' ? reviewAheadCount : 0}
         onContinueAhead={() => setReviewScope('ahead')}
         onClose={() => void exitStudy()}
@@ -616,6 +738,7 @@ export function WordbookPage() {
         onCreated={(created) => { void finishImport(created) }}
         initialTitle={importTargetId ? selectedBook.title : ''}
         initialDescription={importTargetId ? selectedBook.description : ''}
+        initialCategory={importTargetId ? selectedBook.category : ''}
         targetWordbookId={importTargetId}
         targetWords={importTargetId ? activeBook.entries.map((entry) => entry.word) : []}
       />
@@ -704,7 +827,7 @@ function StudyStreak({ days, loading }: { days: number | undefined; loading: boo
   return <section className="study-streak"><h2><WorkspaceIcon name="fire" />连续学习</h2>{days === undefined ? <p className="workspace-data-state" role={loading ? 'status' : undefined}>{loading ? '正在载入连续学习数据。' : '连续学习数据暂不可用。'}</p> : <><strong>{days} <small>天</small></strong><p>继续加油，养成好习惯！</p><div>{['一','二','三','四','五','六','日'].map((day, index) => <span key={day}><small>{day}</small><i className={index < Math.min(7, days) ? 'complete' : ''}>{index < Math.min(7, days) ? '✓' : ''}</i></span>)}</div></>}</section>
 }
 
-function StudySettingsDialog({ section, preferences, wordCount, onChange, onClose }: { section: SettingsSection; preferences: WordbookStudyPreferences; wordCount: number; onChange: (next: WordbookStudyPreferences) => void; onClose: () => void }) {
+function StudySettingsDialog({ section, preferences, shortcuts, pronunciationPreferences, wordCount, onChange, onShortcutsChange, onPronunciationChange, onClose }: { section: SettingsSection; preferences: WordbookStudyPreferences; shortcuts: StudyShortcutPreferences; pronunciationPreferences: PronunciationPreferences; wordCount: number; onChange: (next: WordbookStudyPreferences) => void; onShortcutsChange: (next: StudyShortcutPreferences) => void; onPronunciationChange: (next: PronunciationPreferences) => void; onClose: () => void }) {
   useEffect(() => {
     const previousOverflow = document.body.style.overflow
     document.body.style.overflow = 'hidden'
@@ -720,6 +843,8 @@ function StudySettingsDialog({ section, preferences, wordCount, onChange, onClos
 
   const titles: Record<SettingsSection, string> = {
     plan: '自定义学习计划',
+    pronunciation: '英语发音设置',
+    shortcuts: '键盘快捷键',
     new: '新词学习设置',
     review: '复习巩固设置',
     dictation: '听写训练设置',
@@ -729,7 +854,7 @@ function StudySettingsDialog({ section, preferences, wordCount, onChange, onClos
     plan: { ...preferences.plan, [key]: Math.max(0, Math.min(999, Math.round(value || 0))) },
   })
   const updateMode = (key: keyof DictationDisplayPreferences, value: boolean | 'zh' | 'en') => {
-    if (section === 'plan') return
+    if (section === 'plan' || section === 'pronunciation' || section === 'shortcuts') return
     onChange({
       ...preferences,
       modes: {
@@ -738,7 +863,7 @@ function StudySettingsDialog({ section, preferences, wordCount, onChange, onClos
       },
     })
   }
-  const modePreferences = section === 'plan' ? null : preferences.modes[section]
+  const modePreferences = section === 'plan' || section === 'pronunciation' || section === 'shortcuts' ? null : preferences.modes[section]
 
   return <div className="workspace-modal-backdrop" role="presentation" onMouseDown={onClose}>
     <section className="study-settings-dialog" role="dialog" aria-modal="true" aria-labelledby="study-settings-title" onMouseDown={(event) => event.stopPropagation()}>
@@ -747,7 +872,12 @@ function StudySettingsDialog({ section, preferences, wordCount, onChange, onClos
         <label><span><strong>每日新词</strong><small>计划学习的未学习单词数</small></span><input type="number" min="0" max="999" inputMode="numeric" value={preferences.plan.newWords} onChange={(event) => updatePlan('newWords', Number(event.target.value))} /><em>词</em></label>
         <label><span><strong>每日听写</strong><small>每轮听写抽取的单词数</small></span><input type="number" min="0" max="999" inputMode="numeric" value={preferences.plan.dictation} onChange={(event) => updatePlan('dictation', Number(event.target.value))} /><em>词</em></label>
         <p className="study-settings-note">当前词本共 {wordCount} 词。页面会自动按未学习、待复习和可用词数缩减计划，不会显示超过词本容量的任务。</p>
-      </div> : modePreferences && <div className="study-mode-settings">
+      </div> : section === 'pronunciation' ? <div className="study-mode-settings">
+        <fieldset><legend>默认英语口音</legend><div className="meaning-preference">
+          <button type="button" className={pronunciationPreferences.accent === 'gb' ? 'selected' : ''} onClick={() => onPronunciationChange({ accent: 'gb' })}>英式发音</button>
+          <button type="button" className={pronunciationPreferences.accent === 'us' ? 'selected' : ''} onClick={() => onPronunciationChange({ accent: 'us' })}>美式发音</button>
+        </div><small>查词、单词卡和听写会优先播放所选口音；录音不可用时，浏览器朗读也使用同一口音。</small></fieldset>
+      </div> : section === 'shortcuts' ? <ShortcutSettings value={shortcuts} onChange={onShortcutsChange} /> : modePreferences && <div className="study-mode-settings">
         <fieldset><legend>默认释义</legend><div className="meaning-preference">
           <button type="button" className={modePreferences.meaningPreference === 'zh' ? 'selected' : ''} onClick={() => updateMode('meaningPreference', 'zh')}>中文释义优先</button>
           <button type="button" className={modePreferences.meaningPreference === 'en' ? 'selected' : ''} onClick={() => updateMode('meaningPreference', 'en')}>英英释义优先</button>
@@ -773,7 +903,36 @@ function SettingToggle({ label, detail, checked, onChange }: { label: string; de
   return <label className="study-setting-toggle"><span><strong>{label}</strong><small>{detail}</small></span><input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} /><i aria-hidden="true" /></label>
 }
 
-function StudySessionDialog({ book, mode, preferences, reviewAheadCount = 0, onContinueAhead, onClose }: { book: WorkspaceBook; mode: StudyMode; preferences: StudyDisplayPreferences & Partial<DictationDisplayPreferences>; reviewAheadCount?: number; onContinueAhead?: () => void; onClose: () => void }) {
+const SHORTCUT_ROWS: Array<{ action: StudyShortcutAction; label: string; group: 'card' | 'dictation' }> = [
+  { action: 'unknown', label: '不认识', group: 'card' },
+  { action: 'pronounce', label: '播放发音', group: 'card' },
+  { action: 'known', label: '认识', group: 'card' },
+  { action: 'flip', label: '翻面', group: 'card' },
+  { action: 'dictationPronounce', label: '听写播放发音', group: 'dictation' },
+]
+
+function ShortcutSettings({ value, onChange }: { value: StudyShortcutPreferences; onChange: (next: StudyShortcutPreferences) => void }) {
+  const [error, setError] = useState('')
+  const capture = (action: StudyShortcutAction, event: React.KeyboardEvent<HTMLInputElement>) => {
+    event.preventDefault()
+    if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) { setError('请使用不带组合键的单个按键。'); return }
+    const key = normalizeShortcutKey(event.key)
+    if (!key || (action === 'dictationPronounce' && key === 'enter')) { setError('这个按键保留给关闭、输入法或听写提交，请换一个。'); return }
+    const group = SHORTCUT_ROWS.find((row) => row.action === action)?.group
+    const conflict = SHORTCUT_ROWS.find((row) => row.action !== action && row.group === group && value[row.action] === key)
+    if (conflict) { setError(`与“${conflict.label}”冲突。`); return }
+    setError('')
+    onChange({ ...value, [action]: key })
+  }
+  return <div className="shortcut-settings">
+    <p>点击按键框后直接按下新按键。卡片快捷键用于新词和复习，听写 Enter 始终用于提交。</p>
+    {SHORTCUT_ROWS.map((row) => <label key={row.action}><span><strong>{row.label}</strong><small>{row.group === 'card' ? '新词 / 复习' : '听写输入框内可用'}</small></span><input readOnly value={shortcutLabel(value[row.action])} aria-label={`设置${row.label}快捷键`} onKeyDown={(event) => capture(row.action, event)} /></label>)}
+    {error && <p className="field-error" role="alert">{error}</p>}
+    <button type="button" onClick={() => { setError(''); onChange({ ...DEFAULT_STUDY_SHORTCUTS }) }}>恢复默认快捷键</button>
+  </div>
+}
+
+function StudySessionDialog({ book, mode, preferences, shortcuts, accent, reviewAheadCount = 0, onContinueAhead, onClose }: { book: WorkspaceBook; mode: StudyMode; preferences: StudyDisplayPreferences & Partial<DictationDisplayPreferences>; shortcuts: StudyShortcutPreferences; accent: EnglishAccent; reviewAheadCount?: number; onContinueAhead?: () => void; onClose: () => void }) {
   const guardedCloseRef = useRef<() => void>(onClose)
   const requestClose = useCallback(() => guardedCloseRef.current(), [])
   const registerCloseGuard = useCallback((handler: () => void) => { guardedCloseRef.current = handler }, [])
@@ -793,12 +952,12 @@ function StudySessionDialog({ book, mode, preferences, reviewAheadCount = 0, onC
   return <div className="workspace-modal-backdrop study-session-backdrop" role="presentation">
     <section className="workspace-study-modal" role="dialog" aria-modal="true" aria-label={`${mode === 'new' ? '新词学习' : mode === 'review' ? '复习巩固' : '听写训练'}悬浮窗口`}>
       <button type="button" className="workspace-modal-close session-close" aria-label="关闭学习窗口" onClick={requestClose}>×</button>
-      <WordbookStudyMode book={book} mode={mode} preferences={preferences} reportEnabled reviewAheadCount={reviewAheadCount} onContinueAhead={onContinueAhead} onExit={onClose} registerCloseGuard={registerCloseGuard} />
+      <WordbookStudyMode book={book} mode={mode} preferences={preferences} shortcuts={shortcuts} accent={accent} reportEnabled reviewAheadCount={reviewAheadCount} onContinueAhead={onContinueAhead} onExit={onClose} registerCloseGuard={registerCloseGuard} />
     </section>
   </div>
 }
 
-function WordbookStudyMode({ book, mode, preferences, reportEnabled, reviewAheadCount = 0, onContinueAhead, onExit, registerCloseGuard }: { book: WorkspaceBook; mode: StudyMode; preferences: StudyDisplayPreferences & Partial<DictationDisplayPreferences>; reportEnabled: boolean; reviewAheadCount?: number; onContinueAhead?: () => void; onExit: () => void; registerCloseGuard?: (handler: () => void) => void }) {
+function WordbookStudyMode({ book, mode, preferences, shortcuts, accent, reportEnabled, reviewAheadCount = 0, onContinueAhead, onExit, registerCloseGuard }: { book: WorkspaceBook; mode: StudyMode; preferences: StudyDisplayPreferences & Partial<DictationDisplayPreferences>; shortcuts: StudyShortcutPreferences; accent: EnglishAccent; reportEnabled: boolean; reviewAheadCount?: number; onContinueAhead?: () => void; onExit: () => void; registerCloseGuard?: (handler: () => void) => void }) {
   const api = getWorkspaceApi()
   const pendingReports = useRef<Set<Promise<unknown>>>(new Set())
   const reportChain = useRef<Promise<unknown>>(Promise.resolve())
@@ -833,7 +992,16 @@ function WordbookStudyMode({ book, mode, preferences, reportEnabled, reviewAhead
   const flashcards = useFlashcardSession(book.entries, reportVerdict, reportMastered, mode === 'new' ? 3 : 1)
   const dictation = useDictationSession(book.entries, reportGrade)
   const spokenItem = mode === 'dictation' ? dictation.current : flashcards.current
-  const { pronounce, stop } = usePronounce(spokenItem?.word ?? '', spokenItem?.audioUrl, mode === 'dictation' ? .78 : .85)
+  const { pronounce, stop } = usePronounce(spokenItem?.word ?? '', spokenItem?.audioUrl, mode === 'dictation' ? .78 : .85, accent)
+  const shortcutBindings = useMemo(() => mode === 'dictation'
+    ? [{ key: shortcuts.dictationPronounce, action: pronounce, allowInInput: true }]
+    : [
+        { key: shortcuts.unknown, action: flashcards.markUnknown },
+        { key: shortcuts.pronounce, action: pronounce },
+        { key: shortcuts.known, action: flashcards.markKnown },
+        { key: shortcuts.flip, action: flashcards.flip },
+      ], [flashcards.flip, flashcards.markKnown, flashcards.markUnknown, mode, pronounce, shortcuts])
+  useKeyboardShortcuts(shortcutBindings, mode === 'dictation' ? dictation.phase !== 'summary' : !flashcards.done)
   useEffect(() => {
     const ready = mode === 'dictation' ? dictation.phase === 'prompt' && Boolean(dictation.current) : Boolean(flashcards.current)
     if (!preferences.autoPlayAudio || !ready) return
@@ -853,11 +1021,11 @@ function WordbookStudyMode({ book, mode, preferences, reportEnabled, reviewAhead
   if (book.entries.length === 0) return <section className="workspace-study"><StudyHeader book={book} mode={mode} onExit={() => void exitAfterReports()} /><EmptyState title={`暂无可用于${modeTitle}的单词`} body={emptyBody} action={<Button onClick={() => void exitAfterReports()}>关闭窗口</Button>} /></section>
 
   if (mode !== 'dictation') {
-    return <section className="workspace-study"><StudyHeader book={book} mode={mode} onExit={() => void exitAfterReports()} />{flashcards.done ? <div className="workspace-session-summary"><p>本轮{modeTitle}完成</p><h2>认识 <strong>{flashcards.knownCount}</strong> 词，共 {flashcards.totalCount} 词</h2><p>{flashcards.unknownCount ? `${flashcards.unknownCount} 个词已标记为不认识，可稍后继续复习。` : '这一轮表现很好，继续保持。'}</p><div><Button onClick={flashcards.restart}>再来一轮</Button>{mode === 'review' && onContinueAhead && reviewAheadCount > 0 && <Button onClick={onContinueAhead}>继续复习未到期的 {reviewAheadCount} 词</Button>}<Button variant="secondary" onClick={() => void exitAfterReports()}>关闭窗口</Button></div></div> :<><div className="workspace-study-progress"><span>{modeTitle}</span><strong>{flashcards.reviewedCount} / {flashcards.totalCount}</strong></div>{flashcards.current && <Flashcard item={flashcards.current} flipped={flashcards.flipped} onFlip={flashcards.flip} onMastered={flashcards.markMastered} preferences={preferences} />}<FlashcardControls flipped={flashcards.flipped} onFlip={flashcards.flip} onKnow={flashcards.markKnown} onUnknown={flashcards.markUnknown} disableVerdicts={!flashcards.flipped} recognitionProgress={mode === 'new' ? { current: flashcards.currentRecognitionStreak, required: 3 } : undefined} /></>}</section>
+    return <section className="workspace-study"><StudyHeader book={book} mode={mode} onExit={() => void exitAfterReports()} />{flashcards.done ? <div className="workspace-session-summary"><p>本轮{modeTitle}完成</p><h2>认识 <strong>{flashcards.knownCount}</strong> 词，共 {flashcards.totalCount} 词</h2><p>{flashcards.unknownCount ? `${flashcards.unknownCount} 个词已标记为不认识，可稍后继续复习。` : '这一轮表现很好，继续保持。'}</p><div><Button onClick={flashcards.restart}>再来一轮</Button>{mode === 'review' && onContinueAhead && reviewAheadCount > 0 && <Button onClick={onContinueAhead}>继续复习未到期的 {reviewAheadCount} 词</Button>}<Button variant="secondary" onClick={() => void exitAfterReports()}>关闭窗口</Button></div></div> :<><div className="workspace-study-progress"><span>{modeTitle}</span><strong>{flashcards.reviewedCount} / {flashcards.totalCount}</strong></div>{flashcards.current && <Flashcard item={flashcards.current} flipped={flashcards.flipped} onFlip={flashcards.flip} onMastered={flashcards.markMastered} preferences={preferences} />}<FlashcardControls flipped={flashcards.flipped} onFlip={flashcards.flip} onKnow={flashcards.markKnown} onUnknown={flashcards.markUnknown} recognitionProgress={mode === 'new' ? { current: flashcards.currentRecognitionStreak, required: 3 } : undefined} /><ShortcutHint shortcuts={[{ keys: shortcutLabel(shortcuts.unknown), action: '不认识' }, { keys: shortcutLabel(shortcuts.pronounce), action: '发音' }, { keys: shortcutLabel(shortcuts.known), action: '认识' }, { keys: shortcutLabel(shortcuts.flip), action: '翻面' }]} /></>}</section>
   }
 
   const lastAnswer = dictation.answers[dictation.answers.length - 1]
-  return <section className="workspace-study"><StudyHeader book={book} mode={mode} onExit={() => void exitAfterReports()} />{dictation.phase === 'summary' ? <div className="workspace-session-summary"><DictationSummary total={dictation.deck.length} correct={dictation.correctCount} wrong={dictation.wrongDeck} onRetryAll={dictation.retryAll} onRetryWrong={dictation.retryWrong} /><Button variant="secondary" onClick={() => void exitAfterReports()}>关闭窗口</Button></div> : <><div className="workspace-study-progress"><span>听写训练</span><strong>{dictation.index + 1} / {dictation.deck.length}</strong></div>{dictation.current && <DictationPrompt item={dictation.current} answer={dictation.answer} onAnswerChange={dictation.setAnswer} onSubmit={dictation.submit} onNext={dictation.next} onPlay={pronounce} phase={dictation.phase} grade={dictation.phase === 'feedback' ? lastAnswer?.grade ?? null : null} error={dictation.inputError} isLast={dictation.isLast} preferences={preferences as DictationDisplayPreferences} />}</>}</section>
+  return <section className="workspace-study"><StudyHeader book={book} mode={mode} onExit={() => void exitAfterReports()} />{dictation.phase === 'summary' ? <div className="workspace-session-summary"><DictationSummary total={dictation.deck.length} correct={dictation.correctCount} wrong={dictation.wrongDeck} attempts={dictation.attemptCount} incorrect={dictation.incorrectCount} onRetryAll={dictation.retryAll} onRetryWrong={dictation.retryWrong} /><Button variant="secondary" onClick={() => void exitAfterReports()}>关闭窗口</Button></div> : <><div className="workspace-study-progress"><span>听写训练</span><strong>已过关 {dictation.passedCount} / {dictation.deck.length}</strong></div>{dictation.current && <DictationPrompt item={dictation.current} answer={dictation.answer} onAnswerChange={dictation.setAnswer} onSubmit={dictation.submit} onNext={dictation.next} onPlay={pronounce} phase={dictation.phase} grade={dictation.phase === 'feedback' ? lastAnswer?.grade ?? null : null} error={dictation.inputError} isLast={dictation.isLast} currentStreak={dictation.currentStreak} requiredStreak={dictation.requiredStreak} preferences={preferences as DictationDisplayPreferences} />}<ShortcutHint shortcuts={[{ keys: shortcutLabel(shortcuts.dictationPronounce), action: '播放发音' }, { keys: 'Enter', action: dictation.phase === 'prompt' ? '提交' : '继续' }]} /></>}</section>
 }
 
 function StudyHeader({ book, mode, onExit }: { book: WorkspaceBook; mode: StudyMode; onExit: () => void }) {

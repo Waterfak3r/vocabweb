@@ -1,4 +1,4 @@
-.workspace-page { display: grid; grid-template-columns: 16rem minmax(0, 1fr) 21rem; min-width: 0; gap: 1.25rem; width: calc(100% + 4rem); min-height: calc(100vh - 9rem); margin-top: -2.75rem; margin-left: -2rem; padding: .5rem 0 1.5rem; }.workspace-page h1, .workspace-page h2, .workspace-page h3, .workspace-study h1, .workspace-study h2 { font-family: var(--font-serif); }.workspace-icon { width: 1.2rem; height: 1.2rem; flex: 0 0 auto; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
+.workspace-page { display: grid; grid-template-columns: 16rem minmax(0, 1fr) 21rem; min-width: 0; gap: 1.25rem; width: 100%; min-height: calc(100vh - 9rem); margin: -2.75rem auto 0; padding: .5rem 0 1.5rem; }.workspace-page h1, .workspace-page h2, .workspace-page h3, .workspace-study h1, .workspace-study h2 { font-family: var(--font-serif); }.workspace-icon { width: 1.2rem; height: 1.2rem; flex: 0 0 auto; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
 .workspace-sidebar, .workspace-overview, .workspace-plan, .recent-study, .study-calendar, .quick-actions, .workspace-data, .study-streak, .workspace-study, .workspace-empty-page { border: 1px solid var(--rule); border-radius: var(--radius-lg); background: var(--surface); box-shadow: var(--shadow-soft); }.workspace-sidebar { position: relative; display: flex; flex-direction: column; min-height: 48rem; padding: 1rem; }.workspace-create { display: inline-flex; align-items: center; justify-content: center; gap: .55rem; min-height: 2.75rem; border-radius: .45rem; background: var(--accent); color: var(--on-accent); font-weight: 600; box-shadow: 0 2px 6px rgba(13,56,91,.16); }.workspace-sidebar > h2 { margin: 1.65rem .1rem .6rem; font-size: .95rem; }.workspace-book-list { display: grid; gap: .3rem; }.workspace-book-list > button { display: grid; grid-template-columns: 2.6rem minmax(0,1fr) auto; align-items: center; gap: .6rem; width: 100%; min-height: 4rem; padding: .45rem .35rem; border-radius: .5rem; color: var(--ink); text-align: left; }.workspace-book-list > button:hover { background: var(--hover-bg); }.workspace-book-list > button.selected { background: var(--accent-soft); }.workspace-book-list strong, .workspace-book-list small { display: block; }.workspace-book-list strong { font-size: .84rem; }.workspace-book-list small { margin-top: .18rem; color: var(--muted); font-size: .76rem; }.workspace-book-list > button > .workspace-icon { color: var(--accent-strong); fill: transparent; }.workspace-recycle { display: flex; align-items: center; gap: .5rem; margin-top: auto; padding: .65rem .1rem; border-top: 1px solid var(--rule); color: var(--muted); font-size: .9rem; text-align: left; }.recycle-panel { position: absolute; z-index: 4; right: .75rem; bottom: 3rem; left: .75rem; display: grid; gap: .35rem; padding: .6rem; border: 1px solid var(--rule); border-radius: .5rem; background: var(--surface-solid); box-shadow: var(--shadow-soft); }.recycle-panel p { color: var(--muted); font-size: .75rem; }.recycle-panel button { padding: .35rem; border-radius: .3rem; color: var(--accent-strong); text-align: left; }.recycle-panel button:hover { background: var(--accent-soft); }.recycle-panel small { color: var(--muted); }
 .workspace-cover { position: relative; display: grid; width: 7.2rem; height: 10.8rem; place-items: center; overflow: hidden; border: 1px solid rgba(24,49,76,.18); border-radius: .25rem .55rem .55rem .25rem; box-shadow: -.35rem .28rem .12rem rgba(24,31,44,.13), inset .5rem 0 rgba(255,255,255,.42); }.workspace-cover::before { position: absolute; inset: .8rem; border: 1px solid rgba(255,255,255,.6); content: ''; }.workspace-cover span { position: relative; z-index: 1; max-width: 5.7rem; color: #17385d; font-family: var(--font-serif); font-size: 1.35rem; font-weight: 700; line-height: 1.15; text-align: center; white-space: pre-line; }.workspace-cover i { position: absolute; bottom: -.2rem; left: .75rem; width: 1rem; height: 1.8rem; background: #17406b; clip-path: polygon(0 0,100% 0,100% 100%,50% 76%,0 100%); }.workspace-cover.small { width: 2rem; height: 3rem; }.workspace-cover.small::before { inset: .18rem; }.workspace-cover.small span { max-width: 1.6rem; font-size: .47rem; }.workspace-cover.small i { bottom: -.1rem; left: .2rem; width: .4rem; height: .6rem; }
 .workspace-main { display: grid; align-content: start; min-width: 0; gap: 1rem; }.workspace-notice { padding: .35rem .7rem; border-radius: .35rem; background: var(--success-soft); color: var(--success); font-size: var(--text-sm); }.workspace-overview { display: grid; grid-template-columns: 8.5rem minmax(0,1fr) auto; min-width: 0; gap: 1rem; align-items: center; min-height: 14rem; padding: 1.25rem 1.45rem; }.workspace-title-row { display: flex; min-width: 0; align-items: center; gap: .5rem; }.workspace-title-row h1 { min-width: 0; font-size: clamp(1.7rem, 2.1vw, 2.35rem); letter-spacing: -.03em; overflow-wrap: anywhere; }.workspace-title-row button { display: grid; place-items: center; color: var(--muted); }.workspace-overview-main > p { margin-top: .5rem; color: var(--muted); font-size: var(--text-sm); overflow-wrap: anywhere; }.workspace-progress-label { display: flex; justify-content: space-between; margin-top: 1.25rem; color: var(--accent-strong); font-size: var(--text-sm); font-weight: 600; }.workspace-progress { height: .55rem; margin-top: .5rem; overflow: hidden; border-radius: 999px; background: var(--track); }.workspace-progress i { display: block; height: 100%; border-radius: inherit; background: var(--accent); }.workspace-summary-stats { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); margin-top: 1rem; }.workspace-summary-stats span { display: grid; gap: .2rem; min-width: 0; padding: 0 .75rem; border-right: 1px solid var(--rule); color: var(--muted); font-size: .78rem; }.workspace-summary-stats span:first-child { padding-left: 0; }.workspace-summary-stats span:last-child { border: 0; }.workspace-summary-stats strong { font-family: var(--font-serif); font-size: 1.35rem; color: var(--ink); }.workspace-summary-stats.levels-5 { grid-template-columns: repeat(5,minmax(0,1fr)); }.overview-actions { display: grid; gap: .55rem; }.overview-actions button { display: inline-flex; align-items: center; justify-content: center; gap: .35rem; min-height: 2.4rem; padding: .35rem .6rem; border-radius: .4rem; color: var(--muted); font-size: .78rem; white-space: nowrap; }.overview-actions button:hover { background: var(--accent-soft); color: var(--accent-strong); }.overview-actions button.starred { color: var(--gold); fill: currentColor; }
@@ -44,6 +44,36 @@
 
 /* Custom study system */
 .workspace-catalog-group { margin-top: 1rem; padding-top: .8rem; border-top: 1px solid var(--rule); }
+.workspace-book-tools { display: grid; gap: .4rem; margin-bottom: .55rem; }
+.workspace-book-tools > input,
+.workspace-book-tools select,
+.workspace-category-editor input {
+  min-width: 0;
+  min-height: 2.35rem;
+  padding: .4rem .55rem;
+  border: 1px solid var(--input-border);
+  border-radius: .4rem;
+  background: var(--input-bg);
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--text-sm);
+}
+.workspace-book-tools > div { display: grid; grid-template-columns: 1fr 1fr; gap: .35rem; }
+.workspace-filter-empty { display: grid; gap: .35rem; padding: .8rem .4rem; color: var(--muted); font-size: var(--text-sm); text-align: center; }
+.workspace-filter-empty button { color: var(--accent-strong); font-weight: 650; }
+.workspace-category-editor { display: flex; align-items: center; gap: .45rem; margin-top: .65rem; }
+.workspace-category-editor label { color: var(--muted); font-size: var(--text-sm); }
+.workspace-category-field { position: relative; width: min(13rem, 45%); }
+.workspace-category-editor input { width: 100%; padding-right: 2.45rem; cursor: default; }
+.workspace-category-editor input[readonly] { color: var(--muted); }
+.workspace-category-editor.is-editing input { border-color: var(--accent); background: var(--surface-solid); box-shadow: 0 0 0 2px var(--accent-soft); color: var(--ink); cursor: text; }
+.workspace-category-editor button { position: absolute; top: 50%; right: .28rem; display: grid; width: 1.8rem; height: 1.8rem; place-items: center; border-radius: .32rem; color: var(--muted); transform: translateY(-50%); transition: background-color .18s ease, color .18s ease, transform .18s ease; }
+.workspace-category-editor button:hover, .workspace-category-editor.is-editing button { background: var(--accent-soft); color: var(--accent-strong); }
+.workspace-category-editor button:active { transform: translateY(calc(-50% + 1px)); }
+.workspace-category-editor button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.workspace-category-editor button:disabled { cursor: wait; opacity: .55; }
+.workspace-category-editor button .workspace-icon { width: 1rem; height: 1rem; }
+.workspace-plan > header > span { display: inline-flex; gap: .8rem; }
 .workspace-catalog-group > header { display: flex; align-items: center; justify-content: space-between; gap: .5rem; }
 .workspace-catalog-group > header h2 { display: flex; align-items: center; gap: .35rem; margin: 0; font-size: .82rem; }
 .workspace-catalog-group > header h2 .workspace-icon { width: .95rem; height: .95rem; color: var(--accent-strong); }
@@ -205,6 +235,14 @@
 .study-setting-toggle input:checked + i { background: var(--accent); }
 .study-setting-toggle input:checked + i::after { transform: translateX(1.2rem); }
 .study-setting-toggle input:focus-visible + i { outline: 2px solid var(--accent); outline-offset: 2px; }
+.shortcut-settings { display: grid; gap: .65rem; margin-top: 1rem; }
+.shortcut-settings > p { color: var(--muted); font-size: var(--text-sm); line-height: 1.55; }
+.shortcut-settings > label { display: grid; grid-template-columns: minmax(0,1fr) 7rem; align-items: center; gap: 1rem; padding: .75rem .9rem; border: 1px solid var(--rule); border-radius: .6rem; }
+.shortcut-settings > label span { display: grid; gap: .1rem; }
+.shortcut-settings > label small { color: var(--muted); font-size: var(--text-xs); }
+.shortcut-settings > label input { width: 100%; min-height: 2.4rem; border: 1px solid var(--input-border); border-radius: .4rem; background: var(--input-bg); color: var(--ink); font: 650 var(--text-sm) var(--font-mono); text-align: center; cursor: pointer; }
+.shortcut-settings > label input:focus { border-color: var(--accent); outline: 3px solid color-mix(in srgb, var(--accent) 16%, transparent); }
+.shortcut-settings > button { justify-self: start; color: var(--accent-strong); font-size: var(--text-sm); font-weight: 650; }
 
 .study-session-backdrop { padding: 2rem; }
 .workspace-study-modal { width: min(62rem, 100%); max-height: calc(100vh - 4rem); padding: 1rem; }

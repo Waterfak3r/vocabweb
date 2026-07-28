@@ -17,6 +17,8 @@ export type DictationPromptProps = {
   grade: DictationGrade | null
   error?: string
   isLast: boolean
+  currentStreak?: number
+  requiredStreak?: number
   preferences?: DictationDisplayPreferences
 }
 
@@ -96,6 +98,8 @@ export function DictationPrompt({
   grade,
   error,
   isLast,
+  currentStreak = 0,
+  requiredStreak = 3,
   preferences = {
     meaningPreference: 'zh',
     showExamples: true,
@@ -124,6 +128,7 @@ export function DictationPrompt({
     <form className="dictation" onSubmit={handleSubmit} noValidate>
       <div className="dictation-hear">
         <p className="marginal">听发音，写下单词</p>
+        <p className="dictation-streak" aria-live="polite">连续正确 {currentStreak} / {requiredStreak}</p>
         <div className="dictation-play">
           <PronounceButton
             word={item.word}
@@ -170,10 +175,11 @@ export function DictationPrompt({
       ) : (
         <div className={`dictation-feedback ${grade === 'correct' ? 'edge-success' : 'edge-danger'}`}>
           {grade === 'correct' ? (
-            <p className="dictation-verdict dictation-verdict-correct">拼写正确</p>
+            <p className="dictation-verdict dictation-verdict-correct">{currentStreak >= requiredStreak ? '拼写正确，该词已过关' : `拼写正确，连续 ${currentStreak} / ${requiredStreak}`}</p>
           ) : (
             <>
               <p className="dictation-verdict">拼写不对</p>
+              <p className="dictation-streak-reset">连续正确次数已归零</p>
               <p className="dictation-given">
                 你写了{' '}
                 <span className={`dictation-given-word${preferences.underlineMistakes ? ' show-mistakes' : ''}`}>

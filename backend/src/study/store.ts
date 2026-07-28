@@ -13,7 +13,7 @@ import type { ClientData, State } from "./ladder.js";
 import type {
   AccountUser, BatchWordInput, BatchWordResult, CatalogCard, CatalogQuery, CatalogWordbook, CommitImportDraftInput, CreateImportDraftInput, CreateMyWordbookInput,
   ImportDraft, ImportDraftEntry, LearningEvent, LearningEventInput, LearningQueueItem, MyWordbook, MyWordbookCard,
-  ResolvedImportDraftEntry, StudyDashboard, StudyStore, StudyWordEntry, UpdateCatalogWordbookInput, UpdateWordInput,
+  ResolvedImportDraftEntry, StudyDashboard, StudyStore, StudyWordEntry, UpdateCatalogWordbookInput, UpdateMyWordbookInput, UpdateWordInput,
   UpdateWordResult, UploadCatalogWordbookInput, WordbookWord, WordLearningStatus, WordLevel,
 } from "./types.js";
 
@@ -260,8 +260,15 @@ export abstract class BaseStore implements StudyStore {
   async listMyWordbooks(clientId: string, trash: boolean): Promise<MyWordbookCard[]> { return await this.read((state) => { const client = this.clientView(state, clientId); return client.wordbooks.filter((book) => Boolean(book.deletedAt) === trash).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).map((book) => card(book, client.events)); }); }
   async createMyWordbook(clientId: string, input: CreateMyWordbookInput): Promise<MyWordbookCard> { return await this.mutate((state) => {
     const at = this.now().toISOString(); const client = this.client(state, clientId);
-    const book: MyWordbook = { id: `my-${randomUUID()}`, title: input.title, description: input.description ?? "", createdAt: at, updatedAt: at, words: toWordbookWords(input.words ?? [], at) };
+    const book: MyWordbook = { id: `my-${randomUUID()}`, title: input.title, description: input.description ?? "", ...(input.category ? { category: input.category } : {}), createdAt: at, updatedAt: at, words: toWordbookWords(input.words ?? [], at) };
     client.wordbooks.push(book); return card(book, client.events);
+  }); }
+  async updateMyWordbook(clientId: string, id: string, input: UpdateMyWordbookInput): Promise<MyWordbookCard | null> { return await this.mutate((state) => {
+    const client = this.client(state, clientId); const book = client.wordbooks.find((item) => item.id === id && !item.deletedAt);
+    if (!book) return null;
+    if (input.category === null) delete book.category; else book.category = input.category;
+    book.updatedAt = this.now().toISOString();
+    return card(book, client.events);
   }); }
   async getMyWordbook(clientId: string, id: string): Promise<MyWordbookCard | null> { return await this.read((state) => { const client = this.clientView(state, clientId); const book = client.wordbooks.find((item) => item.id === id && !item.deletedAt); return book ? card(book, client.events) : null; }); }
   async deleteMyWordbook(clientId: string, id: string): Promise<boolean> { return await this.mutate((state) => { const client = this.client(state, clientId); const book = client.wordbooks.find((item) => item.id === id && !item.deletedAt); if (!book) return false; const at = this.now().toISOString(); book.deletedAt = at; book.updatedAt = at; return true; }); }
@@ -536,7 +543,7 @@ export abstract class BaseStore implements StudyStore {
       if (reviewDue(before, new Date(event.occurredAt))) completedDueReviewIds.add(event.wordId);
     }
     const completedReview = completedDueReviewIds.size;
-    const completedDictation = uniqueWords(todayEvents, "dictation").size;
+    const completedDictation = uniqueWords(todayEvents.filter((event) => event.kind === "dictation" && event.correct)).size;
     const states = ladderStates(events); const bookProgress = progress(book, events); const { levels } = bookProgress;
     // Availability per contract: 新词学习 from l0, 听写训练 from l2+l3+l4; 复习巩固 is the DUE count (below).
     const newAvailable = levels.l0; const dictationAvailable = levels.l2 + levels.l3 + levels.l4;
@@ -560,7 +567,7 @@ export abstract class BaseStore implements StudyStore {
     const weekDays = new Set(calendar.map((item) => item.date));
     const weekEvents = studyEvents.filter((event) => weekDays.has(day(new Date(event.occurredAt))));
     const weekNewIds = uniqueWords(weekEvents.filter((event) => event.kind === "new" && afterById.get(event.id) === 1));
-    const weekReviewIds = uniqueWords(weekEvents, "flashcard"); const weekDictationIds = uniqueWords(weekEvents, "dictation");
+    const weekReviewIds = uniqueWords(weekEvents, "flashcard"); const weekDictationIds = uniqueWords(weekEvents.filter((event) => event.kind === "dictation" && event.correct));
     const weekTotalIds = new Set([...weekNewIds, ...weekReviewIds, ...weekDictationIds]);
     const weekNew = weekNewIds.size; const weekReview = weekReviewIds.size; const weekDictation = weekDictationIds.size;
     // The 结果 column shows the proficiency a word held right after each study action.

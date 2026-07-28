@@ -647,8 +647,52 @@ export const IELTS_WORDS: WordEntry[] = [
   },
 ]
 
-/** Deterministic pick for the landing page's word of the day. */
-export function wordOfTheDay(date = new Date()): WordEntry {
-  const dayIndex = Math.floor(date.getTime() / 86_400_000)
-  return IELTS_WORDS[dayIndex % IELTS_WORDS.length]
+function seededRandom(seed: number) {
+  let value = seed | 0
+  return () => {
+    value |= 0
+    value = value + 0x6d2b79f5 | 0
+    let result = Math.imul(value ^ value >>> 15, 1 | value)
+    result = result + Math.imul(result ^ result >>> 7, 61 | result) ^ result
+    return ((result ^ result >>> 14) >>> 0) / 4_294_967_296
+  }
+}
+
+function permutation(length: number, cycle: number) {
+  const values = Array.from({ length }, (_, index) => index)
+  const random = seededRandom(cycle ^ 0x56acaba7)
+  for (let index = length - 1; index > 0; index -= 1) {
+    const target = Math.floor(random() * (index + 1))
+    ;[values[index], values[target]] = [values[target], values[index]]
+  }
+  if (cycle > 0 && length > 1) {
+    const previous = permutationRaw(length, cycle - 1)
+    if (values[0] === previous[length - 1]) {
+      ;[values[0], values[1]] = [values[1], values[0]]
+    }
+  }
+  return values
+}
+
+function permutationRaw(length: number, cycle: number) {
+  const values = Array.from({ length }, (_, index) => index)
+  const random = seededRandom(cycle ^ 0x56acaba7)
+  for (let index = length - 1; index > 0; index -= 1) {
+    const target = Math.floor(random() * (index + 1))
+    ;[values[index], values[target]] = [values[target], values[index]]
+  }
+  return values
+}
+
+export function localDayNumber(date = new Date()) {
+  return Math.floor(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()) / 86_400_000)
+}
+
+/** Select only the headword. The full entry must come from the shared repository. */
+export function wordOfTheDay(date = new Date()): string {
+  const length = IELTS_WORDS.length
+  const day = localDayNumber(date)
+  const cycle = Math.floor(day / length)
+  const position = ((day % length) + length) % length
+  return IELTS_WORDS[permutation(length, cycle)[position]].word
 }

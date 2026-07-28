@@ -1,8 +1,11 @@
 import { createHash } from "node:crypto";
+import { createReadStream } from "node:fs";
 import { mkdtemp, mkdir, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { spawn } from "node:child_process";
+import { createGunzip } from "node:zlib";
+import { createInterface } from "node:readline";
 import Database from "better-sqlite3";
 import YAML from "yaml";
 import {
@@ -13,7 +16,12 @@ import {
 
 const OEWN_COMMIT = "dc343f2683279ecbb13fab4e2fd778d7b162d287";
 const ECDICT_COMMIT = "bc015ed2e24a7abef49fc6dbbb7fe32c1dadaf8b";
+const WIKTEXTRACT_FILE = process.env.WIKTEXTRACT_JSONL_GZ?.trim();
+const WIKTEXTRACT_DUMP_DATE = process.env.WIKTEXTRACT_DUMP_DATE?.trim();
+const WIKTEXTRACT_SHA256 = process.env.WIKTEXTRACT_SHA256?.trim()?.toLowerCase();
 const output = resolve(process.argv[2] ?? "../resources/dictionaries/generated/vocab.sqlite");
+const requestedWiktextractDate = WIKTEXTRACT_FILE ? WIKTEXTRACT_DUMP_DATE : "not-imported";
+const requestedWiktextractHash = WIKTEXTRACT_FILE ? WIKTEXTRACT_SHA256 : "not-imported";
 if (!process.argv.includes("--force")) {
   try {
     const existing = new Database(output, { readonly: true, fileMustExist: true });
@@ -23,6 +31,8 @@ if (!process.argv.includes("--force")) {
       metadata.oewn_commit === OEWN_COMMIT
       && metadata.ecdict_commit === ECDICT_COMMIT
       && metadata.importer_version === DICTIONARY_IMPORTER_VERSION
+      && metadata.wiktextract_dump_date === requestedWiktextractDate
+      && metadata.wiktextract_sha256 === requestedWiktextractHash
     ) {
       console.log(`Dictionary is up to date at ${output}`);
       process.exit(0);
@@ -53,6 +63,12 @@ function parseCsv(content) {
   }
   if (field || row.length) { row.push(field); rows.push(row); }
   return rows;
+}
+
+async function sha256File(file) {
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(file)) hash.update(chunk);
+  return hash.digest("hex");
 }
 
 async function clonePinned(url, commit, target) {
@@ -89,6 +105,7 @@ try {
       definition TEXT NOT NULL,
       example TEXT,
       source_record_id TEXT NOT NULL,
+      source_id TEXT NOT NULL,
       sort_order INTEGER NOT NULL
     );
     CREATE INDEX dictionary_meanings_lemma_order_idx
@@ -100,8 +117,8 @@ try {
   `);
   const ensureEntry = db.prepare("INSERT INTO dictionary_entries(lemma) VALUES (?) ON CONFLICT DO NOTHING");
   const insertMeaning = db.prepare(`
-    INSERT INTO dictionary_meanings(lemma, pos, definition, example, source_record_id, sort_order)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO dictionary_meanings(lemma, pos, definition, example, source_record_id, source_id, sort_order)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
   `);
   const yamlFiles = (await readdir(resolve(oewnDir, "src/yaml"))).filter((name) => name.endsWith(".yaml")).sort();
   let meaningOrder = 0;
@@ -118,7 +135,7 @@ try {
           ensureEntry.run(lemma);
           definitions.forEach((definition, index) => {
             const text = String(definition).trim();
-            if (text) insertMeaning.run(lemma, pos, text, examples[index] ? String(examples[index]).trim() : null, `${file}:${recordId}`, meaningOrder++);
+            if (text) insertMeaning.run(lemma, pos, text, examples[index] ? String(examples[index]).trim() : null, `${file}:${recordId}`, "open_english_wordnet", meaningOrder++);
           });
         }
       }
@@ -162,19 +179,82 @@ try {
   });
   importEcdict(rows);
 
+  let wiktionaryMeanings = 0;
+  if (WIKTEXTRACT_FILE) {
+    if (!WIKTEXTRACT_DUMP_DATE || !/^\d{4}-\d{2}-\d{2}$/.test(WIKTEXTRACT_DUMP_DATE)) {
+      throw new Error("WIKTEXTRACT_DUMP_DATE=YYYY-MM-DD is required with WIKTEXTRACT_JSONL_GZ");
+    }
+    if (!WIKTEXTRACT_SHA256 || !/^[a-f0-9]{64}$/.test(WIKTEXTRACT_SHA256)) {
+      throw new Error("WIKTEXTRACT_SHA256 is required with WIKTEXTRACT_JSONL_GZ");
+    }
+    const actualHash = await sha256File(resolve(WIKTEXTRACT_FILE));
+    if (actualHash !== WIKTEXTRACT_SHA256) throw new Error("Wiktextract checksum does not match");
+
+    const hasOewnMeaning = db.prepare(`
+      SELECT 1
+      FROM dictionary_meanings
+      WHERE lemma = ? AND source_id = 'open_english_wordnet'
+      LIMIT 1
+    `);
+    const importLine = db.transaction((record) => {
+      const lemma = normalizeDictionaryLemma(record?.word ?? "");
+      if (
+        (record?.lang_code && record.lang_code !== "en")
+        || !isValidDictionaryLemma(lemma)
+        || !lemma.includes(" ")
+        || hasOewnMeaning.get(lemma)
+      ) return;
+      const pos = String(record?.pos ?? "phrase").trim().toLowerCase() || "phrase";
+      ensureEntry.run(lemma);
+      for (const [senseIndex, sense] of (Array.isArray(record?.senses) ? record.senses : []).entries()) {
+        if (sense?.tags?.includes("form-of") || sense?.tags?.includes("translation-hub")) continue;
+        const gloss = Array.isArray(sense?.glosses)
+          ? sense.glosses.find((value) => typeof value === "string" && value.trim())
+          : undefined;
+        if (!gloss) continue;
+        const example = Array.isArray(sense.examples)
+          ? sense.examples.find((value) => typeof value?.text === "string")?.text?.trim() || null
+          : null;
+        insertMeaning.run(
+          lemma,
+          pos,
+          gloss.trim(),
+          example,
+          `${record.original_title ?? record.word}:${senseIndex}`,
+          "wiktionary",
+          meaningOrder++,
+        );
+        wiktionaryMeanings += 1;
+        if (wiktionaryMeanings % 10_000 === 0) console.log(`Imported ${wiktionaryMeanings} Wiktionary phrase meanings`);
+      }
+    });
+    const lines = createInterface({
+      input: createReadStream(resolve(WIKTEXTRACT_FILE)).pipe(createGunzip()),
+      crlfDelay: Infinity,
+    });
+    for await (const line of lines) {
+      if (!line.trim()) continue;
+      importLine(JSON.parse(line));
+    }
+  }
+
   const metadata = db.prepare("INSERT INTO dictionary_metadata(key, value) VALUES (?, ?)");
   metadata.run("schema_version", "1");
   metadata.run("importer_version", DICTIONARY_IMPORTER_VERSION);
   metadata.run("oewn_commit", OEWN_COMMIT);
   metadata.run("ecdict_commit", ECDICT_COMMIT);
+  metadata.run("wiktextract_dump_date", WIKTEXTRACT_DUMP_DATE ?? "not-imported");
+  metadata.run("wiktextract_sha256", WIKTEXTRACT_SHA256 ?? "not-imported");
   metadata.run("built_at", new Date().toISOString());
   metadata.run("ecdict_sha256", createHash("sha256").update(ecdictContent).digest("hex"));
-  db.exec("ANALYZE; VACUUM;");
   const counts = {
     entries: db.prepare("SELECT COUNT(*) AS count FROM dictionary_entries").get().count,
     meanings: db.prepare("SELECT COUNT(*) AS count FROM dictionary_meanings").get().count,
     bilingual: db.prepare("SELECT COUNT(*) AS count FROM dictionary_entries WHERE zh_meaning IS NOT NULL AND EXISTS (SELECT 1 FROM dictionary_meanings m WHERE m.lemma = dictionary_entries.lemma)").get().count,
+    wiktionaryMeanings,
   };
+  for (const [name, value] of Object.entries(counts)) metadata.run(`stats_${name}`, String(value));
+  db.exec("ANALYZE; VACUUM;");
   db.close();
   console.log(`Dictionary built at ${output}`, counts);
 } finally {

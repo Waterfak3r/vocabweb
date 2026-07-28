@@ -17,7 +17,7 @@ describe('BackendWordSuggestionRepository', () => {
   it('normalizes the query, parses suggestions, and forwards cancellation', async () => {
     const fetch = vi.fn<FetchLike>(async () => jsonResponse({
       suggestions: [
-        { word: 'A LOT OF', zhMeaning: ' 许多 ' },
+        { word: 'A LOT OF', zhMeaning: ' 许多 ', kind: 'phrase' },
         { word: 'look up' },
       ],
     }))
@@ -28,8 +28,8 @@ describe('BackendWordSuggestionRepository', () => {
     const controller = new AbortController()
 
     await expect(repository.suggest('  A   LOT ', 8, controller.signal)).resolves.toEqual([
-      { word: 'a lot of', zhMeaning: '许多' },
-      { word: 'look up' },
+      { word: 'a lot of', zhMeaning: '许多', kind: 'phrase' },
+      { word: 'look up', kind: 'phrase' },
     ])
     const [url, init] = fetch.mock.calls[0]
     expect(url.toString()).toBe(

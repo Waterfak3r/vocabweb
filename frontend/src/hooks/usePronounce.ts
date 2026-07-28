@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { getRecordedPronunciation } from '../data/recordedPronunciation'
+import { readPronunciationPreferences, type EnglishAccent } from '../data/pronunciationPreferences'
 import { playAudioUrl } from '../lib/audio'
-import { speakEnglishWord } from '../lib/speech'
+import { normalizeSpokenEnglish, speakEnglishWord } from '../lib/speech'
 
 export type PronounceState = 'idle' | 'playing' | 'unavailable'
 
@@ -8,7 +10,8 @@ export type PronounceState = 'idle' | 'playing' | 'unavailable'
  * Pronounce a word: prefer the recorded audioUrl, fall back to
  * Web Speech (en-GB). `statusText` is meant for an aria-live region.
  */
-export function usePronounce(word: string, audioUrl?: string, rate = 0.85) {
+export function usePronounce(word: string, audioUrl?: string, rate = 0.85, requestedAccent?: EnglishAccent) {
+  const accent = requestedAccent ?? readPronunciationPreferences().accent
   const [state, setState] = useState<PronounceState>('idle')
   const [statusText, setStatusText] = useState('')
   const cleanupRef = useRef<(() => void) | null>(null)
@@ -37,13 +40,14 @@ export function usePronounce(word: string, audioUrl?: string, rate = 0.85) {
           }
         },
         rate,
+        accent,
       )
     }
 
-    if (audioUrl) {
+    const playRecording = (recordingUrl: string) => {
       let timer = 0
       const stopAudio = playAudioUrl(
-        audioUrl,
+        recordingUrl,
         () => {
           window.clearTimeout(timer)
           stopAudio()
@@ -69,10 +73,19 @@ export function usePronounce(word: string, audioUrl?: string, rate = 0.85) {
         window.clearTimeout(timer)
         stopAudio()
       }
-    } else {
-      fallbackToSpeech()
     }
-  }, [word, audioUrl, rate, stop])
+
+    // Stored wordbook audio predates the accent preference and has no reliable
+    // accent metadata. Resolve the selected accent through the dedicated route
+    // so changing the setting cannot keep playing a stale opposite-accent clip.
+    let cancelled = false
+    cleanupRef.current = () => { cancelled = true }
+    void getRecordedPronunciation(normalizeSpokenEnglish(word), accent).then((pronunciation) => {
+      if (cancelled) return
+      if (pronunciation?.audioUrl) playRecording(pronunciation.audioUrl)
+      else fallbackToSpeech()
+    })
+  }, [word, audioUrl, rate, accent, stop])
 
   useEffect(() => stop, [stop])
 

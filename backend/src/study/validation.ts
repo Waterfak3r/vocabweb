@@ -2,7 +2,7 @@ import { isValidWordQuery, normalizeWord } from "../words/normalize.js";
 import {
   WORD_SOURCES, type CatalogExam, type CatalogQuery, type CatalogSort, type CommitImportDraftInput, type CreateImportDraftInput,
   type CreateMyWordbookInput, type ImportLineInput, type ImportResolution, type LearningEventInput, type LearningGoal,
-  type BatchWordAction, type StudyMeaning, type StudyWordEntry, type UpdateCatalogWordbookInput, type UpdateWordInput, type UploadCatalogWordbookInput,
+  type BatchWordAction, type StudyMeaning, type StudyWordEntry, type UpdateCatalogWordbookInput, type UpdateMyWordbookInput, type UpdateWordInput, type UploadCatalogWordbookInput,
   type WordLearningStatus, type WordLevel, type WordSource, type ZhMeaningSource,
 } from "./types.js";
 
@@ -58,8 +58,8 @@ function audioUrl(value: unknown): string | undefined | null {
 }
 function meaning(value: unknown): StudyMeaning | null {
   if (!isJsonObject(value)) return null;
-  const pos = text(value.pos, 80)?.toLowerCase(); const definition = text(value.definition, 1500);
-  if (!pos || !definition) return null;
+  const pos = text(value.pos, 80)?.toLowerCase(); const definition = text(value.definition, 1500, true);
+  if (!pos || definition === null) return null;
   if (value.example === undefined) return { pos, definition };
   const example = text(value.example, 1500); return example ? { pos, definition, example } : null;
 }
@@ -85,13 +85,20 @@ function choices<T extends string>(value: unknown, all: readonly T[]): T[] | nul
 function parseWordbookInput(value: unknown): CreateMyWordbookInput | null {
   if (!isJsonObject(value)) return null;
   const title = text(value.title, 100); const description = value.description === undefined ? undefined : text(value.description, 500, true);
-  if (!title || description === null) return null;
+  const category = value.category === undefined ? undefined : text(value.category, 30);
+  if (!title || description === null || category === null) return null;
   if (value.words !== undefined && (!Array.isArray(value.words) || value.words.length > 500)) return null;
   const words = (value.words ?? []).map(parseStudyWordEntry);
   if (words.some((item) => item === null) || new Set(words.map((item) => item?.word)).size !== words.length) return null;
-  return { title, ...(description !== undefined ? { description } : {}), words: words as StudyWordEntry[] };
+  return { title, ...(description !== undefined ? { description } : {}), ...(category ? { category } : {}), words: words as StudyWordEntry[] };
 }
 export function parseCreateMyWordbook(value: unknown): CreateMyWordbookInput | null { return parseWordbookInput(value); }
+export function parseUpdateMyWordbook(value: unknown): UpdateMyWordbookInput | null {
+  if (!isJsonObject(value) || !Object.hasOwn(value, "category")) return null;
+  if (value.category === null) return { category: null };
+  const category = text(value.category, 30);
+  return category ? { category } : null;
+}
 export function parseUploadCatalog(value: unknown): UploadCatalogWordbookInput | null {
   if (!isJsonObject(value)) return null;
   const sourceWordbookId = value.sourceWordbookId === undefined ? undefined : parseResourceId(value.sourceWordbookId);

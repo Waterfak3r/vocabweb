@@ -58,7 +58,7 @@ export function parseEditableMeanings(value: string): EditableWordbookItem['mean
         ...(example ? { example } : {}),
       }
     })
-    .filter((meaning) => meaning.definition)
+    .filter((meaning) => meaning.pos !== 'unknown' || Boolean(meaning.definition) || Boolean(meaning.example))
 }
 
 export function WordManagerDialog({ title, entries, saving = false, onClose, onSave, onMarkKnown, onBatch }: Props) {

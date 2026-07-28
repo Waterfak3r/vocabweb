@@ -156,6 +156,52 @@ test("a new anonymous client can create a wordbook and starts with no learning a
   } finally { await app.close(); }
 });
 
+test("personal wordbook categories trim, clear, validate, and remain client-scoped", async () => {
+  const app = await server();
+  try {
+    const createdResponse = await fetch(`${app.baseUrl}/api/my/wordbooks`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ title: "Academic", description: "Writing words", category: "  IELTS 写作  " }),
+    });
+    assert.equal(createdResponse.status, 201);
+    const created = await createdResponse.json() as { id: string; category?: string };
+    assert.equal(created.category, "IELTS 写作");
+
+    const changedResponse = await fetch(`${app.baseUrl}/api/my/wordbooks/${created.id}`, {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({ category: "  核心词  " }),
+    });
+    assert.equal(changedResponse.status, 200);
+    assert.equal((await changedResponse.json() as { category?: string }).category, "核心词");
+
+    const denied = await fetch(`${app.baseUrl}/api/my/wordbooks/${created.id}`, {
+      method: "PATCH",
+      headers: { ...headers, "x-vocab-client-id": OTHER_CLIENT },
+      body: JSON.stringify({ category: "越权" }),
+    });
+    assert.equal(denied.status, 404);
+
+    const invalid = await fetch(`${app.baseUrl}/api/my/wordbooks/${created.id}`, {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({ category: "x".repeat(31) }),
+    });
+    assert.equal(invalid.status, 400);
+
+    const clearedResponse = await fetch(`${app.baseUrl}/api/my/wordbooks/${created.id}`, {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({ category: null }),
+    });
+    assert.equal(clearedResponse.status, 200);
+    assert.equal("category" in await clearedResponse.json(), false);
+  } finally {
+    await app.close();
+  }
+});
+
 test("study routes reject malformed inputs and events outside the selected wordbook", async () => {
   const app = await server();
   try {
@@ -205,7 +251,7 @@ test("study events drive queues and the selected-wordbook dashboard", async () =
     assert.equal(data.wordbook.progress.levels.l1, 2);
     assert.equal(data.wordbook.progress.mastered, 0);
     assert.equal(data.todayPlan.review.completed, 0);
-    assert.equal(data.todayPlan.dictation.completed, 1);
+    assert.equal(data.todayPlan.dictation.completed, 0);
     assert.equal(data.recentActivity.length, 2);
     assert.equal(data.calendar.length, 7);
   } finally { await app.close(); }
@@ -343,6 +389,101 @@ test("import drafts preserve Chinese input, batch 501 valid words, and append la
     assert.equal(complete.wordCount, 503);
     const linked = await (await fetch(`${app.baseUrl}/api/my/import-drafts/${next.id}`, { headers })).json() as { targetWordbookId: string };
     assert.equal(linked.targetWordbookId, firstBook.id);
+  } finally { await app.close(); }
+});
+
+test("word is the only required import field and supplied parts of speech target matching meanings", async () => {
+  const lookedUp: string[] = [];
+  const app = await server({
+    wordLookup: {
+      async lookup(word) {
+        lookedUp.push(word);
+        if (word === "initial public offering") {
+          return {
+            word,
+            phonetic: "",
+            meanings: [{ pos: "noun", definition: "The first public sale of company shares." }],
+            source: "backend",
+          };
+        }
+        if (word === "research and development") {
+          return {
+            word,
+            phonetic: "",
+            meanings: [{ pos: "noun", definition: "Work directed toward innovation." }],
+            source: "backend",
+          };
+        }
+        if (word !== "matched") return null;
+        return {
+          word,
+          phonetic: "",
+          meanings: [
+            { pos: "noun", definition: "A corresponding item." },
+            { pos: "verb", definition: "To correspond." },
+          ],
+          source: "backend",
+        };
+      },
+    },
+  });
+  try {
+    const response = await fetch(`${app.baseUrl}/api/my/import-drafts`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        title: "可选字段导入",
+        lines: [
+          { line: 1, word: "matched", pos: "v.", example: "The results matched." },
+          { line: 2, word: "orphan-pos", pos: "adjective" },
+          { line: 3, word: "orphan-example", example: "An example without a definition." },
+          { line: 4, word: "bare" },
+          { line: 5, word: "chinese-only", zhMeaning: "仅中文释义" },
+          { line: 6, word: "initial public offering(IPO)", pos: "n.", zhMeaning: "首次公开募股" },
+          { line: 7, word: "research and development(R&D)", pos: "abbr.", zhMeaning: "研究与开发" },
+        ],
+      }),
+    });
+    assert.equal(response.status, 201);
+    const created = await response.json() as { id: string };
+    const draft = await eventually(
+      async () => await (await fetch(`${app.baseUrl}/api/my/import-drafts/${created.id}`, { headers })).json() as {
+        id: string;
+        status: string;
+        entries: Array<{
+          word: string;
+          status: string;
+          entry: { meanings: Array<{ pos: string; definition: string; example?: string }>; zhMeaning?: string };
+        }>;
+      },
+      (value) => value.status === "pending",
+    );
+
+    assert.deepEqual(draft.entries.map((entry) => entry.status), ["ready", "unmatched", "unmatched", "unmatched", "unmatched", "ready", "ready"]);
+    const matched = draft.entries[0]!.entry.meanings;
+    assert.deepEqual(matched, [
+      { pos: "noun", definition: "A corresponding item." },
+      { pos: "v.", definition: "To correspond.", example: "The results matched." },
+    ]);
+    assert.deepEqual(draft.entries[1]!.entry.meanings, [{ pos: "adjective", definition: "" }]);
+    assert.deepEqual(draft.entries[2]!.entry.meanings, [{ pos: "unknown", definition: "", example: "An example without a definition." }]);
+    assert.deepEqual(draft.entries[3]!.entry.meanings, []);
+    assert.equal(draft.entries[4]!.entry.zhMeaning, "仅中文释义");
+    assert.equal(draft.entries[5]!.word, "initial public offering (ipo)");
+    assert.equal(draft.entries[5]!.entry.meanings[0]!.definition, "The first public sale of company shares.");
+    assert.ok(lookedUp.includes("initial public offering"));
+    assert.equal(lookedUp.includes("initial public offering (ipo)"), false);
+    assert.equal(draft.entries[6]!.word, "research and development (r&d)");
+    assert.ok(lookedUp.includes("research and development"));
+    assert.equal(lookedUp.includes("research and development (r&d)"), false);
+
+    const committed = await fetch(`${app.baseUrl}/api/my/import-drafts/${draft.id}/commit`, {
+      method: "POST",
+      headers,
+      body: "{}",
+    });
+    assert.equal(committed.status, 200);
+    assert.equal((await committed.json() as { wordCount: number }).wordCount, 7);
   } finally { await app.close(); }
 });
 
