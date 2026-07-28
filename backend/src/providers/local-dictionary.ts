@@ -5,12 +5,22 @@ import type { WordEntry, WordMeaning, WordProvider } from "../words/types.js";
 
 type EntryRow = { lemma: string; phonetic: string; zh_meaning: string | null };
 type MeaningRow = { pos: string; definition: string; example: string | null };
+type SuggestionRow = { lemma: string; zh_meaning: string | null };
+
+export type WordSuggestion = {
+  word: string;
+  zhMeaning?: string;
+};
+
+export interface WordSuggestionLookup {
+  suggest(query: string, limit: number): Promise<WordSuggestion[]>;
+}
 
 const POS: Record<string, string> = {
   n: "noun", v: "verb", a: "adjective", s: "adjective", r: "adverb",
 };
 
-export class SqliteLocalDictionaryProvider implements WordProvider {
+export class SqliteLocalDictionaryProvider implements WordProvider, WordSuggestionLookup {
   private database?: Database.Database;
 
   constructor(private readonly databaseFile: string) {}
@@ -72,6 +82,50 @@ export class SqliteLocalDictionaryProvider implements WordProvider {
     return (await this.lookup(word))?.zhMeaning;
   }
 
+  async suggest(rawQuery: string, limit: number): Promise<WordSuggestion[]> {
+    const db = this.open();
+    if (!db) return [];
+    const query = normalizeWord(rawQuery);
+    const upperBound = `${query}\uffff`;
+    const prefixRows = db.prepare(`
+      SELECT lemma, zh_meaning
+      FROM dictionary_entries
+      WHERE lemma >= ? AND lemma < ?
+      ORDER BY
+        CASE WHEN lemma = ? THEN 0 ELSE 1 END,
+        CASE WHEN frq IS NULL THEN 1 ELSE 0 END,
+        frq,
+        CASE WHEN bnc IS NULL THEN 1 ELSE 0 END,
+        bnc,
+        length(lemma),
+        lemma
+      LIMIT ?
+    `).all(query, upperBound, query, limit) as SuggestionRow[];
+
+    const remaining = limit - prefixRows.length;
+    const containsRows = remaining > 0
+      ? db.prepare(`
+          SELECT lemma, zh_meaning
+          FROM dictionary_entries
+          WHERE instr(lemma, ?) > 0
+            AND NOT (lemma >= ? AND lemma < ?)
+          ORDER BY
+            CASE WHEN frq IS NULL THEN 1 ELSE 0 END,
+            frq,
+            CASE WHEN bnc IS NULL THEN 1 ELSE 0 END,
+            bnc,
+            length(lemma),
+            lemma
+          LIMIT ?
+        `).all(query, query, upperBound, remaining) as SuggestionRow[]
+      : [];
+
+    return [...prefixRows, ...containsRows].map((row) => ({
+      word: row.lemma,
+      ...(row.zh_meaning ? { zhMeaning: summarizeChineseMeaning(row.zh_meaning) } : {}),
+    }));
+  }
+
   private open(): Database.Database | undefined {
     if (this.database?.open) return this.database;
     try {
@@ -82,4 +136,16 @@ export class SqliteLocalDictionaryProvider implements WordProvider {
       return undefined;
     }
   }
+}
+
+function summarizeChineseMeaning(value: string): string {
+  const summary = value
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find(Boolean)
+    ?.replace(/\s+/g, " ") ?? "";
+  const characters = Array.from(summary);
+  return characters.length > 60
+    ? `${characters.slice(0, 60).join("")}…`
+    : summary;
 }

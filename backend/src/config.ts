@@ -9,6 +9,8 @@ export interface AppConfig {
   wordCacheMaxEntries: number;
   wordRateLimitWindowMs: number;
   wordRateLimitMaxRequests: number;
+  wordSuggestionRateLimitWindowMs: number;
+  wordSuggestionRateLimitMaxRequests: number;
   loginRateLimitWindowMs: number;
   loginRateLimitMaxRequests: number;
   trustProxy: number;
@@ -93,6 +95,20 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       "WORD_RATE_LIMIT_MAX_REQUESTS",
       env.WORD_RATE_LIMIT_MAX_REQUESTS,
       60,
+      1,
+      100_000,
+    ),
+    wordSuggestionRateLimitWindowMs: parseInteger(
+      "WORD_SUGGESTION_RATE_LIMIT_WINDOW_MS",
+      env.WORD_SUGGESTION_RATE_LIMIT_WINDOW_MS,
+      60_000,
+      1_000,
+      60 * 60 * 1_000,
+    ),
+    wordSuggestionRateLimitMaxRequests: parseInteger(
+      "WORD_SUGGESTION_RATE_LIMIT_MAX_REQUESTS",
+      env.WORD_SUGGESTION_RATE_LIMIT_MAX_REQUESTS,
+      240,
       1,
       100_000,
     ),

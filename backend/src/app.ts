@@ -7,6 +7,7 @@ import {
   readSessionToken, sessionCookie, sessionExpiresAt, verifyPassword,
 } from "./auth.js";
 import { FixedWindowRateLimiter, type RateLimiter } from "./http/rate-limit.js";
+import type { WordSuggestionLookup } from "./providers/local-dictionary.js";
 import { WiktApiProvider } from "./providers/wiktapi.js";
 import { CsvLocalChineseDictionary, type LocalChineseLookup } from "./study/local-dictionary.js";
 import { JsonFileStudyStore } from "./study/store.js";
@@ -20,6 +21,8 @@ export interface CreateAppOptions {
   frontendOrigins?: string[];
   wordLookup?: WordLookup;
   wordRateLimiter?: RateLimiter;
+  wordSuggestionLookup?: WordSuggestionLookup;
+  wordSuggestionRateLimiter?: RateLimiter;
   mutationRateLimiter?: RateLimiter;
   loginRateLimiter?: RateLimiter;
   studyStore?: StudyStore;
@@ -90,9 +93,15 @@ export function createApp(options: CreateAppOptions = {}) {
   const app = express();
   const allowedOrigins = options.frontendOrigins ?? ["http://localhost:5173", "http://127.0.0.1:5173"];
   const wordLookup = options.wordLookup ?? new WordService(new WiktApiProvider());
+  const wordSuggestionLookup = options.wordSuggestionLookup ?? {
+    async suggest() { return []; },
+  };
   const wordRateLimiter =
     options.wordRateLimiter ??
     new FixedWindowRateLimiter({ windowMs: 60_000, maxRequests: 60 });
+  const wordSuggestionRateLimiter =
+    options.wordSuggestionRateLimiter ??
+    new FixedWindowRateLimiter({ windowMs: 60_000, maxRequests: 240 });
   const mutationRateLimiter =
     options.mutationRateLimiter ??
     new FixedWindowRateLimiter({ windowMs: 60_000, maxRequests: 240 });
@@ -135,6 +144,19 @@ export function createApp(options: CreateAppOptions = {}) {
     if (!decision.allowed) {
       response.setHeader("Retry-After", Math.max(1, Math.ceil(decision.retryAfterMs / 1_000)));
       response.status(429).json(apiError("RATE_LIMITED", "Too many word lookup requests"));
+      return;
+    }
+
+    next();
+  };
+
+  const enforceWordSuggestionRateLimit: RequestHandler = (request, response, next) => {
+    const clientKey = request.ip || request.socket.remoteAddress || "unknown";
+    const decision = wordSuggestionRateLimiter.consume(clientKey);
+
+    if (!decision.allowed) {
+      response.setHeader("Retry-After", Math.max(1, Math.ceil(decision.retryAfterMs / 1_000)));
+      response.status(429).json(apiError("RATE_LIMITED", "Too many word suggestion requests"));
       return;
     }
 
@@ -551,6 +573,43 @@ export function createApp(options: CreateAppOptions = {}) {
     if (!user) { response.status(401).json(apiError("AUTH_REQUIRED", "Sign in to manage message notifications")); return; }
     try { await engagementStore.markMessagesRead(user.id); response.status(204).end(); } catch (error) { next(error); }
   });
+
+  app.get(
+    "/api/words/suggestions",
+    (request, _response, next) => {
+      // Preserve exact lookup for the legitimate headword "suggestions".
+      if (request.query.q === undefined) {
+        next("route");
+        return;
+      }
+      next();
+    },
+    enforceWordSuggestionRateLimit,
+    async (request, response, next) => {
+      const query = typeof request.query.q === "string"
+        ? normalizeWord(request.query.q)
+        : "";
+      const limit = request.query.limit === undefined ? 8 : Number(request.query.limit);
+      if (
+        query.length < 2
+        || !isValidWordQuery(query)
+        || !Number.isInteger(limit)
+        || limit < 1
+        || limit > 10
+      ) {
+        response.status(400).json(apiError("INVALID_SUGGESTION_QUERY", "Word suggestion query is invalid"));
+        return;
+      }
+
+      try {
+        const suggestions = await wordSuggestionLookup.suggest(query, limit);
+        response.setHeader("Cache-Control", "public, max-age=300");
+        response.status(200).json({ suggestions });
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
 
   app.get(["/api/words", "/api/words/"], enforceWordRateLimit, (_request, response) => {
     response.status(400).json(apiError("INVALID_WORD", "Word query is invalid"));

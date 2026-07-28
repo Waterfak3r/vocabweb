@@ -4,6 +4,10 @@ import { DictionaryApiRepository } from './dictionaryApiRepository'
 import { IELTS_WORDS } from './ieltsWords'
 import { LocalIeltsRepository } from './localIeltsRepository'
 import type { WordRepository } from './wordRepository'
+import {
+  BackendWordSuggestionRepository,
+  type WordSuggestionRepository,
+} from './wordSuggestionRepository'
 
 /**
  * Composition root for data access.
@@ -32,3 +36,14 @@ export function createWordRepository(
 
 /** Singleton for the app's lifetime. */
 export const wordRepository = createWordRepository()
+
+export function createWordSuggestionRepository(
+  apiBase: string | undefined = import.meta.env.VITE_API_BASE,
+): WordSuggestionRepository | null {
+  return apiBase?.trim()
+    ? new BackendWordSuggestionRepository(apiBase)
+    : null
+}
+
+/** Suggestions require the indexed backend dictionary; direct provider mode stays lookup-only. */
+export const wordSuggestionRepository = createWordSuggestionRepository()

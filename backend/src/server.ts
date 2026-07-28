@@ -24,6 +24,10 @@ const wordRateLimiter = new FixedWindowRateLimiter({
   windowMs: config.wordRateLimitWindowMs,
   maxRequests: config.wordRateLimitMaxRequests,
 });
+const wordSuggestionRateLimiter = new FixedWindowRateLimiter({
+  windowMs: config.wordSuggestionRateLimitWindowMs,
+  maxRequests: config.wordSuggestionRateLimitMaxRequests,
+});
 const loginRateLimiter = new FixedWindowRateLimiter({
   windowMs: config.loginRateLimitWindowMs,
   maxRequests: config.loginRateLimitMaxRequests,
@@ -34,6 +38,8 @@ const app = createApp({
   frontendOrigins: config.frontendOrigins,
   wordLookup,
   wordRateLimiter,
+  wordSuggestionLookup: localProvider,
+  wordSuggestionRateLimiter,
   loginRateLimiter,
   studyStore,
   engagementStore,

@@ -5,6 +5,11 @@ import { dirname, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import Database from "better-sqlite3";
 import YAML from "yaml";
+import {
+  DICTIONARY_IMPORTER_VERSION,
+  isValidDictionaryLemma,
+  normalizeDictionaryLemma,
+} from "./dictionary-lemma.mjs";
 
 const OEWN_COMMIT = "dc343f2683279ecbb13fab4e2fd778d7b162d287";
 const ECDICT_COMMIT = "bc015ed2e24a7abef49fc6dbbb7fe32c1dadaf8b";
@@ -14,7 +19,11 @@ if (!process.argv.includes("--force")) {
     const existing = new Database(output, { readonly: true, fileMustExist: true });
     const metadata = Object.fromEntries(existing.prepare("SELECT key, value FROM dictionary_metadata").all().map((row) => [row.key, row.value]));
     existing.close();
-    if (metadata.oewn_commit === OEWN_COMMIT && metadata.ecdict_commit === ECDICT_COMMIT) {
+    if (
+      metadata.oewn_commit === OEWN_COMMIT
+      && metadata.ecdict_commit === ECDICT_COMMIT
+      && metadata.importer_version === DICTIONARY_IMPORTER_VERSION
+    ) {
       console.log(`Dictionary is up to date at ${output}`);
       process.exit(0);
     }
@@ -27,14 +36,6 @@ function run(command, args, cwd) {
     child.on("error", reject);
     child.on("exit", (code) => code === 0 ? resolveRun() : reject(new Error(`${command} exited with ${code}`)));
   });
-}
-
-function normalizeWord(value) {
-  return String(value).normalize("NFC").trim().toLowerCase().replaceAll("’", "'");
-}
-
-function validLemma(value) {
-  return /^[a-z]+(?:['-][a-z]+)*$/.test(value);
 }
 
 function parseCsv(content) {
@@ -112,8 +113,8 @@ try {
         const examples = Array.isArray(raw?.example) ? raw.example : [];
         const pos = String(raw?.partOfSpeech ?? "");
         for (const member of members) {
-          const lemma = normalizeWord(member);
-          if (!validLemma(lemma)) continue;
+          const lemma = normalizeDictionaryLemma(member);
+          if (!isValidDictionaryLemma(lemma)) continue;
           ensureEntry.run(lemma);
           definitions.forEach((definition, index) => {
             const text = String(definition).trim();
@@ -146,8 +147,8 @@ try {
   const integer = (value) => /^\d+$/.test(value?.trim() ?? "") && Number(value) > 0 ? Number(value) : null;
   const importEcdict = db.transaction((items) => {
     for (const fields of items) {
-      const lemma = normalizeWord(fields[columns.word] ?? "");
-      if (!validLemma(lemma)) continue;
+      const lemma = normalizeDictionaryLemma(fields[columns.word] ?? "");
+      if (!isValidDictionaryLemma(lemma)) continue;
       const zhMeaning = (fields[columns.translation] ?? "").replaceAll("\\n", "\n").trim() || null;
       upsertChinese.run({
         lemma,
@@ -163,6 +164,7 @@ try {
 
   const metadata = db.prepare("INSERT INTO dictionary_metadata(key, value) VALUES (?, ?)");
   metadata.run("schema_version", "1");
+  metadata.run("importer_version", DICTIONARY_IMPORTER_VERSION);
   metadata.run("oewn_commit", OEWN_COMMIT);
   metadata.run("ecdict_commit", ECDICT_COMMIT);
   metadata.run("built_at", new Date().toISOString());

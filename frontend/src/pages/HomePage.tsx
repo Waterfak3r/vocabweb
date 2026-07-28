@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { WordResultCard } from '../components/word/WordResultCard'
 import { EmptyState } from '../components/ui/EmptyState'
@@ -6,6 +6,7 @@ import { InkRule } from '../components/ui/InkRule'
 import { Button } from '../components/ui/Button'
 import { useDocumentTitle } from '../hooks/useDocumentTitle'
 import { useWordLookup } from '../hooks/useWordLookup'
+import { useWordSuggestions } from '../hooks/useWordSuggestions'
 import { useStudySummary } from '../hooks/useStudySummary'
 import { wordOfTheDay } from '../data/ieltsWords'
 import { selectWordbookItems, useWordbook } from '../data/wordbookStore'
@@ -45,8 +46,9 @@ export function HomePage() {
   const [inputError, setInputError] = useState('')
   const [popular, setPopular] = useState<PopularSearch[]>([])
   const [popularState, setPopularState] = useState<'loading' | 'ready' | 'unavailable'>('loading')
+  const [inputFocused, setInputFocused] = useState(false)
+  const [activeSuggestion, setActiveSuggestion] = useState(-1)
   const inputRef = useRef<HTMLInputElement>(null)
-  const resultRef = useRef<HTMLDivElement>(null)
 
   const today = wordOfTheDay()
   const wordbookItems = useWordbook(selectWordbookItems)
@@ -77,22 +79,32 @@ export function HomePage() {
     [loadPopular, refresh],
   )
   const { state, lookup } = useWordLookup(undefined, reportLookup)
+  const suggestionState = useWordSuggestions(inputValue)
+  const suggestionsVisible =
+    inputFocused && suggestionState.suggestions.length > 0
   const savedCount = summary.wordbookTotal
   const isRemote = summarySource === 'remote'
   const recent = summary.recent
 
-  // Focus the result once it lands, so screen readers announce it.
+  // Keep repeated lookups fast. The live result region still announces changes.
   useEffect(() => {
     if (state.status === 'success' || state.status === 'empty' || state.status === 'error') {
-      resultRef.current?.focus({ preventScroll: false })
+      inputRef.current?.focus({ preventScroll: true })
+      inputRef.current?.select()
     }
   }, [state])
+
+  useEffect(() => {
+    setActiveSuggestion(-1)
+  }, [suggestionState.suggestions])
 
   useEffect(() => {
     void loadPopular()
   }, [loadPopular])
 
   function runLookup(raw: string) {
+    suggestionState.dismiss(raw)
+    setActiveSuggestion(-1)
     const error = lookup(raw)
     setInputError(error ?? '')
   }
@@ -100,6 +112,37 @@ export function HomePage() {
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     runLookup(inputValue)
+  }
+
+  function handleInputKeyDown(event: KeyboardEvent<HTMLInputElement>) {
+    if (event.key === 'Escape' && suggestionsVisible) {
+      event.preventDefault()
+      suggestionState.dismiss()
+      setActiveSuggestion(-1)
+      return
+    }
+    if (event.key === 'ArrowDown' && suggestionsVisible) {
+      event.preventDefault()
+      setActiveSuggestion((current) =>
+        current < suggestionState.suggestions.length - 1 ? current + 1 : 0,
+      )
+      return
+    }
+    if (event.key === 'ArrowUp' && suggestionsVisible) {
+      event.preventDefault()
+      setActiveSuggestion((current) =>
+        current > 0 ? current - 1 : suggestionState.suggestions.length - 1,
+      )
+      return
+    }
+    if (event.key === 'Enter' && suggestionsVisible && activeSuggestion >= 0) {
+      event.preventDefault()
+      const selected = suggestionState.suggestions[activeSuggestion]
+      if (selected) {
+        setInputValue(selected.word)
+        runLookup(selected.word)
+      }
+    }
   }
 
   return (
@@ -147,15 +190,54 @@ export function HomePage() {
               autoComplete="off"
               autoCapitalize="off"
               spellCheck={false}
+              role="combobox"
+              aria-autocomplete="list"
+              aria-expanded={suggestionsVisible}
+              aria-controls="word-query-suggestions"
+              aria-activedescendant={
+                suggestionsVisible && activeSuggestion >= 0
+                  ? `word-query-suggestion-${activeSuggestion}`
+                  : undefined
+              }
               placeholder="例如 resilient 或 a lot of"
               value={inputValue}
               aria-invalid={Boolean(inputError)}
               aria-describedby={inputError ? 'word-query-error' : 'word-query-hint'}
               onChange={(event) => {
+                suggestionState.resume()
                 setInputValue(event.target.value)
+                setActiveSuggestion(-1)
                 if (inputError) setInputError('')
               }}
+              onFocus={() => setInputFocused(true)}
+              onBlur={() => setInputFocused(false)}
+              onKeyDown={handleInputKeyDown}
             />
+            <ul
+              id="word-query-suggestions"
+              className={`search-suggestions ${suggestionsVisible ? '' : 'search-suggestions-hidden'}`}
+              role="listbox"
+              aria-label="匹配的词条"
+            >
+              {suggestionState.suggestions.map((suggestion, index) => (
+                <li
+                  id={`word-query-suggestion-${index}`}
+                  key={suggestion.word}
+                  role="option"
+                  aria-selected={activeSuggestion === index}
+                  className={activeSuggestion === index ? 'active' : ''}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onMouseEnter={() => setActiveSuggestion(index)}
+                  onClick={() => {
+                    setInputValue(suggestion.word)
+                    runLookup(suggestion.word)
+                  }}
+                >
+                  <span>{suggestion.word}</span>
+                  {suggestion.zhMeaning && <small>{suggestion.zhMeaning}</small>}
+                </li>
+              ))}
+            </ul>
             {inputValue && (
               <button
                 className="field-clear"
@@ -164,6 +246,7 @@ export function HomePage() {
                 onClick={() => {
                   setInputValue('')
                   setInputError('')
+                  suggestionState.resume()
                   inputRef.current?.focus()
                 }}
               >
@@ -208,7 +291,7 @@ export function HomePage() {
       </div>
 
       <div className="home-dashboard">
-        <div className="home-result" ref={resultRef} tabIndex={-1} aria-live="polite">
+        <div className="home-result" aria-live="polite">
           {state.status === 'idle' && (
             <>
               <InkRule label="今日词头" />

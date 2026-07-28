@@ -16,7 +16,11 @@ db.exec(`
   CREATE TABLE dictionary_meanings(id INTEGER PRIMARY KEY, lemma TEXT, pos TEXT, definition TEXT, example TEXT, source_record_id TEXT, sort_order INTEGER);
   INSERT INTO dictionary_entries VALUES ('resilient', 'rɪˈzɪliənt', '有韧性的', 'ielts', 1, 1);
   INSERT INTO dictionary_entries VALUES ('longtail', '', '长尾', '', NULL, NULL);
+  INSERT INTO dictionary_entries VALUES ('resilience', '', '恢复力', '', 2, 2);
+  INSERT INTO dictionary_entries VALUES ('irresilient', '', '无弹性的', '', 3, 3);
+  INSERT INTO dictionary_entries VALUES ('a lot of', '', '许多\n大量的', '', 4, 4);
   INSERT INTO dictionary_meanings VALUES (1, 'resilient', 'a', 'recovering readily from adversity', 'a resilient learner', 'fixture:1', 1);
+  INSERT INTO dictionary_meanings VALUES (2, 'a lot of', 'phrase', 'a large amount or number of', 'a lot of time', 'fixture:2', 2);
 `);
 db.close();
 after(async () => { await rm(directory, { recursive: true, force: true }); });
@@ -44,4 +48,22 @@ test("remote fallback runs only when local English is missing and keeps local Ch
   assert.equal(fallback?.meanings[0]?.definition, "remote definition");
   assert.deepEqual(fallback?.availableLanguages, ["zh", "en"]);
   local.close();
+});
+
+test("local dictionary looks up phrases and ranks exact, prefix, then contains suggestions", async () => {
+  const provider = new SqliteLocalDictionaryProvider(file);
+  const phrase = await provider.lookup("  A   LOT OF ");
+  assert.equal(phrase?.word, "a lot of");
+  assert.equal(phrase?.meanings[0]?.definition, "a large amount or number of");
+  assert.equal(phrase?.zhMeaning, "许多\n大量的");
+
+  assert.deepEqual(await provider.suggest("res", 3), [
+    { word: "resilient", zhMeaning: "有韧性的" },
+    { word: "resilience", zhMeaning: "恢复力" },
+    { word: "irresilient", zhMeaning: "无弹性的" },
+  ]);
+  assert.deepEqual(await provider.suggest("a lot", 1), [
+    { word: "a lot of", zhMeaning: "许多" },
+  ]);
+  provider.close();
 });

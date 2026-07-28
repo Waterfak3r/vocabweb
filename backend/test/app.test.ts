@@ -267,6 +267,66 @@ test("GET /api/words/:word accepts normalized phrases", async () => {
   }
 });
 
+test("GET /api/words/suggestions validates, normalizes, caches, and uses its own limiter", async () => {
+  const calls: Array<{ query: string; limit: number }> = [];
+  const server = await startServer({
+    wordSuggestionLookup: {
+      async suggest(query, limit) {
+        calls.push({ query, limit });
+        return [{ word: "a lot of", zhMeaning: "许多" }];
+      },
+    },
+    wordSuggestionRateLimiter: new FixedWindowRateLimiter({
+      windowMs: 60_000,
+      maxRequests: 2,
+    }),
+    wordRateLimiter: new FixedWindowRateLimiter({
+      windowMs: 60_000,
+      maxRequests: 1,
+    }),
+    wordLookup: { async lookup() { return resilientEntry(); } },
+  });
+  try {
+    const response = await fetch(`${server.baseUrl}/api/words/suggestions?q=%20A%20%20LOT&limit=6`);
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("cache-control"), "public, max-age=300");
+    assert.deepEqual(await response.json(), {
+      suggestions: [{ word: "a lot of", zhMeaning: "许多" }],
+    });
+    assert.deepEqual(calls, [{ query: "a lot", limit: 6 }]);
+
+    const invalid = await fetch(`${server.baseUrl}/api/words/suggestions?q=a&limit=8`);
+    assert.equal(invalid.status, 400);
+    assert.equal((await invalid.json() as { error: { code: string } }).error.code, "INVALID_SUGGESTION_QUERY");
+
+    const limited = await fetch(`${server.baseUrl}/api/words/suggestions?q=lot&limit=8`);
+    assert.equal(limited.status, 429);
+    assert.equal((await limited.json() as { error: { code: string } }).error.code, "RATE_LIMITED");
+
+    const lookup = await fetch(`${server.baseUrl}/api/words/resilient`);
+    assert.equal(lookup.status, 200);
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /api/words/suggestions without q remains an exact headword lookup", async () => {
+  const server = await startServer({
+    wordLookup: {
+      async lookup(word) {
+        return { word, phonetic: "", meanings: [{ pos: "noun", definition: "proposals" }], source: "backend" };
+      },
+    },
+  });
+  try {
+    const response = await fetch(`${server.baseUrl}/api/words/suggestions`);
+    assert.equal(response.status, 200);
+    assert.equal((await response.json() as { word: string }).word, "suggestions");
+  } finally {
+    await server.close();
+  }
+});
+
 test("GET /api/words/:word maps a miss to WORD_NOT_FOUND", async () => {
   const server = await startServer({
     wordLookup: { async lookup() { return null; } },
