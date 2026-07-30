@@ -12,7 +12,7 @@ import type { ClientData, State } from "./ladder.js";
 import type {
   AccountUser, BatchWordInput, BatchWordResult, CatalogCard, CatalogQuery, CatalogWordbook, CommitImportDraftInput, CreateImportDraftInput, CreateMyWordbookInput,
   ImportDraft, ImportDraftEntry, LearningEvent, LearningEventInput, LearningQueueItem, MyWordbook, MyWordbookCard,
-  ResolvedImportDraftEntry, StudyDashboard, StudyStore, StudyWordEntry, UpdateCatalogWordbookInput, UpdateMyWordbookInput, UpdateWordInput,
+  ResolvedImportDraftEntry, StudyDashboard, StudyStore, StudyWordEntry, SyncedStudySettings, UpdateCatalogWordbookInput, UpdateMyWordbookInput, UpdateStudySettingsInput, UpdateWordInput,
   UpdateWordResult, UploadCatalogWordbookInput, WordbookWord, WordLearningStatus, WordLevel,
 } from "./types.js";
 
@@ -121,7 +121,7 @@ export abstract class BaseStore implements StudyStore {
   async mergeClients(fromClientId: string, intoClientId: string): Promise<void> { await this.mutate((state) => {
     if (fromClientId === intoClientId) return;
     const source = state.clients[fromClientId];
-    if (!source || (!source.wordbooks.length && !source.events.length && !source.drafts.length && !source.favorites.length)) return;
+    if (!source || (!source.wordbooks.length && !source.events.length && !source.drafts.length && !source.favorites.length && !source.studySettings)) return;
     const target = this.client(state, intoClientId);
     const incoming = clone(source);
     // A migrated/crafted data file can contain ids that already exist in the account
@@ -165,6 +165,9 @@ export abstract class BaseStore implements StudyStore {
     target.events.push(...incoming.events);
     target.drafts.push(...incoming.drafts);
     target.favorites = [...new Set([...target.favorites, ...source.favorites])];
+    // Existing account settings win when a new browser signs in. A legacy account
+    // with no cloud settings adopts the anonymous browser's first synced values.
+    if (!target.studySettings && incoming.studySettings) target.studySettings = incoming.studySettings;
     // Owned catalog listings follow the merged client home; author attribution is untouched.
     for (const book of state.catalog) if (book.ownerClientId === fromClientId) {
       book.ownerClientId = intoClientId;
@@ -315,6 +318,35 @@ export abstract class BaseStore implements StudyStore {
   }
 
   // --- Private collection ---
+  async getStudySettings(clientId: string): Promise<SyncedStudySettings | null> {
+    return await this.read((state) => {
+      const settings = this.clientView(state, clientId).studySettings;
+      return settings ? clone(settings) : null;
+    });
+  }
+  async updateStudySettings(clientId: string, input: UpdateStudySettingsInput): Promise<SyncedStudySettings> {
+    return await this.mutate((state) => {
+      const client = this.client(state, clientId);
+      const current = client.studySettings ?? {
+        shortcuts: {
+          unknown: "q",
+          pronounce: "enter",
+          known: "e",
+          flip: " ",
+          dictationPronounce: "tab",
+        },
+        pronunciation: { accent: "gb" as const },
+        updatedAt: this.now().toISOString(),
+      };
+      const settings: SyncedStudySettings = {
+        shortcuts: clone(input.shortcuts ?? current.shortcuts),
+        pronunciation: clone(input.pronunciation ?? current.pronunciation),
+        updatedAt: this.now().toISOString(),
+      };
+      client.studySettings = settings;
+      return clone(settings);
+    });
+  }
   async listMyWordbooks(clientId: string, trash: boolean): Promise<MyWordbookCard[]> { return await this.read((state) => { const client = this.clientView(state, clientId); return client.wordbooks.filter((book) => Boolean(book.deletedAt) === trash).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).map((book) => card(book, client.events)); }); }
   async createMyWordbook(clientId: string, input: CreateMyWordbookInput): Promise<MyWordbookCard> { return await this.mutate((state) => {
     const at = this.now().toISOString(); const client = this.client(state, clientId);
@@ -328,6 +360,7 @@ export abstract class BaseStore implements StudyStore {
       if (input.category === null) delete book.category; else book.category = input.category;
     }
     if (input.reviewSchedule) book.reviewSchedule = clone(input.reviewSchedule);
+    if (input.studyPreferences) book.studyPreferences = clone(input.studyPreferences);
     book.updatedAt = this.now().toISOString();
     return card(book, client.events);
   }); }

@@ -2,7 +2,8 @@ import { isValidWordQuery, normalizeWord } from "../words/normalize.js";
 import {
   WORD_SOURCES, type CatalogExam, type CatalogQuery, type CatalogSort, type CommitImportDraftInput, type CreateImportDraftInput,
   type CreateMyWordbookInput, type ImportLineInput, type ImportResolution, type LearningEventInput, type LearningGoal,
-  type BatchWordAction, type ReviewSchedule, type StudyMeaning, type StudyWordEntry, type UpdateCatalogWordbookInput, type UpdateMyWordbookInput, type UpdateWordInput, type UploadCatalogWordbookInput,
+  type BatchWordAction, type DictationDisplayPreferences, type PronunciationPreferences, type ReviewSchedule, type StudyDisplayPreferences, type StudyMeaning, type StudyShortcutPreferences, type StudyWordEntry,
+  type UpdateCatalogWordbookInput, type UpdateMyWordbookInput, type UpdateStudySettingsInput, type UpdateWordInput, type UploadCatalogWordbookInput, type WordbookStudyPreferences,
   type WordLearningStatus, type WordLevel, type WordSource, type ZhMeaningSource,
 } from "./types.js";
 
@@ -107,11 +108,91 @@ function parseReviewSchedule(value: unknown): ReviewSchedule | null {
   if (learningDays > familiarDays || familiarDays > masteredDays || masteredDays > expertDays || expertDays > maxDays || lapseDays > maxDays) return null;
   return { learningDays, familiarDays, masteredDays, expertDays, lapseDays, maxDays };
 }
+function parseDisplayPreferences(value: unknown): StudyDisplayPreferences | null {
+  if (!isJsonObject(value)) return null;
+  if (
+    (value.meaningPreference !== "zh" && value.meaningPreference !== "en")
+    || typeof value.showExamples !== "boolean"
+    || typeof value.showPhonetic !== "boolean"
+    || typeof value.autoPlayAudio !== "boolean"
+  ) return null;
+  return {
+    meaningPreference: value.meaningPreference,
+    showExamples: value.showExamples,
+    showPhonetic: value.showPhonetic,
+    autoPlayAudio: value.autoPlayAudio,
+  };
+}
+export function parseWordbookStudyPreferences(value: unknown): WordbookStudyPreferences | null {
+  if (!isJsonObject(value) || !isJsonObject(value.plan) || !isJsonObject(value.modes)) return null;
+  const count = (item: unknown) => typeof item === "number" && Number.isInteger(item) && item >= 0 && item <= 999 ? item : null;
+  const newWords = count(value.plan.newWords);
+  const dictationCount = count(value.plan.dictation);
+  const newMode = parseDisplayPreferences(value.modes.new);
+  const review = parseDisplayPreferences(value.modes.review);
+  const dictationBase = parseDisplayPreferences(value.modes.dictation);
+  const dictationSource = value.modes.dictation;
+  if (
+    newWords === null
+    || dictationCount === null
+    || !newMode
+    || !review
+    || !dictationBase
+    || !isJsonObject(dictationSource)
+    || typeof dictationSource.underlineMistakes !== "boolean"
+    || typeof dictationSource.showMeaning !== "boolean"
+    || typeof dictationSource.showCharacterMask !== "boolean"
+  ) return null;
+  const dictation: DictationDisplayPreferences = {
+    ...dictationBase,
+    underlineMistakes: dictationSource.underlineMistakes,
+    showMeaning: dictationSource.showMeaning,
+    showCharacterMask: dictationSource.showCharacterMask,
+  };
+  return {
+    plan: { newWords, dictation: dictationCount },
+    modes: { new: newMode, review, dictation },
+  };
+}
+function parseStudyShortcuts(value: unknown): StudyShortcutPreferences | null {
+  if (!isJsonObject(value)) return null;
+  const actions = ["unknown", "pronounce", "known", "flip", "dictationPronounce"] as const;
+  const special = new Set(["enter", " ", "tab", "arrowup", "arrowdown", "arrowleft", "arrowright"]);
+  const parsed = {} as StudyShortcutPreferences;
+  for (const action of actions) {
+    if (typeof value[action] !== "string") return null;
+    const key = value[action].toLocaleLowerCase();
+    if (!special.has(key) && !/^[a-z0-9]$/.test(key)) return null;
+    parsed[action] = key;
+  }
+  const flashcard = [parsed.unknown, parsed.pronounce, parsed.known, parsed.flip];
+  if (new Set(flashcard).size !== flashcard.length || parsed.dictationPronounce === "enter") return null;
+  return parsed;
+}
+export function parseUpdateStudySettings(value: unknown): UpdateStudySettingsInput | null {
+  if (!isJsonObject(value)) return null;
+  const hasShortcuts = Object.hasOwn(value, "shortcuts");
+  const hasPronunciation = Object.hasOwn(value, "pronunciation");
+  if (!hasShortcuts && !hasPronunciation) return null;
+  const shortcuts = hasShortcuts ? parseStudyShortcuts(value.shortcuts) : undefined;
+  let pronunciation: PronunciationPreferences | undefined;
+  if (
+    hasPronunciation
+    && isJsonObject(value.pronunciation)
+    && (value.pronunciation.accent === "gb" || value.pronunciation.accent === "us")
+  ) pronunciation = { accent: value.pronunciation.accent };
+  if ((hasShortcuts && !shortcuts) || (hasPronunciation && !pronunciation)) return null;
+  return {
+    ...(shortcuts ? { shortcuts } : {}),
+    ...(pronunciation ? { pronunciation } : {}),
+  };
+}
 export function parseUpdateMyWordbook(value: unknown): UpdateMyWordbookInput | null {
   if (!isJsonObject(value)) return null;
   const hasCategory = Object.hasOwn(value, "category");
   const hasReviewSchedule = Object.hasOwn(value, "reviewSchedule");
-  if (!hasCategory && !hasReviewSchedule) return null;
+  const hasStudyPreferences = Object.hasOwn(value, "studyPreferences");
+  if (!hasCategory && !hasReviewSchedule && !hasStudyPreferences) return null;
   const input: UpdateMyWordbookInput = {};
   if (hasCategory) {
     if (value.category === null) input.category = null;
@@ -125,6 +206,11 @@ export function parseUpdateMyWordbook(value: unknown): UpdateMyWordbookInput | n
     const reviewSchedule = parseReviewSchedule(value.reviewSchedule);
     if (!reviewSchedule) return null;
     input.reviewSchedule = reviewSchedule;
+  }
+  if (hasStudyPreferences) {
+    const studyPreferences = parseWordbookStudyPreferences(value.studyPreferences);
+    if (!studyPreferences) return null;
+    input.studyPreferences = studyPreferences;
   }
   return input;
 }

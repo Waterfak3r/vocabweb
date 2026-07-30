@@ -8,6 +8,17 @@ import {
   type WordStatus,
 } from './reviewSchedule'
 import { getStudyClientId } from './studyApi'
+import {
+  normalizeShortcutKey,
+  type StudyShortcutAction,
+  type StudyShortcutPreferences,
+} from './studyShortcuts'
+import type {
+  DictationDisplayPreferences,
+  StudyDisplayPreferences,
+  WordbookStudyPreferences,
+} from './studyPreferences'
+import type { PronunciationPreferences } from './pronunciationPreferences'
 
 export type { ReviewSchedule, WordLevel, WordStatus } from './reviewSchedule'
 
@@ -68,6 +79,18 @@ export type MyWordbook = {
   wordCount: number
   progress: WordbookProgress
   reviewSchedule: ReviewSchedule
+  /** Absent only until an older browser's local settings have been seeded remotely. */
+  studyPreferences?: WordbookStudyPreferences
+}
+
+export type SyncedStudySettings = {
+  shortcuts: StudyShortcutPreferences
+  pronunciation: PronunciationPreferences
+  updatedAt: string
+}
+
+export type StudySettingsSnapshot = {
+  settings: SyncedStudySettings | null
 }
 
 export type StudyDashboard = {
@@ -193,15 +216,108 @@ function parseProgress(value: unknown): WordbookProgress | null {
   return { mastered: value.mastered, learning: value.learning, review: value.review, unstudied: value.unstudied, percent: value.percent, levels }
 }
 
+function parseDisplayPreferences(value: unknown): StudyDisplayPreferences | null {
+  if (
+    !isRecord(value)
+    || (value.meaningPreference !== 'zh' && value.meaningPreference !== 'en')
+    || typeof value.showExamples !== 'boolean'
+    || typeof value.showPhonetic !== 'boolean'
+    || typeof value.autoPlayAudio !== 'boolean'
+  ) return null
+  return {
+    meaningPreference: value.meaningPreference,
+    showExamples: value.showExamples,
+    showPhonetic: value.showPhonetic,
+    autoPlayAudio: value.autoPlayAudio,
+  }
+}
+
+function parseWordbookStudyPreferences(value: unknown): WordbookStudyPreferences | null {
+  if (!isRecord(value) || !isRecord(value.plan) || !isRecord(value.modes)) return null
+  const count = (entry: unknown) => typeof entry === 'number' && Number.isInteger(entry) && entry >= 0 && entry <= 999 ? entry : null
+  const newWords = count(value.plan.newWords)
+  const dictationCount = count(value.plan.dictation)
+  const newMode = parseDisplayPreferences(value.modes.new)
+  const review = parseDisplayPreferences(value.modes.review)
+  const dictationBase = parseDisplayPreferences(value.modes.dictation)
+  const dictationSource = value.modes.dictation
+  if (
+    newWords === null
+    || dictationCount === null
+    || !newMode
+    || !review
+    || !dictationBase
+    || !isRecord(dictationSource)
+    || typeof dictationSource.underlineMistakes !== 'boolean'
+    || typeof dictationSource.showMeaning !== 'boolean'
+    || typeof dictationSource.showCharacterMask !== 'boolean'
+  ) return null
+  const dictation: DictationDisplayPreferences = {
+    ...dictationBase,
+    underlineMistakes: dictationSource.underlineMistakes,
+    showMeaning: dictationSource.showMeaning,
+    showCharacterMask: dictationSource.showCharacterMask,
+  }
+  return {
+    plan: { newWords, dictation: dictationCount },
+    modes: { new: newMode, review, dictation },
+  }
+}
+
+function parseStudyShortcuts(value: unknown): StudyShortcutPreferences | null {
+  if (!isRecord(value)) return null
+  const actions: StudyShortcutAction[] = ['unknown', 'pronounce', 'known', 'flip', 'dictationPronounce']
+  const parsed = {} as StudyShortcutPreferences
+  for (const action of actions) {
+    if (typeof value[action] !== 'string') return null
+    const key = normalizeShortcutKey(value[action])
+    if (!key) return null
+    parsed[action] = key
+  }
+  const flashcard = [parsed.unknown, parsed.pronounce, parsed.known, parsed.flip]
+  if (new Set(flashcard).size !== flashcard.length || parsed.dictationPronounce === 'enter') return null
+  return parsed
+}
+
+function parseSyncedStudySettings(value: unknown): SyncedStudySettings | null {
+  if (!isRecord(value) || !isText(value.updatedAt) || !isRecord(value.pronunciation)) return null
+  const shortcuts = parseStudyShortcuts(value.shortcuts)
+  const accent = value.pronunciation.accent
+  if (!shortcuts || (accent !== 'gb' && accent !== 'us')) return null
+  return { shortcuts, pronunciation: { accent }, updatedAt: value.updatedAt }
+}
+
+function parseStudySettingsSnapshot(value: unknown): StudySettingsSnapshot | null {
+  if (!isRecord(value)) return null
+  if (value.settings === null) return { settings: null }
+  const settings = parseSyncedStudySettings(value.settings)
+  return settings ? { settings } : null
+}
+
 function parseMyWordbook(value: unknown): MyWordbook | null {
   if (!isRecord(value) || !isText(value.id) || !isText(value.title) || !isText(value.description) || !isText(value.createdAt) || !isText(value.updatedAt) || !isCount(value.wordCount)) return null
   const progress = parseProgress(value.progress)
   const reviewSchedule = value.reviewSchedule === undefined
     ? structuredClone(DEFAULT_REVIEW_SCHEDULE)
     : parseReviewSchedule(value.reviewSchedule)
+  const studyPreferences = value.studyPreferences === undefined
+    ? undefined
+    : parseWordbookStudyPreferences(value.studyPreferences)
   if (!progress || (value.sourceCatalogId !== undefined && !isText(value.sourceCatalogId)) || (value.category !== undefined && !isText(value.category))) return null
-  if (!reviewSchedule) return null
-  return { id: value.id, title: value.title, description: value.description, category: value.category, sourceCatalogId: value.sourceCatalogId, createdAt: value.createdAt, updatedAt: value.updatedAt, wordCount: value.wordCount, progress, reviewSchedule }
+  if (!reviewSchedule || (value.studyPreferences !== undefined && !studyPreferences)) return null
+  return {
+    id: value.id,
+    title: value.title,
+    description: value.description,
+    category: value.category,
+    sourceCatalogId: value.sourceCatalogId,
+    createdAt: value.createdAt,
+    updatedAt: value.updatedAt,
+    wordCount: value.wordCount,
+    progress,
+    reviewSchedule,
+    ...(studyPreferences ? { studyPreferences } : {}),
+  }
 }
 
 function parseCatalog(value: unknown): CatalogWordbook | null {
@@ -419,9 +535,13 @@ export class WorkspaceApi {
   uploadWordbook(input: { sourceWordbookId: string; title?: string; description?: string; exams?: string[]; goals?: string[]; visibility?: CatalogVisibility }) { return this.json('api/catalog/uploads', { method: 'POST', body: JSON.stringify(input) }, parseCatalog) }
   updateCatalogSnapshot(catalogId: string, input: { sourceWordbookId?: string; title?: string; description?: string; exams?: string[]; goals?: string[]; visibility?: CatalogVisibility }) { return this.json(`api/catalog/wordbooks/${encodeURIComponent(catalogId)}`, { method: 'PATCH', body: JSON.stringify(input) }, parseCatalog) }
   async importShareCode(shareCode: string) { return this.json<{ wordbook: MyWordbook; created: boolean }>('api/catalog/imports', { method: 'POST', body: JSON.stringify({ shareCode }) }, (value) => isRecord(value) && typeof value.created === 'boolean' && parseMyWordbook(value.wordbook) ? { wordbook: parseMyWordbook(value.wordbook)!, created: value.created } : null) }
+  getStudySettings() { return this.json('api/my/study-settings', {}, parseStudySettingsSnapshot) }
+  updateStudySettings(input: { shortcuts?: StudyShortcutPreferences; pronunciation?: PronunciationPreferences }) {
+    return this.json('api/my/study-settings', { method: 'PATCH', body: JSON.stringify(input) }, parseSyncedStudySettings)
+  }
   listMyWordbooks(trash = false) { const url = new URL('api/my/wordbooks', this.baseUrl); if (trash) url.searchParams.set('view', 'trash'); return this.list(url, parseMyWordbook, 'wordbook list') }
   createMyWordbook(input: { title: string; description?: string; category?: string; words?: WordEntry[] }) { return this.json('api/my/wordbooks', { method: 'POST', body: JSON.stringify(input) }, parseMyWordbook) }
-  updateMyWordbook(id: string, input: { category?: string | null; reviewSchedule?: ReviewSchedule }) { return this.json(`api/my/wordbooks/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(input) }, parseMyWordbook) }
+  updateMyWordbook(id: string, input: { category?: string | null; reviewSchedule?: ReviewSchedule; studyPreferences?: WordbookStudyPreferences }) { return this.json(`api/my/wordbooks/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(input) }, parseMyWordbook) }
   createImportDraft(input: { title: string; description?: string; targetWordbookId?: string; lines: ImportDraftLine[] }) {
     return this.json('api/my/import-drafts', { method: 'POST', body: JSON.stringify(input) }, parseImportDraft)
   }

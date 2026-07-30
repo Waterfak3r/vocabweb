@@ -44,10 +44,13 @@ export interface MyWordbook {
   category?: string; createdAt: string; updatedAt: string; deletedAt?: string; words: WordbookWord[];
   /** Omitted by legacy data; the default adaptive schedule is resolved at read time. */
   reviewSchedule?: ReviewSchedule;
+  /** Omitted until a legacy browser's local preferences have been migrated to the server. */
+  studyPreferences?: WordbookStudyPreferences;
 }
 export interface MyWordbookCard {
   id: string; title: string; description: string; sourceCatalogId?: string; category?: string; createdAt: string; updatedAt: string;
   wordCount: number; progress: WordbookProgress; reviewSchedule: ReviewSchedule;
+  studyPreferences?: WordbookStudyPreferences;
 }
 
 /** Proficiency ladder: 0 未学习 / 1 初识 / 2 熟悉 / 3 掌握 / 4 精通. */
@@ -88,6 +91,39 @@ export interface ReviewSchedule {
   lapseDays: number;
   maxDays: number;
 }
+export type MeaningPreference = "zh" | "en";
+export interface StudyDisplayPreferences {
+  meaningPreference: MeaningPreference;
+  showExamples: boolean;
+  showPhonetic: boolean;
+  autoPlayAudio: boolean;
+}
+export interface DictationDisplayPreferences extends StudyDisplayPreferences {
+  underlineMistakes: boolean;
+  showMeaning: boolean;
+  showCharacterMask: boolean;
+}
+export interface WordbookStudyPreferences {
+  plan: { newWords: number; dictation: number };
+  modes: {
+    new: StudyDisplayPreferences;
+    review: StudyDisplayPreferences;
+    dictation: DictationDisplayPreferences;
+  };
+}
+export type StudyShortcutAction = "unknown" | "pronounce" | "known" | "flip" | "dictationPronounce";
+export type StudyShortcutPreferences = Record<StudyShortcutAction, string>;
+export interface PronunciationPreferences { accent: "gb" | "us"; }
+/** Account/client-wide settings shared by every wordbook and browser. */
+export interface SyncedStudySettings {
+  shortcuts: StudyShortcutPreferences;
+  pronunciation: PronunciationPreferences;
+  updatedAt: string;
+}
+export interface UpdateStudySettingsInput {
+  shortcuts?: StudyShortcutPreferences;
+  pronunciation?: PronunciationPreferences;
+}
 /**
  * A stored word plus its replayed proficiency. `levelReachedAt` is omitted while still at L0;
  * `nextReviewAt` and `reviewIntervalDays` are derived from the event history, so old data gains the
@@ -125,7 +161,11 @@ export interface StudyDashboard {
 
 export interface CatalogQuery { q?: string; exam?: CatalogExam; goal?: LearningGoal; sort?: CatalogSort; }
 export interface CreateMyWordbookInput { title: string; description?: string; category?: string; words?: StudyWordEntry[]; }
-export interface UpdateMyWordbookInput { category?: string | null; reviewSchedule?: ReviewSchedule; }
+export interface UpdateMyWordbookInput {
+  category?: string | null;
+  reviewSchedule?: ReviewSchedule;
+  studyPreferences?: WordbookStudyPreferences;
+}
 /** The uploading account, supplied by the auth layer; drives the author display name and authorUserId. */
 export interface CatalogAuthor { userId: string; username: string; }
 /** Legacy direct upload remains supported; modern uploads reference the private wordbook. */
@@ -216,6 +256,8 @@ export interface StudyStore {
   upsertSeedCatalog(clientId: string, input: UploadCatalogWordbookInput & { seedKey: string; author: CatalogAuthor }): Promise<CatalogCard>;
   updateCatalog(clientId: string, id: string, input: UpdateCatalogWordbookInput): Promise<CatalogCard | null>;
   importShareCode(clientId: string, shareCode: string): Promise<{ wordbook: MyWordbookCard; created: boolean } | null>;
+  getStudySettings(clientId: string): Promise<SyncedStudySettings | null>;
+  updateStudySettings(clientId: string, input: UpdateStudySettingsInput): Promise<SyncedStudySettings>;
   listMyWordbooks(clientId: string, trash: boolean): Promise<MyWordbookCard[]>;
   createMyWordbook(clientId: string, input: CreateMyWordbookInput): Promise<MyWordbookCard>;
   updateMyWordbook(clientId: string, id: string, input: UpdateMyWordbookInput): Promise<MyWordbookCard | null>;

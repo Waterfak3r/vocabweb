@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { DEFAULT_STUDY_PREFERENCES } from './studyPreferences'
 import { WorkspaceApi } from './workspaceApi'
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
@@ -217,5 +218,69 @@ describe('WorkspaceApi adaptive review schedule', () => {
         body: JSON.stringify({ reviewSchedule }),
       }),
     )
+  })
+})
+
+describe('WorkspaceApi synchronized study settings', () => {
+  it('loads account-wide settings and persists per-wordbook preferences', async () => {
+    const shortcuts = {
+      unknown: 'a',
+      pronounce: 'enter',
+      known: 'd',
+      flip: ' ',
+      dictationPronounce: 'tab',
+    }
+    const preferences = {
+      ...structuredClone(DEFAULT_STUDY_PREFERENCES),
+      plan: { newWords: 32, dictation: 12 },
+    }
+    const synced = {
+      shortcuts,
+      pronunciation: { accent: 'us' },
+      updatedAt: '2026-07-31T01:00:00.000Z',
+    }
+    const wordbook = {
+      id: 'my-book',
+      title: '多端设置',
+      description: '',
+      createdAt: '2026-07-30T00:00:00.000Z',
+      updatedAt: '2026-07-31T01:00:00.000Z',
+      wordCount: 0,
+      progress: { mastered: 0, learning: 0, review: 0, unstudied: 0, percent: 0, levels: { l0: 0, l1: 0, l2: 0, l3: 0, l4: 0 } },
+      studyPreferences: preferences,
+    }
+    const fetch = vi.fn<FetchLike>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ settings: synced })))
+      .mockResolvedValueOnce(new Response(JSON.stringify(synced)))
+      .mockResolvedValueOnce(new Response(JSON.stringify(wordbook)))
+    const api = new WorkspaceApi('https://api.example.test/', { fetch, clientId: () => 'learner' })
+
+    await expect(api.getStudySettings()).resolves.toEqual({ settings: synced })
+    await expect(api.updateStudySettings({ pronunciation: { accent: 'us' } })).resolves.toEqual(synced)
+    await expect(api.updateMyWordbook('my-book', { studyPreferences: preferences })).resolves.toEqual(
+      expect.objectContaining({ id: 'my-book', studyPreferences: preferences }),
+    )
+
+    expect(fetch.mock.calls.map(([url, init]) => [url.toString(), init?.method, init?.body])).toEqual([
+      ['https://api.example.test/api/my/study-settings', undefined, undefined],
+      ['https://api.example.test/api/my/study-settings', 'PATCH', JSON.stringify({ pronunciation: { accent: 'us' } })],
+      ['https://api.example.test/api/my/wordbooks/my-book', 'PATCH', JSON.stringify({ studyPreferences: preferences })],
+    ])
+  })
+
+  it('distinguishes an unsynced server record and rejects malformed cloud settings', async () => {
+    const fetch = vi.fn<FetchLike>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ settings: null })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        settings: {
+          shortcuts: { unknown: 'q', pronounce: 'q', known: 'e', flip: ' ', dictationPronounce: 'tab' },
+          pronunciation: { accent: 'gb' },
+          updatedAt: '2026-07-31T01:00:00.000Z',
+        },
+      })))
+    const api = new WorkspaceApi('https://api.example.test/', { fetch, clientId: () => 'learner' })
+
+    await expect(api.getStudySettings()).resolves.toEqual({ settings: null })
+    await expect(api.getStudySettings()).rejects.toThrow('Backend response is invalid')
   })
 })

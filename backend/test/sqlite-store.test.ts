@@ -5,6 +5,7 @@ import path from "node:path";
 import { test, type TestContext } from "node:test";
 import Database from "better-sqlite3";
 import { SqliteStudyStore } from "../src/study/sqlite-store.js";
+import type { WordbookStudyPreferences } from "../src/study/types.js";
 
 const CLIENT = "client-sqlite-0001";
 
@@ -85,6 +86,40 @@ test("SQLite persists only the changed client row for a private collection mutat
   assert.equal((inspection.prepare("SELECT COUNT(*) AS count FROM clients").get() as { count: number }).count, 1);
   inspection.close();
   store.close();
+});
+
+test("SQLite durably reloads synchronized wordbook and global study settings", async (t) => {
+  const files = await fixture(t);
+  const store = new SqliteStudyStore(files.databaseFile);
+  const book = await store.createMyWordbook(CLIENT, { title: "Settings" });
+  const preferences: WordbookStudyPreferences = {
+    plan: { newWords: 24, dictation: 16 },
+    modes: {
+      new: { meaningPreference: "zh", showExamples: true, showPhonetic: true, autoPlayAudio: false },
+      review: { meaningPreference: "en", showExamples: true, showPhonetic: false, autoPlayAudio: true },
+      dictation: {
+        meaningPreference: "zh",
+        showExamples: false,
+        showPhonetic: false,
+        autoPlayAudio: true,
+        underlineMistakes: true,
+        showMeaning: true,
+        showCharacterMask: false,
+      },
+    },
+  };
+  await store.updateMyWordbook(CLIENT, book.id, { studyPreferences: preferences });
+  await store.updateStudySettings(CLIENT, {
+    pronunciation: { accent: "us" },
+    shortcuts: { unknown: "a", pronounce: "enter", known: "d", flip: " ", dictationPronounce: "tab" },
+  });
+  store.close();
+
+  const reopened = new SqliteStudyStore(files.databaseFile);
+  assert.deepEqual((await reopened.getMyWordbook(CLIENT, book.id))?.studyPreferences, preferences);
+  assert.deepEqual((await reopened.getStudySettings(CLIENT))?.pronunciation, { accent: "us" });
+  assert.equal((await reopened.getStudySettings(CLIENT))?.shortcuts.unknown, "a");
+  reopened.close();
 });
 
 test("SQLite exposes constrained, queryable user/session/catalog rows", async (t) => {

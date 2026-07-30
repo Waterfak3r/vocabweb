@@ -273,6 +273,99 @@ test("wordbooks expose a default review plan and accept validated per-book custo
   }
 });
 
+test("wordbook and learning-experience settings persist across account devices", async () => {
+  const app = await server();
+  try {
+    const accountHeaders = await register(app.baseUrl);
+    const createdResponse = await fetch(`${app.baseUrl}/api/my/wordbooks`, {
+      method: "POST",
+      headers: accountHeaders,
+      body: JSON.stringify({ title: "Synced settings" }),
+    });
+    const created = await createdResponse.json() as { id: string; studyPreferences?: unknown };
+    assert.equal(createdResponse.status, 201);
+    assert.equal(created.studyPreferences, undefined);
+
+    const preferences = {
+      plan: { newWords: 36, dictation: 18 },
+      modes: {
+        new: { meaningPreference: "zh", showExamples: true, showPhonetic: true, autoPlayAudio: false },
+        review: { meaningPreference: "en", showExamples: false, showPhonetic: true, autoPlayAudio: true },
+        dictation: {
+          meaningPreference: "zh",
+          showExamples: true,
+          showPhonetic: false,
+          autoPlayAudio: true,
+          underlineMistakes: false,
+          showMeaning: true,
+          showCharacterMask: false,
+        },
+      },
+    };
+    const updatedBook = await fetch(`${app.baseUrl}/api/my/wordbooks/${created.id}`, {
+      method: "PATCH",
+      headers: accountHeaders,
+      body: JSON.stringify({ studyPreferences: preferences }),
+    });
+    assert.equal(updatedBook.status, 200);
+    assert.deepEqual((await updatedBook.json() as { studyPreferences: unknown }).studyPreferences, preferences);
+
+    const initialGlobal = await fetch(`${app.baseUrl}/api/my/study-settings`, { headers: accountHeaders });
+    assert.deepEqual(await initialGlobal.json(), { settings: null });
+    const globalSettings = await fetch(`${app.baseUrl}/api/my/study-settings`, {
+      method: "PATCH",
+      headers: accountHeaders,
+      body: JSON.stringify({
+        pronunciation: { accent: "us" },
+        shortcuts: {
+          unknown: "a",
+          pronounce: "enter",
+          known: "d",
+          flip: " ",
+          dictationPronounce: "tab",
+        },
+      }),
+    });
+    assert.equal(globalSettings.status, 200);
+
+    // A different browser-local id with the same account cookie must resolve to
+    // the account data home rather than its anonymous header partition.
+    const anotherDeviceHeaders = { ...accountHeaders, "x-vocab-client-id": "device-22222222" };
+    const remoteBooks = await (await fetch(`${app.baseUrl}/api/my/wordbooks`, {
+      headers: anotherDeviceHeaders,
+    })).json() as Array<{ id: string; studyPreferences?: unknown }>;
+    assert.deepEqual(remoteBooks.find((book) => book.id === created.id)?.studyPreferences, preferences);
+    const remoteGlobal = await (await fetch(`${app.baseUrl}/api/my/study-settings`, {
+      headers: anotherDeviceHeaders,
+    })).json() as { settings: { pronunciation: unknown; shortcuts: unknown } | null };
+    assert.deepEqual(remoteGlobal.settings?.pronunciation, { accent: "us" });
+    assert.deepEqual(remoteGlobal.settings?.shortcuts, {
+      unknown: "a",
+      pronounce: "enter",
+      known: "d",
+      flip: " ",
+      dictationPronounce: "tab",
+    });
+
+    const invalidBook = await fetch(`${app.baseUrl}/api/my/wordbooks/${created.id}`, {
+      method: "PATCH",
+      headers: accountHeaders,
+      body: JSON.stringify({ studyPreferences: { ...preferences, plan: { newWords: 1_000, dictation: 18 } } }),
+    });
+    assert.equal(invalidBook.status, 400);
+    const invalidGlobal = await fetch(`${app.baseUrl}/api/my/study-settings`, {
+      method: "PATCH",
+      headers: accountHeaders,
+      body: JSON.stringify({
+        shortcuts: { unknown: "q", pronounce: "q", known: "e", flip: " ", dictationPronounce: "tab" },
+      }),
+    });
+    assert.equal(invalidGlobal.status, 400);
+  } finally {
+    await app.close();
+  }
+});
+
 test("study routes reject malformed inputs and events outside the selected wordbook", async () => {
   const app = await server();
   try {

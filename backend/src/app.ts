@@ -12,7 +12,7 @@ import { isChineseSuggestionQuery, type WordSuggestionLookup } from "./providers
 import { WiktApiProvider } from "./providers/wiktapi.js";
 import { CsvLocalChineseDictionary, type LocalChineseLookup } from "./study/local-dictionary.js";
 import { JsonFileStudyStore, StudyResourceLimitError } from "./study/store.js";
-import { parseAddWord, parseBatchWords, parseCatalogQuery, parseClientId, parseCommitImportDraft, parseCreateImportDraft, parseCreateMyWordbook, parseLearningEvent, parseResourceId, parseShareCode, parseStatus, parseUpdateCatalog, parseUpdateMyWordbook, parseUpdateWord, parseUploadCatalog, parseWordId } from "./study/validation.js";
+import { parseAddWord, parseBatchWords, parseCatalogQuery, parseClientId, parseCommitImportDraft, parseCreateImportDraft, parseCreateMyWordbook, parseLearningEvent, parseResourceId, parseShareCode, parseStatus, parseUpdateCatalog, parseUpdateMyWordbook, parseUpdateStudySettings, parseUpdateWord, parseUploadCatalog, parseWordId } from "./study/validation.js";
 import type { AccountUser, ImportLineInput, PreparedImportLine, ResolvedImportDraftEntry, StudyStore, StudyWordEntry } from "./study/types.js";
 import { isValidWordQuery, normalizeWord } from "./words/normalize.js";
 import { WordService, type WordLookup } from "./words/word-service.js";
@@ -998,6 +998,17 @@ export function createApp(options: CreateAppOptions = {}) {
     if (!clientId) return;
     if (!shareCode) { response.status(400).json(apiError("INVALID_SHARE_CODE", "Share code is invalid")); return; }
     try { const result = await studyStore.importShareCode(clientId, shareCode); if (!result) response.status(404).json(apiError("SHARE_CODE_NOT_FOUND", "Share code was not found")); else response.status(result.created ? 201 : 200).json(result); } catch (error) { next(error); }
+  });
+  app.get("/api/my/study-settings", async (request, response, next) => {
+    const clientId = readClientId(request, response);
+    if (!clientId) return;
+    try { response.status(200).json({ settings: await studyStore.getStudySettings(clientId) }); } catch (error) { next(error); }
+  });
+  app.patch("/api/my/study-settings", async (request, response, next) => {
+    const clientId = readClientId(request, response); const input = parseUpdateStudySettings(request.body);
+    if (!clientId) return;
+    if (!input) { response.status(400).json(apiError("INVALID_STUDY_SETTINGS", "Study settings are invalid")); return; }
+    try { response.status(200).json(await studyStore.updateStudySettings(clientId, input)); } catch (error) { next(error); }
   });
   app.get("/api/my/wordbooks", async (request, response, next) => {
     const clientId = readClientId(request, response); const trash = request.query.view === "trash";

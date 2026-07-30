@@ -2,11 +2,18 @@ import { randomUUID } from "node:crypto";
 import { isJsonObject } from "./validation.js";
 import type {
   AccountUser, CatalogCard, CatalogWordbook, ImportDraft, LearningEvent, LevelCounts, MyWordbook, MyWordbookCard,
-  ReviewSchedule, StudiedWord, StudyMeaning, StudyWordEntry, LearningQueueItem, WordLearningStatus, WordLevel, WordbookProgress, WordbookWord,
+  ReviewSchedule, StudiedWord, StudyMeaning, StudyWordEntry, LearningQueueItem, SyncedStudySettings, WordLearningStatus, WordLevel, WordbookProgress, WordbookWord,
 } from "./types.js";
 
 /** Per-anonymous-client data home: favorites, private wordbooks, learning events, and import drafts. */
-export interface ClientData { favorites: string[]; wordbooks: MyWordbook[]; events: LearningEvent[]; drafts: ImportDraft[]; }
+export interface ClientData {
+  favorites: string[];
+  wordbooks: MyWordbook[];
+  events: LearningEvent[];
+  drafts: ImportDraft[];
+  /** Global learning experience settings; absent before the first server sync. */
+  studySettings?: SyncedStudySettings;
+}
 /** A persisted session: the sha256 of the cookie token, its owner, and expiry. */
 export interface SessionRecord { tokenHash: string; userId: string; expiresAt: string; createdAt: string; }
 /** The whole persisted world. SQLite splits this across tables; JSON/memory keep it as one document. */

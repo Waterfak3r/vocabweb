@@ -87,6 +87,7 @@ type WorkspaceBook = {
   updatedAt: string
   entries: WorkspaceEntry[]
   reviewSchedule: ReviewSchedule
+  studyPreferences?: WordbookStudyPreferences
 }
 type WorkspaceEntry = WordbookItem & ReviewScheduleEntry & {
   levelReachedAt?: string
@@ -226,6 +227,7 @@ function remoteToWorkspaceBook(book: MyWordbook, index: number): WorkspaceBook {
     updatedAt: book.updatedAt,
     entries: [],
     reviewSchedule: book.reviewSchedule,
+    studyPreferences: book.studyPreferences,
   }
 }
 
@@ -269,6 +271,9 @@ export function WordbookPage() {
   )
   const dashboardRequest = useRef(0)
   const studyRefreshTimer = useRef<number | null>(null)
+  const preferenceSaveQueue = useRef<Promise<void>>(Promise.resolve())
+  const globalSettingsSaveQueue = useRef<Promise<void>>(Promise.resolve())
+  const globalSettingsGeneration = useRef(0)
   const categories = useMemo(() => [...new Set(books.map((book) => book.category).filter((value): value is string => Boolean(value)))].sort((a, b) => a.localeCompare(b, 'zh-CN')), [books])
   const filteredBooks = useMemo(() => {
     const query = bookQuery.trim().toLocaleLowerCase()
@@ -284,9 +289,72 @@ export function WordbookPage() {
   }, [bookCategory, bookQuery, bookSort, books])
   const selectedBook = filteredBooks.find((book) => book.id === selectedId) ?? filteredBooks[0]
 
+  const syncBookPreferences = useCallback((
+    wordbookId: string,
+    next: WordbookStudyPreferences,
+    reportFailure = true,
+  ) => {
+    if (!api) return
+    preferenceSaveQueue.current = preferenceSaveQueue.current
+      .then(async () => {
+        const updated = await api.updateMyWordbook(wordbookId, { studyPreferences: next })
+        const synced = updated.studyPreferences ?? next
+        writeStudyPreferences(wordbookId, synced)
+        setBooks((current) => current.map((book) => book.id === wordbookId
+          ? { ...book, updatedAt: updated.updatedAt, studyPreferences: synced }
+          : book))
+      })
+      .catch(() => {
+        if (reportFailure) setNotice('设置已保存在本机，但多端同步失败，请稍后重试。')
+      })
+  }, [api])
+
+  const syncGlobalSettings = useCallback((
+    input: { shortcuts?: StudyShortcutPreferences; pronunciation?: PronunciationPreferences },
+    reportFailure = true,
+  ) => {
+    if (!api) return
+    globalSettingsSaveQueue.current = globalSettingsSaveQueue.current
+      .then(async () => {
+        await api.updateStudySettings(input)
+      })
+      .catch(() => {
+        if (reportFailure) setNotice('设置已保存在本机，但多端同步失败，请稍后重试。')
+      })
+  }, [api])
+
   useEffect(() => {
     writeWordbookFilters({ query: bookQuery, category: bookCategory, sort: bookSort })
   }, [bookCategory, bookQuery, bookSort])
+
+  useEffect(() => {
+    if (!api) return
+    let active = true
+    const generation = globalSettingsGeneration.current
+    void api.getStudySettings()
+      .then(({ settings }) => {
+        if (!active) return
+        if (!settings) {
+          // The server has no settings yet: migrate this browser's existing local
+          // values. Reading now (instead of at effect start) includes any quick edit.
+          syncGlobalSettings({
+            shortcuts: readStudyShortcuts(),
+            pronunciation: readPronunciationPreferences(),
+          }, false)
+          return
+        }
+        // Do not let a slow initial GET undo a setting the user just changed.
+        if (globalSettingsGeneration.current !== generation) return
+        setShortcuts(writeStudyShortcuts(settings.shortcuts))
+        setPronunciationPreferences(writePronunciationPreferences(settings.pronunciation))
+      })
+      .catch(() => {
+        // Local values remain active while the service is offline or rolling out.
+      })
+    return () => {
+      active = false
+    }
+  }, [api, syncGlobalSettings])
 
   useEffect(() => {
     if (
@@ -391,11 +459,18 @@ export function WordbookPage() {
     setRemoteEntries(null)
     setCategoryDraft(selectedBook.category ?? '')
     setCategoryEditing(false)
-    setPreferences(readStudyPreferences(selectedBook.id))
+    const resolvedPreferences = selectedBook.studyPreferences ?? readStudyPreferences(selectedBook.id)
+    setPreferences(resolvedPreferences)
+    writeStudyPreferences(selectedBook.id, resolvedPreferences)
+    if (!selectedBook.studyPreferences) {
+      // Legacy browsers kept this value only in localStorage. Seed the remote copy
+      // once, then all devices will receive it with the wordbook card.
+      syncBookPreferences(selectedBook.id, resolvedPreferences, false)
+    }
     setStudyMode(null)
     setReviewScope('due')
     setSettingsSection(null)
-  }, [selectedBook?.id])
+  }, [selectedBook?.id, syncBookPreferences])
 
   useEffect(() => {
     if (!categoryEditing) return
@@ -445,6 +520,7 @@ export function WordbookPage() {
     if (!selectedBook) return
     setPreferences(next)
     writeStudyPreferences(selectedBook.id, next)
+    syncBookPreferences(selectedBook.id, next)
   }
 
   async function saveReviewSchedule(next: ReviewSchedule): Promise<boolean> {
@@ -462,11 +538,17 @@ export function WordbookPage() {
   }
 
   function saveShortcuts(next: StudyShortcutPreferences) {
-    setShortcuts(writeStudyShortcuts(next))
+    const normalized = writeStudyShortcuts(next)
+    globalSettingsGeneration.current += 1
+    setShortcuts(normalized)
+    syncGlobalSettings({ shortcuts: normalized })
   }
 
   function savePronunciationPreferences(next: PronunciationPreferences) {
-    setPronunciationPreferences(writePronunciationPreferences(next))
+    const normalized = writePronunciationPreferences(next)
+    globalSettingsGeneration.current += 1
+    setPronunciationPreferences(normalized)
+    syncGlobalSettings({ pronunciation: normalized })
   }
 
   function createBook() {
