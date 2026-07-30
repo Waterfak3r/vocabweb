@@ -439,14 +439,6 @@
   max-width: none;
 }
 
-.home-path {
-  margin-top: 0.85rem;
-  font-size: 1.2rem;
-  font-weight: 500;
-  color: var(--gold-strong);
-  letter-spacing: 0.04em;
-}
-
 .home-subtitle {
   margin-top: 0.7rem;
   color: var(--muted);
@@ -1015,7 +1007,6 @@
     overflow-wrap: anywhere;
     word-break: break-all;
   }
-  .home-path { margin-top: 0.55rem; font-size: 1rem; }
   .home-subtitle { margin-top: 0.45rem; font-size: var(--text-sm); }
   .search-panel { padding: 1rem; }
   .search-form { align-items: stretch; flex-direction: column; gap: 0.8rem; }

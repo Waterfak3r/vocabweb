@@ -338,7 +338,13 @@ export function ImportWordbookDialog({ open, api, onClose, onCreated, initialTit
             <div className={styles.field}>
               <label htmlFor="import-content">粘贴单词</label>
               <textarea id="import-content" value={content} onChange={(event) => { setContent(event.target.value); setParsed(null); setDraft(null) }} placeholder={'a lot of,phrase,a large amount,许多,We had a lot of time.\nresilient,adjective,,有韧性的'} />
-              <span className={styles.hint}>每行 CSV：词条, 词性, 英文释义, 中文释义, 例句。只有词条必填，后四列可任意留空；字段内含逗号时请用双引号包裹。一次最多导入 {MAX_IMPORT_ENTRIES} 个有效词，更多内容会分批处理。</span>
+              <span className={styles.hint}>
+                一行对应一个单词，以 , 作为分隔符，依次为：词条, 词性, 英文释义, 中文释义, 例句（只有词条为必填项）。字段内含逗号时请用双引号包裹。
+                <br />
+                e.g. act,(v),(description),(中文意思),(例句)
+                <br />
+                Tip：你可以将这个规则和示例复制给 DeepSeek，让它帮忙处理完你的单词表再导入。
+              </span>
             </div>
             <div className={styles.upload}>
               <strong>或选择文件</strong>

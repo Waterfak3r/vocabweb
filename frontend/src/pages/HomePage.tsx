@@ -196,7 +196,6 @@ export function HomePage() {
               <h1 className="home-title" id="home-title">
                 定制你的专属单词学习
               </h1>
-              <p className="home-path">查询 → 收藏 → 复习 → 听写</p>
               <p className="home-subtitle">结合你的习惯，建立一套自己的背词体系</p>
             </div>
           </div>
