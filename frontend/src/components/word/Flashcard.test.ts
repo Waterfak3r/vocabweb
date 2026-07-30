@@ -26,4 +26,29 @@ describe('preferredMeanings', () => {
     expect(preferredMeanings(customized, 'zh')).toEqual([{ pos: '中文', definition: '用户自己的中文解释' }])
     expect(preferredMeanings(customized, 'en')[0]?.definition).toBe('Easy to understand.')
   })
+
+  it('falls back from missing English to a dedicated Chinese meaning', () => {
+    const chineseOnly = {
+      ...item,
+      meanings: [{ pos: 'verb', definition: '   ' }],
+      zhMeaning: '  行动；起作用  ',
+    }
+    expect(preferredMeanings(chineseOnly, 'en')).toEqual([{ pos: '中文', definition: '行动；起作用' }])
+  })
+
+  it('falls back from missing Chinese to a valid English meaning and ignores blank rows', () => {
+    const englishOnly = {
+      ...item,
+      zhMeaning: '   ',
+      meanings: [
+        { pos: 'noun', definition: '' },
+        { pos: ' verb ', definition: '  To take action.  ' },
+      ],
+    }
+    expect(preferredMeanings(englishOnly, 'zh')).toEqual([{ pos: 'verb', definition: 'To take action.' }])
+  })
+
+  it('returns no definition only when neither language has usable content', () => {
+    expect(preferredMeanings({ ...item, meanings: [], zhMeaning: '   ' }, 'zh')).toEqual([])
+  })
 })

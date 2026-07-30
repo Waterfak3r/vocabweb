@@ -2,7 +2,7 @@ import { isValidWordQuery, normalizeWord } from "../words/normalize.js";
 import {
   WORD_SOURCES, type CatalogExam, type CatalogQuery, type CatalogSort, type CommitImportDraftInput, type CreateImportDraftInput,
   type CreateMyWordbookInput, type ImportLineInput, type ImportResolution, type LearningEventInput, type LearningGoal,
-  type BatchWordAction, type StudyMeaning, type StudyWordEntry, type UpdateCatalogWordbookInput, type UpdateMyWordbookInput, type UpdateWordInput, type UploadCatalogWordbookInput,
+  type BatchWordAction, type ReviewSchedule, type StudyMeaning, type StudyWordEntry, type UpdateCatalogWordbookInput, type UpdateMyWordbookInput, type UpdateWordInput, type UploadCatalogWordbookInput,
   type WordLearningStatus, type WordLevel, type WordSource, type ZhMeaningSource,
 } from "./types.js";
 
@@ -94,11 +94,39 @@ function parseWordbookInput(value: unknown): CreateMyWordbookInput | null {
   return { title, ...(description !== undefined ? { description } : {}), ...(category ? { category } : {}), words: words as StudyWordEntry[] };
 }
 export function parseCreateMyWordbook(value: unknown): CreateMyWordbookInput | null { return parseWordbookInput(value); }
+function parseReviewSchedule(value: unknown): ReviewSchedule | null {
+  if (!isJsonObject(value)) return null;
+  const day = (item: unknown) => typeof item === "number" && Number.isInteger(item) && item >= 1 && item <= 3650 ? item : null;
+  const learningDays = day(value.learningDays);
+  const familiarDays = day(value.familiarDays);
+  const masteredDays = day(value.masteredDays);
+  const expertDays = day(value.expertDays);
+  const lapseDays = day(value.lapseDays);
+  const maxDays = day(value.maxDays);
+  if (learningDays === null || familiarDays === null || masteredDays === null || expertDays === null || lapseDays === null || maxDays === null) return null;
+  if (learningDays > familiarDays || familiarDays > masteredDays || masteredDays > expertDays || expertDays > maxDays || lapseDays > maxDays) return null;
+  return { learningDays, familiarDays, masteredDays, expertDays, lapseDays, maxDays };
+}
 export function parseUpdateMyWordbook(value: unknown): UpdateMyWordbookInput | null {
-  if (!isJsonObject(value) || !Object.hasOwn(value, "category")) return null;
-  if (value.category === null) return { category: null };
-  const category = text(value.category, 30);
-  return category ? { category } : null;
+  if (!isJsonObject(value)) return null;
+  const hasCategory = Object.hasOwn(value, "category");
+  const hasReviewSchedule = Object.hasOwn(value, "reviewSchedule");
+  if (!hasCategory && !hasReviewSchedule) return null;
+  const input: UpdateMyWordbookInput = {};
+  if (hasCategory) {
+    if (value.category === null) input.category = null;
+    else {
+      const category = text(value.category, 30);
+      if (!category) return null;
+      input.category = category;
+    }
+  }
+  if (hasReviewSchedule) {
+    const reviewSchedule = parseReviewSchedule(value.reviewSchedule);
+    if (!reviewSchedule) return null;
+    input.reviewSchedule = reviewSchedule;
+  }
+  return input;
 }
 export function parseUploadCatalog(value: unknown): UploadCatalogWordbookInput | null {
   if (!isJsonObject(value)) return null;

@@ -1,9 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { isJsonObject } from "./validation.js";
-import { FINAL_CHECK_WINDOW_MS } from "./types.js";
 import type {
   AccountUser, CatalogCard, CatalogWordbook, ImportDraft, LearningEvent, LevelCounts, MyWordbook, MyWordbookCard,
-  StudiedWord, StudyMeaning, StudyWordEntry, LearningQueueItem, WordLearningStatus, WordLevel, WordbookProgress, WordbookWord,
+  ReviewSchedule, StudiedWord, StudyMeaning, StudyWordEntry, LearningQueueItem, WordLearningStatus, WordLevel, WordbookProgress, WordbookWord,
 } from "./types.js";
 
 /** Per-anonymous-client data home: favorites, private wordbooks, learning events, and import drafts. */
@@ -30,52 +29,183 @@ export interface WordLadderState {
   levelReachedAt?: string;
   lastStudiedAt?: string;
   recognitionStreak: 0 | 1 | 2;
+  reviewIntervalDays: number;
+  nextReviewAt?: string;
+  /** Internal replay state: lower values make the interval recover more cautiously after lapses. */
+  easeFactor: number;
+  /** A failed recall has been seen and the next success is same-cycle relearning, not interval growth. */
+  relearning: boolean;
 }
+
+const DAY_MS = 86_400_000;
+const DEFAULT_EASE = 2.3;
+const MIN_EASE = 1.3;
+const MAX_EASE = 2.8;
+export const DEFAULT_REVIEW_SCHEDULE: ReviewSchedule = {
+  learningDays: 1,
+  familiarDays: 3,
+  masteredDays: 7,
+  expertDays: 21,
+  lapseDays: 1,
+  maxDays: 60,
+};
+
+export function reviewScheduleOf(book: Pick<MyWordbook, "reviewSchedule">): ReviewSchedule {
+  return clone(book.reviewSchedule ?? DEFAULT_REVIEW_SCHEDULE);
+}
+
+function intervalForLevel(schedule: ReviewSchedule, level: WordLevel): number {
+  return level === 0 ? 0
+    : level === 1 ? schedule.learningDays
+      : level === 2 ? schedule.familiarDays
+        : level === 3 ? schedule.masteredDays
+          : schedule.expertDays;
+}
+
+function nextReviewAt(occurredAt: string, intervalDays: number): string {
+  return new Date(Date.parse(occurredAt) + intervalDays * DAY_MS).toISOString();
+}
+
+function dueAt(state: Pick<WordLadderState, "level" | "nextReviewAt">, at: string): boolean {
+  if (state.level === 0 || state.nextReviewAt === undefined) return false;
+  const due = Date.parse(state.nextReviewAt);
+  const current = Date.parse(at);
+  return !Number.isFinite(due) || !Number.isFinite(current) || current >= due;
+}
+
+function grownInterval(current: number, ease: number, dictation: boolean, schedule: ReviewSchedule): number {
+  const bonus = dictation ? 1.15 : 1;
+  return Math.min(schedule.maxDays, Math.max(current + 1, Math.round(Math.max(1, current) * ease * bonus)));
+}
+
 /**
  * Replay one word's full event history into its proficiency ladder state. Events must arrive
  * oldest-first (ties keep insertion order). `levelReachedAt` is the occurredAt of the event that
- * last CHANGED the level; a "mark" always counts as a change, even to the same rung — so it also
- * doubles as "when L3 was reached" for the 7-day final-check window.
+ * last CHANGED the level; a "mark" always counts as a change, even to the same rung.
+ *
+ * The review clock uses an adaptive expanding interval. On-time successful recall grows the
+ * interval; early practice preserves the existing due date; a lapse contracts it to the
+ * wordbook's configured short checkpoint.
+ * Everything is derived from the existing event log, so persisted users migrate automatically.
  */
-export function replayLadder(events: LearningEvent[], onEvent?: (event: LearningEvent, level: WordLevel) => void): WordLadderState {
+export function replayLadder(
+  events: LearningEvent[],
+  onEvent?: (event: LearningEvent, level: WordLevel) => void,
+  schedule: ReviewSchedule = DEFAULT_REVIEW_SCHEDULE,
+): WordLadderState {
   let level: WordLevel = 0;
   let levelReachedAt: string | undefined;
   let recognitionStreak: 0 | 1 | 2 = 0;
+  let reviewIntervalDays = 0;
+  let scheduledReviewAt: string | undefined;
+  let easeFactor = DEFAULT_EASE;
+  let relearning = false;
   for (const event of events) {
     const previous: WordLevel = level;
+    const wasDue = dueAt({ level, nextReviewAt: scheduledReviewAt }, event.occurredAt);
+    let successfulRecall = false;
+    let failedRecall = false;
+    let manualSchedule = false;
+    let restoredState = false;
     switch (event.kind) {
       case "new":
-        // New words require three consecutive recognition passes. Legacy events
-        // without a verdict count as "know", preserving forward progress.
+        // One honest first-pass judgment is enough to enter spaced review. Repeating the same
+        // card several times in one sitting is not evidence of retention; the configured
+        // learning interval provides the meaningful follow-up instead. Legacy verdict-less
+        // events still count as "know", preserving forward progress.
         if (level === 0) {
           if (event.verdict === "unknown") recognitionStreak = 0;
-          else if (recognitionStreak === 2) {
+          else {
             level = 1;
             recognitionStreak = 0;
-          } else recognitionStreak = (recognitionStreak + 1) as 1 | 2;
+            successfulRecall = true;
+          }
         }
         break;
       case "flashcard": // 认识 climbs one rung but flashcards can never pass L2; 不认识 demotes to a floor of L1.
-        level = event.verdict === "know" ? (level < 2 ? (level + 1) as WordLevel : level) : Math.max(1, level - 1) as WordLevel; break;
+        if (event.verdict === "know") {
+          level = level < 2 ? (level + 1) as WordLevel : level;
+          successfulRecall = true;
+        } else {
+          level = Math.max(1, level - 1) as WordLevel;
+          failedRecall = true;
+        }
+        break;
       case "dictation":
         if (event.correct) {
-          // L2 → L3 at once; L3 → L4 only once the 7-day window has passed; L0/L1 never promote.
+          // L2 → L3 at once. L3 → L4 requires a due interval of at least seven days, preventing
+          // a one-day lapse-recovery cycle from being mistaken for long-term mastery.
           if (level === 2) level = 3;
-          else if (level === 3 && levelReachedAt !== undefined && Date.parse(event.occurredAt) - Date.parse(levelReachedAt) >= FINAL_CHECK_WINDOW_MS) level = 4;
-        } else level = Math.max(1, level - 1) as WordLevel;
+          else if (level === 3 && wasDue && reviewIntervalDays >= schedule.masteredDays) level = 4;
+          successfulRecall = level > 0;
+        } else {
+          level = Math.max(1, level - 1) as WordLevel;
+          failedRecall = true;
+        }
         break;
       case "mark": // Manual override to an exact rung.
         level = event.level;
-        recognitionStreak = 0;
+        if (event.retainedState) {
+          recognitionStreak = event.retainedState.recognitionStreak;
+          reviewIntervalDays = event.retainedState.reviewIntervalDays;
+          scheduledReviewAt = event.retainedState.nextReviewAt;
+          easeFactor = event.retainedState.easeFactor;
+          relearning = event.retainedState.relearning;
+          levelReachedAt = event.retainedState.levelReachedAt;
+          restoredState = true;
+        } else {
+          recognitionStreak = 0;
+          manualSchedule = true;
+        }
         break;
     }
-    if (level !== previous || event.kind === "mark") levelReachedAt = event.occurredAt;
+    if (!restoredState && (level !== previous || event.kind === "mark")) levelReachedAt = event.occurredAt;
+
+    if (restoredState) {
+      // A retained baseline already contains the complete adaptive state at this instant.
+    } else if (manualSchedule) {
+      easeFactor = DEFAULT_EASE;
+      relearning = false;
+      reviewIntervalDays = intervalForLevel(schedule, level);
+      scheduledReviewAt = level === 0 ? undefined : nextReviewAt(event.occurredAt, reviewIntervalDays);
+    } else if (level === 0) {
+      reviewIntervalDays = 0;
+      scheduledReviewAt = undefined;
+      relearning = false;
+    } else if (failedRecall) {
+      easeFactor = Math.max(MIN_EASE, Number((easeFactor - 0.2).toFixed(2)));
+      reviewIntervalDays = schedule.lapseDays;
+      scheduledReviewAt = nextReviewAt(event.occurredAt, reviewIntervalDays);
+      relearning = true;
+    } else if (successfulRecall) {
+      if (relearning) {
+        // The current session may ask again after a miss. That successful retry restores the rung
+        // but keeps the configured short checkpoint instead of erasing the lapse.
+        relearning = false;
+      } else if (level !== previous) {
+        reviewIntervalDays = intervalForLevel(schedule, level);
+        scheduledReviewAt = nextReviewAt(event.occurredAt, reviewIntervalDays);
+      } else if (wasDue) {
+        easeFactor = Math.min(MAX_EASE, Number((easeFactor + (event.kind === "dictation" ? 0.1 : 0.05)).toFixed(2)));
+        reviewIntervalDays = grownInterval(reviewIntervalDays, easeFactor, event.kind === "dictation", schedule);
+        scheduledReviewAt = nextReviewAt(event.occurredAt, reviewIntervalDays);
+      }
+    }
     onEvent?.(event, level);
   }
   // Events arrive oldest-first, so the tail is the most recent touch of ANY kind (mark included) —
-  // the spaced-review clock's "last studied" stamp.
+  // retained for activity display and compatibility. The adaptive due rule uses nextReviewAt.
   const lastStudiedAt = events.length ? events[events.length - 1]!.occurredAt : undefined;
-  return { level, recognitionStreak, ...(levelReachedAt !== undefined ? { levelReachedAt } : {}), ...(lastStudiedAt !== undefined ? { lastStudiedAt } : {}) };
+  return {
+    level,
+    recognitionStreak,
+    reviewIntervalDays,
+    easeFactor,
+    relearning,
+    ...(levelReachedAt !== undefined ? { levelReachedAt } : {}),
+    ...(lastStudiedAt !== undefined ? { lastStudiedAt } : {}),
+    ...(scheduledReviewAt !== undefined ? { nextReviewAt: scheduledReviewAt } : {}),
+  };
 }
 /**
  * Bucket a wordbook's events by wordId in one pass. Each bucket is stable-sorted by occurredAt so
@@ -91,35 +221,91 @@ function bucketByWord(events: LearningEvent[]): Map<string, LearningEvent[]> {
   for (const bucket of buckets.values()) bucket.sort((a, b) => Date.parse(a.occurredAt) - Date.parse(b.occurredAt));
   return buckets;
 }
-export function ladderStates(events: LearningEvent[]): Map<string, WordLadderState> {
+
+/**
+ * Replace detailed events older than the retention window with one replayable baseline per word.
+ * This keeps activity retention bounded without resetting proficiency when a learner returns after
+ * a long absence. Retained marks are internal and filtered from recent activity by the store.
+ */
+export function compactLearningEvents(
+  events: LearningEvent[],
+  cutoff: number,
+  scheduleForWordbook: (wordbookId: string) => ReviewSchedule = () => DEFAULT_REVIEW_SCHEDULE,
+): LearningEvent[] {
+  const expired = events.filter((event) => Date.parse(event.occurredAt) < cutoff);
+  if (!expired.length) return events;
+  const retained = events.filter((event) => Date.parse(event.occurredAt) >= cutoff);
+  const checkpoints: LearningEvent[] = [];
+  for (const bucket of bucketByWord(expired).values()) {
+    const tail = bucket.at(-1);
+    if (!tail) continue;
+    const state = replayLadder(bucket, undefined, scheduleForWordbook(tail.wordbookId));
+    checkpoints.push({
+      id: `retained-${tail.wordbookId}-${tail.wordId}`,
+      kind: "mark",
+      wordbookId: tail.wordbookId,
+      wordId: tail.wordId,
+      word: tail.word,
+      level: state.level,
+      occurredAt: tail.occurredAt,
+      retainedState: {
+        recognitionStreak: state.recognitionStreak,
+        reviewIntervalDays: state.reviewIntervalDays,
+        easeFactor: state.easeFactor,
+        relearning: state.relearning,
+        ...(state.levelReachedAt !== undefined ? { levelReachedAt: state.levelReachedAt } : {}),
+        ...(state.nextReviewAt !== undefined ? { nextReviewAt: state.nextReviewAt } : {}),
+      },
+    });
+  }
+  return [...checkpoints, ...retained];
+}
+
+export function ladderStates(events: LearningEvent[], schedule: ReviewSchedule = DEFAULT_REVIEW_SCHEDULE): Map<string, WordLadderState> {
   const states = new Map<string, WordLadderState>();
-  for (const [wordId, bucket] of bucketByWord(events)) states.set(wordId, replayLadder(bucket));
+  for (const [wordId, bucket] of bucketByWord(events)) states.set(wordId, replayLadder(bucket, undefined, schedule));
   return states;
 }
 /** Level each word held right AFTER each event, keyed by event id — feeds recentActivity honesty. */
-export function ladderEventLevels(events: LearningEvent[]): Map<string, WordLevel> {
+export function ladderEventLevels(events: LearningEvent[], schedule: ReviewSchedule = DEFAULT_REVIEW_SCHEDULE): Map<string, WordLevel> {
   const after = new Map<string, WordLevel>();
-  for (const bucket of bucketByWord(events).values()) replayLadder(bucket, (event, level) => after.set(event.id, level));
+  for (const bucket of bucketByWord(events).values()) replayLadder(bucket, (event, level) => after.set(event.id, level), schedule);
   return after;
 }
-export function ladderOf(states: Map<string, WordLadderState>, wordId: string): WordLadderState { return states.get(wordId) ?? { level: 0, recognitionStreak: 0 }; }
+export function ladderOf(states: Map<string, WordLadderState>, wordId: string): WordLadderState {
+  return states.get(wordId) ?? { level: 0, recognitionStreak: 0, reviewIntervalDays: 0, easeFactor: DEFAULT_EASE, relearning: false };
+}
 // Legacy 4-status compat kept for the ?status= filter: L0 new / L1 learning / L2 review / L3-L4 mastered.
 function statusFromLevel(level: WordLevel): WordLearningStatus { return level === 0 ? "new" : level === 1 ? "learning" : level === 2 ? "review" : "mastered"; }
-function studiedWordOf(word: WordbookWord, state: WordLadderState): StudiedWord { return { ...clone(word), level: state.level, recognitionStreak: state.recognitionStreak, ...(state.levelReachedAt !== undefined ? { levelReachedAt: state.levelReachedAt } : {}), ...(state.lastStudiedAt !== undefined ? { lastStudiedAt: state.lastStudiedAt } : {}) }; }
+function studiedWordOf(word: WordbookWord, state: WordLadderState): StudiedWord {
+  return {
+    ...clone(word),
+    level: state.level,
+    recognitionStreak: state.recognitionStreak,
+    reviewIntervalDays: state.reviewIntervalDays,
+    ...(state.levelReachedAt !== undefined ? { levelReachedAt: state.levelReachedAt } : {}),
+    ...(state.lastStudiedAt !== undefined ? { lastStudiedAt: state.lastStudiedAt } : {}),
+    ...(state.nextReviewAt !== undefined ? { nextReviewAt: state.nextReviewAt } : {}),
+  };
+}
 export { studiedWordOf as studiedWord };
 export function queueItem(word: WordbookWord, state: WordLadderState): LearningQueueItem { return { ...studiedWordOf(word, state), status: statusFromLevel(state.level) }; }
 /**
- * 复习巩固 due rule on server-local calendar days: an L1 word becomes due 1 day after its last event,
- * an L2 word 2 days after (so `dayDiff >= level` covers both). L0/L3/L4 are never review-due — L3 has
- * its own 7-day final-check window. A level-1|2 word with no recorded event is treated as due.
+ * Every learned word remains in long-term spaced review, including L3/L4. Modern replayed states
+ * carry an exact due instant; the calendar-day fallback keeps hand-built/legacy states usable.
  */
-export function reviewDue(state: WordLadderState, now: Date): boolean {
-  if (state.level !== 1 && state.level !== 2) return false;
+export function reviewDue(state: WordLadderState, now: Date, schedule: ReviewSchedule = DEFAULT_REVIEW_SCHEDULE): boolean {
+  if (state.level === 0) return false;
+  if (state.nextReviewAt !== undefined) {
+    const due = Date.parse(state.nextReviewAt);
+    return !Number.isFinite(due) || now.getTime() >= due;
+  }
   if (state.lastStudiedAt === undefined) return true;
-  return dayDiff(new Date(state.lastStudiedAt), now) >= state.level;
+  const interval = state.reviewIntervalDays || intervalForLevel(schedule, state.level);
+  return dayDiff(new Date(state.lastStudiedAt), now) >= interval;
 }
 export function progress(book: MyWordbook, events: LearningEvent[]): WordbookProgress {
-  const states = ladderStates(events);
+  const states = ladderStates(events, reviewScheduleOf(book));
   const levels: LevelCounts = { l0: 0, l1: 0, l2: 0, l3: 0, l4: 0 };
   for (const word of book.words) levels[`l${ladderOf(states, word.id).level}` as keyof LevelCounts] += 1;
   const total = book.words.length;
@@ -128,7 +314,7 @@ export function progress(book: MyWordbook, events: LearningEvent[]): WordbookPro
 }
 export function card(book: MyWordbook, events: LearningEvent[]): MyWordbookCard {
   const { words: _words, deletedAt: _deletedAt, ...rest } = book;
-  return { ...clone(rest), wordCount: book.words.length, progress: progress(book, events) };
+  return { ...clone(rest), reviewSchedule: reviewScheduleOf(book), wordCount: book.words.length, progress: progress(book, events) };
 }
 export function sameMeanings(left: StudyWordEntry["meanings"], right: StudyWordEntry["meanings"]): StudyWordEntry["meanings"] {
   // Dedupe on (pos, definition); the length-prefix keeps the boundary unambiguous so no pair collides.

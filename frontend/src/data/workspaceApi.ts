@@ -1,6 +1,15 @@
 import type { WordbookItem, WordEntry, WordMeaning, WordSource } from '../domain/types'
 import { resolveApiBase } from './resolveApiBase'
+import {
+  DEFAULT_REVIEW_SCHEDULE,
+  parseReviewSchedule,
+  type ReviewSchedule,
+  type WordLevel,
+  type WordStatus,
+} from './reviewSchedule'
 import { getStudyClientId } from './studyApi'
+
+export type { ReviewSchedule, WordLevel, WordStatus } from './reviewSchedule'
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
 
@@ -12,9 +21,6 @@ export type AuthUser = { username: string; clientId: string; role: 'user' | 'adm
 export type CatalogExam = 'IELTS' | 'TOEFL' | 'GRE' | '高考' | '四级' | '六级' | '四六级' | '考研'
 export type LearningGoal = '写作' | '阅读' | '听力' | '口语'
 export type CatalogQuery = { q?: string; exam?: CatalogExam; goal?: LearningGoal; sort?: CatalogSort }
-export type WordStatus = 'new' | 'learning' | 'review' | 'mastered'
-/** 熟练度档位：0 未学习 / 1 初识 / 2 熟悉 / 3 掌握 / 4 精通 */
-export type WordLevel = 0 | 1 | 2 | 3 | 4
 export type RecognitionStreak = 0 | 1 | 2
 export type LevelCounts = { l0: number; l1: number; l2: number; l3: number; l4: number }
 
@@ -61,6 +67,7 @@ export type MyWordbook = {
   updatedAt: string
   wordCount: number
   progress: WordbookProgress
+  reviewSchedule: ReviewSchedule
 }
 
 export type StudyDashboard = {
@@ -74,7 +81,7 @@ export type StudyDashboard = {
   calendar: Array<{ date: string; count: number; active: boolean }>
   week: { newCount: number; reviewCount: number; dictationCount: number; total: number }
   streakDays: number
-  /** L3 words whose 7-day window has passed — dictation now promotes them to L4. */
+  /** Due L3 words whose next successful dictation can complete the final proficiency step. */
   finalCheckDue?: number
   updatedAt: string
 }
@@ -189,8 +196,12 @@ function parseProgress(value: unknown): WordbookProgress | null {
 function parseMyWordbook(value: unknown): MyWordbook | null {
   if (!isRecord(value) || !isText(value.id) || !isText(value.title) || !isText(value.description) || !isText(value.createdAt) || !isText(value.updatedAt) || !isCount(value.wordCount)) return null
   const progress = parseProgress(value.progress)
+  const reviewSchedule = value.reviewSchedule === undefined
+    ? structuredClone(DEFAULT_REVIEW_SCHEDULE)
+    : parseReviewSchedule(value.reviewSchedule)
   if (!progress || (value.sourceCatalogId !== undefined && !isText(value.sourceCatalogId)) || (value.category !== undefined && !isText(value.category))) return null
-  return { id: value.id, title: value.title, description: value.description, category: value.category, sourceCatalogId: value.sourceCatalogId, createdAt: value.createdAt, updatedAt: value.updatedAt, wordCount: value.wordCount, progress }
+  if (!reviewSchedule) return null
+  return { id: value.id, title: value.title, description: value.description, category: value.category, sourceCatalogId: value.sourceCatalogId, createdAt: value.createdAt, updatedAt: value.updatedAt, wordCount: value.wordCount, progress, reviewSchedule }
 }
 
 function parseCatalog(value: unknown): CatalogWordbook | null {
@@ -250,7 +261,7 @@ function isWordLevel(value: unknown): value is WordLevel {
   return value === 0 || value === 1 || value === 2 || value === 3 || value === 4
 }
 
-function parseWord(value: unknown): (WordbookItem & { status?: WordStatus; level?: WordLevel; levelReachedAt?: string; lastStudiedAt?: string; recognitionStreak?: RecognitionStreak }) | null {
+function parseWord(value: unknown): (WordbookItem & { status?: WordStatus; level?: WordLevel; levelReachedAt?: string; lastStudiedAt?: string; reviewIntervalDays?: number; nextReviewAt?: string; recognitionStreak?: RecognitionStreak }) | null {
   if (!isRecord(value) || !isText(value.id) || !isText(value.word) || !isText(value.phonetic) || !isText(value.addedAt) || !isText(value.source) || !Array.isArray(value.meanings) || (value.audioUrl !== undefined && !isText(value.audioUrl))) return null
   if (
     (value.zhMeaning !== undefined && !isText(value.zhMeaning))
@@ -265,6 +276,8 @@ function parseWord(value: unknown): (WordbookItem & { status?: WordStatus; level
   if (value.level !== undefined && !isWordLevel(value.level)) return null
   if (value.levelReachedAt !== undefined && !isText(value.levelReachedAt)) return null
   if (value.lastStudiedAt !== undefined && !isText(value.lastStudiedAt)) return null
+  if (value.reviewIntervalDays !== undefined && !isCount(value.reviewIntervalDays)) return null
+  if (value.nextReviewAt !== undefined && !isText(value.nextReviewAt)) return null
   if (value.recognitionStreak !== undefined && value.recognitionStreak !== 0 && value.recognitionStreak !== 1 && value.recognitionStreak !== 2) return null
   return {
     id: value.id,
@@ -280,6 +293,8 @@ function parseWord(value: unknown): (WordbookItem & { status?: WordStatus; level
     level: value.level,
     levelReachedAt: value.levelReachedAt,
     lastStudiedAt: value.lastStudiedAt,
+    reviewIntervalDays: value.reviewIntervalDays,
+    nextReviewAt: value.nextReviewAt,
     recognitionStreak: value.recognitionStreak as RecognitionStreak | undefined,
   }
 }
@@ -406,7 +421,7 @@ export class WorkspaceApi {
   async importShareCode(shareCode: string) { return this.json<{ wordbook: MyWordbook; created: boolean }>('api/catalog/imports', { method: 'POST', body: JSON.stringify({ shareCode }) }, (value) => isRecord(value) && typeof value.created === 'boolean' && parseMyWordbook(value.wordbook) ? { wordbook: parseMyWordbook(value.wordbook)!, created: value.created } : null) }
   listMyWordbooks(trash = false) { const url = new URL('api/my/wordbooks', this.baseUrl); if (trash) url.searchParams.set('view', 'trash'); return this.list(url, parseMyWordbook, 'wordbook list') }
   createMyWordbook(input: { title: string; description?: string; category?: string; words?: WordEntry[] }) { return this.json('api/my/wordbooks', { method: 'POST', body: JSON.stringify(input) }, parseMyWordbook) }
-  updateMyWordbook(id: string, input: { category: string | null }) { return this.json(`api/my/wordbooks/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(input) }, parseMyWordbook) }
+  updateMyWordbook(id: string, input: { category?: string | null; reviewSchedule?: ReviewSchedule }) { return this.json(`api/my/wordbooks/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(input) }, parseMyWordbook) }
   createImportDraft(input: { title: string; description?: string; targetWordbookId?: string; lines: ImportDraftLine[] }) {
     return this.json('api/my/import-drafts', { method: 'POST', body: JSON.stringify(input) }, parseImportDraft)
   }

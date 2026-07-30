@@ -222,6 +222,18 @@
 .study-mode-settings fieldset > small { color: var(--muted); font-size: .76rem; }
 .study-plan-settings input { width: 5rem; padding: .55rem .45rem; border: 1px solid var(--input-border); border-radius: .4rem; background: var(--input-bg); color: var(--ink); font: 600 1rem var(--font-mono); text-align: right; }
 .study-plan-settings em { color: var(--muted); font-size: .8rem; font-style: normal; }
+.review-schedule-settings { display: grid; gap: .75rem; padding: .9rem; border: 1px solid var(--rule); border-radius: .65rem; }
+.review-schedule-settings > header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+.review-schedule-settings > header > span { display: grid; gap: .15rem; }
+.review-schedule-settings > header small { color: var(--muted); font-size: .76rem; }
+.review-schedule-settings > header button { padding: .45rem .65rem; border: 1px solid var(--input-border); border-radius: .4rem; background: var(--input-bg); color: var(--accent-strong); font: inherit; font-size: .78rem; cursor: pointer; }
+.review-schedule-settings > header button:disabled { color: var(--muted); cursor: default; opacity: .65; }
+.review-schedule-settings > div { display: grid; grid-template-columns: 1fr 1fr; gap: .55rem; }
+.review-schedule-settings > div > label { display: grid; grid-template-columns: minmax(0,1fr) 4.5rem auto; align-items: center; gap: .55rem; padding: .7rem; border-radius: .5rem; background: var(--hover-bg); }
+.review-schedule-settings > div > label > span { display: grid; gap: .12rem; }
+.review-schedule-settings > div > label small { color: var(--muted); font-size: .72rem; line-height: 1.35; }
+.review-schedule-settings input { width: 4.5rem; }
+.review-schedule-error { color: var(--danger); font-size: .78rem; line-height: 1.45; }
 .study-settings-note { padding: .75rem .9rem; border-radius: .55rem; background: var(--accent-soft); color: var(--accent-strong); font-size: .78rem; line-height: 1.55; }
 .study-mode-settings fieldset { display: grid; gap: .55rem; padding: .9rem; border: 1px solid var(--rule); border-radius: .65rem; }
 .study-mode-settings legend { padding: 0 .25rem; font-weight: 700; }
@@ -261,7 +273,7 @@
 .dictation-live-input.is-live .field-input { color: transparent; caret-color: var(--ink); }
 .dictation-input-overlay { position: absolute; z-index: 2; inset: 0; display: flex; align-items: center; overflow: hidden; padding: .55rem 2.75rem .55rem 1rem; color: var(--ink); font-family: var(--font-mono); font-size: var(--text-md); line-height: 1.4; letter-spacing: .02em; pointer-events: none; white-space: pre; }
 .dictation-input-overlay .incorrect-letter { color: var(--danger); text-decoration: underline 2px var(--danger); text-underline-offset: .22em; }
-.study-recognition-progress { grid-column: 1 / -1; margin-top: -.15rem; color: var(--muted); font-size: .76rem; text-align: center; font-variant-numeric: tabular-nums; }
+.study-next-review-hint { grid-column: 1 / -1; margin-top: -.15rem; color: var(--muted); font-size: .76rem; text-align: center; font-variant-numeric: tabular-nums; }
 .dictation-answer-details { display: grid; gap: .55rem; margin-top: .65rem; padding: .75rem; border-radius: .55rem; background: var(--hover-bg); }
 .dictation-answer-phonetic { color: var(--muted); font-family: var(--font-mono); font-size: .82rem; }
 
@@ -272,6 +284,7 @@
   .workspace-study-modal { width: 100%; max-height: 92vh; border-radius: 1rem 1rem 0 0; }
   .study-settings-dialog { padding: 1rem; }
   .study-plan-settings > label { grid-template-columns: minmax(0,1fr) 4.5rem auto; }
+  .review-schedule-settings > div { grid-template-columns: 1fr; }
   .workspace-study-modal { padding: .7rem; }
   .workspace-study-modal .workspace-study-header { grid-template-columns: 1fr; padding-right: 2.5rem; }
   .workspace-study-modal .workspace-study-header > span { grid-row: auto; }

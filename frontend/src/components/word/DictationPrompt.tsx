@@ -1,8 +1,8 @@
 import { useEffect, useId, useRef, type FormEvent } from 'react'
 import type { DictationDisplayPreferences } from '../../data/studyPreferences'
+import { selectPreferredMeanings } from '../../domain/meaningSelection'
 import type { DictationGrade, WordbookItem } from '../../domain/types'
 import { Button } from '../ui/Button'
-import { preferredMeanings } from './Flashcard'
 import { MeaningList } from './MeaningList'
 import { PronounceButton } from './PronounceButton'
 
@@ -144,7 +144,7 @@ export function DictationPrompt({
             {preferences.showPhonetic && item.phonetic && <p className="dictation-answer-phonetic">{item.phonetic}</p>}
             {preferences.showMeaning && (
               <MeaningList
-                meanings={preferredMeanings(item, preferences.meaningPreference)}
+                meanings={selectPreferredMeanings(item, preferences.meaningPreference)}
                 showExamples={preferences.showExamples}
               />
             )}
@@ -199,7 +199,7 @@ export function DictationPrompt({
           {(preferences.showPhonetic || preferences.showMeaning) && <div className="dictation-answer-details">
             {preferences.showPhonetic && item.phonetic && <p className="dictation-answer-phonetic">{item.phonetic}</p>}
             {preferences.showMeaning && <MeaningList
-              meanings={preferredMeanings(item, preferences.meaningPreference)}
+              meanings={selectPreferredMeanings(item, preferences.meaningPreference)}
               showExamples={preferences.showExamples}
             />}
           </div>}

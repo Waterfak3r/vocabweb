@@ -3,10 +3,9 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { isValidWordQuery, normalizeWord } from "../words/normalize.js";
 import { isJsonObject } from "./validation.js";
-import { FINAL_CHECK_WINDOW_MS } from "./types.js";
 import {
-  BATCH_SIZE, RETENTION_MS, card, catalogCard, clone, day, dayDiff, defaultClient, EMPTY, ladderEventLevels, ladderOf,
-  ladderStates, migrate, progress, queueItem, replayLadder, reviewDue, sameMeanings, shiftDay, studiedWord, toCatalogWords,
+  BATCH_SIZE, RETENTION_MS, card, catalogCard, clone, compactLearningEvents, day, defaultClient, EMPTY, ladderEventLevels, ladderOf,
+  ladderStates, migrate, progress, queueItem, replayLadder, reviewDue, reviewScheduleOf, sameMeanings, shiftDay, studiedWord, toCatalogWords,
   toWordbookWords, visibleTo,
 } from "./ladder.js";
 import type { ClientData, State } from "./ladder.js";
@@ -325,7 +324,10 @@ export abstract class BaseStore implements StudyStore {
   async updateMyWordbook(clientId: string, id: string, input: UpdateMyWordbookInput): Promise<MyWordbookCard | null> { return await this.mutate((state) => {
     const client = this.client(state, clientId); const book = client.wordbooks.find((item) => item.id === id && !item.deletedAt);
     if (!book) return null;
-    if (input.category === null) delete book.category; else book.category = input.category;
+    if (Object.hasOwn(input, "category")) {
+      if (input.category === null) delete book.category; else book.category = input.category;
+    }
+    if (input.reviewSchedule) book.reviewSchedule = clone(input.reviewSchedule);
     book.updatedAt = this.now().toISOString();
     return card(book, client.events);
   }); }
@@ -334,7 +336,7 @@ export abstract class BaseStore implements StudyStore {
   async restoreMyWordbook(clientId: string, id: string): Promise<MyWordbookCard | null> { return await this.mutate((state) => { const client = this.client(state, clientId); const book = client.wordbooks.find((item) => item.id === id && item.deletedAt); if (!book) return null; book.deletedAt = undefined; book.updatedAt = this.now().toISOString(); return card(book, client.events); }); }
   async listWords(clientId: string, id: string, status?: WordLearningStatus): Promise<LearningQueueItem[] | null> { return await this.read((state) => {
     const client = this.clientView(state, clientId); const book = client.wordbooks.find((item) => item.id === id && !item.deletedAt); if (!book) return null;
-    const states = ladderStates(client.events.filter((event) => event.wordbookId === id));
+    const states = ladderStates(client.events.filter((event) => event.wordbookId === id), reviewScheduleOf(book));
     return book.words.map((word) => queueItem(word, ladderOf(states, word.id))).filter((word) => !status || word.status === status);
   }); }
   async findPersonalWord(clientId: string, word: string): Promise<StudyWordEntry | null> { return await this.read((state) => {
@@ -354,7 +356,7 @@ export abstract class BaseStore implements StudyStore {
   async addWordToMyWordbook(clientId: string, wordbookId: string, entry: StudyWordEntry): Promise<{ word: LearningQueueItem; created: boolean } | null> { return await this.mutate((state) => {
     const client = this.client(state, clientId); const book = client.wordbooks.find((item) => item.id === wordbookId && !item.deletedAt); if (!book) return null;
     // Words are stored normalized; dedupe on an exact normalized match.
-    const states = ladderStates(client.events.filter((event) => event.wordbookId === wordbookId));
+    const states = ladderStates(client.events.filter((event) => event.wordbookId === wordbookId), reviewScheduleOf(book));
     const existing = book.words.find((word) => word.word === entry.word);
     if (existing) return { word: queueItem(existing, ladderOf(states, existing.id)), created: false };
     const at = this.now().toISOString();
@@ -400,7 +402,7 @@ export abstract class BaseStore implements StudyStore {
     }
     book.updatedAt = this.now().toISOString();
     // A rename keeps the word id, so its replayed proficiency survives unchanged.
-    const ladderState = ladderOf(ladderStates(client.events.filter((event) => event.wordbookId === wordbookId)), target.id);
+    const ladderState = ladderOf(ladderStates(client.events.filter((event) => event.wordbookId === wordbookId), reviewScheduleOf(book)), target.id);
     return { kind: "updated", word: studiedWord(target, ladderState) };
   }); }
   async batchWords(clientId: string, wordbookId: string, input: BatchWordInput): Promise<BatchWordResult | null> { return await this.mutate((state) => {
@@ -574,7 +576,12 @@ export abstract class BaseStore implements StudyStore {
     const client = this.client(state, clientId); const book = client.wordbooks.find((item) => item.id === input.wordbookId && !item.deletedAt);
     const target = input.wordId ? book?.words.find((word) => word.id === input.wordId) : book?.words.find((word) => word.word === input.word);
     if (!book || !target) return null;
-    const now = this.now(); client.events = client.events.filter((event) => Date.parse(event.occurredAt) >= now.getTime() - RETENTION_MS);
+    const now = this.now();
+    client.events = compactLearningEvents(
+      client.events,
+      now.getTime() - RETENTION_MS,
+      (wordbookId) => reviewScheduleOf(client.wordbooks.find((candidate) => candidate.id === wordbookId) ?? {}),
+    );
     const common = { wordbookId: book.id, word: target.word, wordId: target.id, id: randomUUID(), occurredAt: now.toISOString() };
     const event: LearningEvent = input.kind === "new" ? { ...common, kind: "new", ...(input.verdict ? { verdict: input.verdict } : {}) } : input.kind === "flashcard" ? { ...common, kind: "flashcard", verdict: input.verdict } : input.kind === "dictation" ? { ...common, kind: "dictation", correct: input.correct } : { ...common, kind: "mark", level: input.level };
     client.events.push(event); book.updatedAt = event.occurredAt; return event;
@@ -582,15 +589,16 @@ export abstract class BaseStore implements StudyStore {
   async getDashboard(clientId: string, id: string): Promise<StudyDashboard | null> { return await this.read((state) => {
     const client = this.clientView(state, clientId); const book = client.wordbooks.find((item) => item.id === id && !item.deletedAt); if (!book) return null;
     const now = this.now(); const today = day(now); const events = client.events.filter((event) => event.wordbookId === id);
-    // "mark" events are manual overrides, not study effort: excluded from calendar/streak/week and
-    // today's completed tallies, but still surfaced in recentActivity (with their level) below.
-    const studyEvents = events.filter((event) => event.kind !== "mark");
+    const schedule = reviewScheduleOf(book);
+    const activityEvents = events.filter((event) => event.kind !== "mark" || event.retainedState === undefined);
+    // Manual marks are not study effort: excluded from calendar/streak/week and completed tallies,
+    // but still surfaced in recentActivity. Internal retention checkpoints stay invisible.
+    const studyEvents = activityEvents.filter((event) => event.kind !== "mark");
     const todayEvents = studyEvents.filter((event) => day(new Date(event.occurredAt)) === today);
-    const afterById = ladderEventLevels(events);
+    const afterById = ladderEventLevels(events, schedule);
     const uniqueWords = (items: LearningEvent[], kind?: LearningEvent["kind"]) =>
       new Set(items.filter((event) => !kind || event.kind === kind).map((event) => event.wordId));
-    // Three recognition taps belong to one learned word. Count only the event
-    // that actually crosses L0 -> L1 so daily progress remains word-based.
+    // Count the first judgment that actually crosses L0 -> L1 so daily progress stays word-based.
     const completedNew = uniqueWords(todayEvents.filter((event) => event.kind === "new" && afterById.get(event.id) === 1)).size;
     // Only a flashcard that was due immediately before the action completes the
     // due-review plan. Ahead-review activity remains visible in weekly study data.
@@ -598,22 +606,21 @@ export abstract class BaseStore implements StudyStore {
     for (let index = 0; index < events.length; index += 1) {
       const event = events[index]!;
       if (event.kind !== "flashcard" || day(new Date(event.occurredAt)) !== today) continue;
-      const before = replayLadder(events.slice(0, index).filter((candidate) => candidate.wordId === event.wordId));
-      if (reviewDue(before, new Date(event.occurredAt))) completedDueReviewIds.add(event.wordId);
+      const before = replayLadder(events.slice(0, index).filter((candidate) => candidate.wordId === event.wordId), undefined, schedule);
+      if (reviewDue(before, new Date(event.occurredAt), schedule)) completedDueReviewIds.add(event.wordId);
     }
     const completedReview = completedDueReviewIds.size;
     const completedDictation = uniqueWords(todayEvents.filter((event) => event.kind === "dictation" && event.correct)).size;
-    const states = ladderStates(events); const bookProgress = progress(book, events); const { levels } = bookProgress;
-    // Availability per contract: 新词学习 from l0, 听写训练 from l2+l3+l4; 复习巩固 is the DUE count (below).
+    const states = ladderStates(events, schedule); const bookProgress = progress(book, events); const { levels } = bookProgress;
+    // Availability per contract: 新词学习 from l0, 听写训练 from l2+l3+l4; 复习巩固 is the adaptive DUE count (below).
     const newAvailable = levels.l0; const dictationAvailable = levels.l2 + levels.l3 + levels.l4;
-    // One walk of the word list feeds two spaced-review widgets:
-    //   复习巩固 availability = L1|L2 words whose calendar-day gap has elapsed (reviewDue).
-    //   终审待办 (finalCheckDue) = L3 words whose 7-day window has passed — next correct dictation reaches L4.
+    // Every learned rung stays on the expanding review schedule. finalCheckDue is the L3 subset
+    // currently due; a successful dictation at a mature interval can promote it to L4.
     let reviewAvailable = 0; let finalCheckDue = 0;
     for (const word of book.words) {
       const s = ladderOf(states, word.id);
-      if (reviewDue(s, now)) reviewAvailable += 1;
-      if (s.level === 3 && s.levelReachedAt !== undefined && now.getTime() - Date.parse(s.levelReachedAt) >= FINAL_CHECK_WINDOW_MS) finalCheckDue += 1;
+      if (reviewDue(s, now, schedule)) reviewAvailable += 1;
+      if (s.level === 3 && reviewDue(s, now, schedule)) finalCheckDue += 1;
     }
     const perDay = new Map<string, Set<string>>();
     for (const event of studyEvents) {
@@ -632,7 +639,7 @@ export abstract class BaseStore implements StudyStore {
     // The 结果 column shows the proficiency a word held right after each study action.
     // Reverse first so equal-millisecond events retain newest-insertion-first
     // ordering under JavaScript's stable sort.
-    return { wordbook: card(book, events), todayPlan: { new: { target: Math.min(20, Math.max(completedNew, newAvailable)), completed: completedNew }, review: { target: completedReview + reviewAvailable, completed: completedReview }, dictation: { target: Math.min(15, Math.max(completedDictation, dictationAvailable)), completed: completedDictation } }, recentActivity: clone([...events].reverse().sort((a, b) => b.occurredAt.localeCompare(a.occurredAt)).slice(0, 5)).map((event) => ({ ...event, levelAfter: afterById.get(event.id) ?? 0 as WordLevel })), calendar, week: { newCount: weekNew, reviewCount: weekReview, dictationCount: weekDictation, total: weekTotalIds.size }, streakDays: streak, finalCheckDue, updatedAt: book.updatedAt };
+    return { wordbook: card(book, events), todayPlan: { new: { target: Math.min(20, Math.max(completedNew, newAvailable)), completed: completedNew }, review: { target: completedReview + reviewAvailable, completed: completedReview }, dictation: { target: Math.min(15, Math.max(completedDictation, dictationAvailable)), completed: completedDictation } }, recentActivity: clone([...activityEvents].reverse().sort((a, b) => b.occurredAt.localeCompare(a.occurredAt)).slice(0, 5)).map((event) => ({ ...event, levelAfter: afterById.get(event.id) ?? 0 as WordLevel })), calendar, week: { newCount: weekNew, reviewCount: weekReview, dictationCount: weekDictation, total: weekTotalIds.size }, streakDays: streak, finalCheckDue, updatedAt: book.updatedAt };
   }); }
 
   // --- Shared state plumbing ---

@@ -1,5 +1,6 @@
 import type { WordbookItem } from '../../domain/types'
 import type { StudyDisplayPreferences } from '../../data/studyPreferences'
+import { selectPreferredMeanings } from '../../domain/meaningSelection'
 import { MeaningList } from './MeaningList'
 import { PronounceButton } from './PronounceButton'
 import styles from './Flashcard.module.css'
@@ -12,21 +13,11 @@ export type FlashcardProps = {
   preferences?: StudyDisplayPreferences
 }
 
-const HAS_HAN = /[\u3400-\u9fff]/
-
 export function preferredMeanings(
   item: WordbookItem,
   preference: StudyDisplayPreferences['meaningPreference'],
 ) {
-  if (preference === 'zh' && item.zhMeaning) {
-    return [{ pos: '中文', definition: item.zhMeaning }]
-  }
-  const preferred = item.meanings.filter((meaning) => (
-    preference === 'zh'
-      ? HAS_HAN.test(meaning.definition)
-      : !HAS_HAN.test(meaning.definition)
-  ))
-  return (preferred.length ? preferred : item.meanings).slice(0, 3)
+  return selectPreferredMeanings(item, preference)
 }
 
 /**

@@ -19,8 +19,6 @@ import {
   type CatalogWordbook,
   type MyWordbook,
   type StudyDashboard,
-  type WordLevel,
-  type WordStatus,
   type WordbookProgress,
 } from '../data/workspaceApi'
 import {
@@ -52,6 +50,19 @@ import {
   type EnglishAccent,
   type PronunciationPreferences,
 } from '../data/pronunciationPreferences'
+import {
+  DEFAULT_REVIEW_SCHEDULE,
+  isDefaultReviewSchedule,
+  isReviewDue,
+  levelOf,
+  parseReviewSchedule,
+  reviewPriority,
+  sameReviewSchedule,
+  type ReviewSchedule,
+  type ReviewScheduleEntry,
+} from '../data/reviewSchedule'
+import { dailyNewPlan, remainingPlanWords } from '../data/studyPlan'
+import { firstAvailableMeaning } from '../domain/meaningSelection'
 import type { WordbookItem } from '../domain/types'
 import { useDictationSession } from '../features/dictation/useDictationSession'
 import { useFlashcardSession } from '../features/flashcards/useFlashcardSession'
@@ -75,9 +86,12 @@ type WorkspaceBook = {
   createdAt: string
   updatedAt: string
   entries: WorkspaceEntry[]
+  reviewSchedule: ReviewSchedule
 }
-type WorkspaceEntry = WordbookItem & { status?: WordStatus; level?: WordLevel; levelReachedAt?: string; lastStudiedAt?: string }
-  & { recognitionStreak?: 0 | 1 | 2 }
+type WorkspaceEntry = WordbookItem & ReviewScheduleEntry & {
+  levelReachedAt?: string
+  recognitionStreak?: 0 | 1 | 2
+}
 
 type RecentStudyRow = {
   id: string
@@ -128,7 +142,8 @@ function activityResult(activity: StudyDashboard['recentActivity'][number]) {
 function toRecentStudyRows(activities: StudyDashboard['recentActivity'], entries: WordbookItem[]): RecentStudyRow[] {
   const entriesByWord = new Map(entries.map((entry) => [entry.word, entry]))
   return activities.slice(0, 5).map((activity) => {
-    const meaning = entriesByWord.get(activity.word)?.meanings[0]
+    const entry = entriesByWord.get(activity.word)
+    const meaning = entry ? firstAvailableMeaning(entry) : undefined
     return {
       id: activity.id,
       word: activity.word,
@@ -210,31 +225,8 @@ function remoteToWorkspaceBook(book: MyWordbook, index: number): WorkspaceBook {
     createdAt: book.createdAt,
     updatedAt: book.updatedAt,
     entries: [],
+    reviewSchedule: book.reviewSchedule,
   }
-}
-
-// The proficiency ladder keys off `level`, falling back to the legacy status only when the
-// server omits it. 新词学习 draws L0, 复习巩固 draws L1|L2, 听写训练 draws every word at L2+.
-const levelOf = (entry: WorkspaceEntry): WordLevel =>
-  entry.level ?? (entry.status === 'learning' ? 1 : entry.status === 'review' ? 2 : entry.status === 'mastered' ? 3 : 0)
-
-// Whole calendar days between two instants, in the client's local timezone.
-function calendarDayDiff(from: Date, to: Date): number {
-  const startOfDay = (date: Date) => new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime()
-  return Math.round((startOfDay(to) - startOfDay(from)) / 86_400_000)
-}
-
-// Spaced-review due rule, client-local calendar days (mirrors the backend day() rule): an L1
-// word is due once >= 1 whole calendar day has passed since its last event, an L2 word once
-// >= 2 days have. L0/L3/L4 are never "review due" (L3 has its own 7-day final check). An L1/L2
-// word without a lastStudiedAt (theoretically impossible) is treated as due.
-function isReviewDue(entry: WorkspaceEntry, now: Date = new Date()): boolean {
-  const level = levelOf(entry)
-  if (level !== 1 && level !== 2) return false
-  if (!entry.lastStudiedAt) return true
-  const last = new Date(entry.lastStudiedAt)
-  if (Number.isNaN(last.getTime())) return true
-  return calendarDayDiff(last, now) >= level
 }
 
 export function WordbookPage() {
@@ -252,8 +244,8 @@ export function WordbookPage() {
   const [remoteEntries, setRemoteEntries] = useState<WorkspaceBook['entries'] | null>(null)
   const [dashboardLoading, setDashboardLoading] = useState(false)
   const [studyMode, setStudyMode] = useState<StudyMode | null>(null)
-  // 复习巩固 runs in one of two scopes: the default 'due' deck (words whose spaced-review
-  // interval has elapsed) or the voluntary 'ahead' deck (L1|L2 words reviewed early).
+  // 复习巩固 runs in one of two scopes: the default adaptive due deck or the voluntary
+  // ahead deck for learned words whose next checkpoint has not arrived yet.
   const [reviewScope, setReviewScope] = useState<'due' | 'ahead'>('due')
   const [settingsSection, setSettingsSection] = useState<SettingsSection | null>(null)
   const [showImporter, setShowImporter] = useState(false)
@@ -276,6 +268,7 @@ export function WordbookPage() {
     () => readPronunciationPreferences(),
   )
   const dashboardRequest = useRef(0)
+  const studyRefreshTimer = useRef<number | null>(null)
   const categories = useMemo(() => [...new Set(books.map((book) => book.category).filter((value): value is string => Boolean(value)))].sort((a, b) => a.localeCompare(b, 'zh-CN')), [books])
   const filteredBooks = useMemo(() => {
     const query = bookQuery.trim().toLocaleLowerCase()
@@ -351,7 +344,9 @@ export function WordbookPage() {
       setDashboardLoading(false)
       return false
     }
-    setDashboard(null)
+    // Retain same-book figures during a live study refresh, but never flash the previous book's
+    // dashboard after the learner switches wordbooks.
+    setDashboard((current) => current?.wordbook.id === wordbookId ? current : null)
     setDashboardLoading(true)
     try {
       const [nextDashboard, words] = await Promise.all([
@@ -374,8 +369,26 @@ export function WordbookPage() {
 
   useEffect(() => { void refreshSelectedBook() }, [refreshSelectedBook])
 
+  const scheduleStudyProgressRefresh = useCallback(() => {
+    const wordbookId = selectedBook?.id
+    if (!wordbookId) return
+    if (studyRefreshTimer.current !== null) window.clearTimeout(studyRefreshTimer.current)
+    studyRefreshTimer.current = window.setTimeout(() => {
+      studyRefreshTimer.current = null
+      void refreshSelectedBook(wordbookId)
+    }, 120)
+  }, [refreshSelectedBook, selectedBook?.id])
+
+  useEffect(() => () => {
+    if (studyRefreshTimer.current !== null) {
+      window.clearTimeout(studyRefreshTimer.current)
+      studyRefreshTimer.current = null
+    }
+  }, [selectedBook?.id])
+
   useEffect(() => {
     if (!selectedBook) return
+    setRemoteEntries(null)
     setCategoryDraft(selectedBook.category ?? '')
     setCategoryEditing(false)
     setPreferences(readStudyPreferences(selectedBook.id))
@@ -417,15 +430,35 @@ export function WordbookPage() {
   }
 
   async function exitStudy() {
+    if (studyRefreshTimer.current !== null) {
+      window.clearTimeout(studyRefreshTimer.current)
+      studyRefreshTimer.current = null
+    }
     setStudyMode(null)
-    await refreshMyWordbooks(selectedBook.id)
-    await refreshSelectedBook()
+    await Promise.all([
+      refreshMyWordbooks(selectedBook.id),
+      refreshSelectedBook(selectedBook.id),
+    ])
   }
 
   function savePreferences(next: WordbookStudyPreferences) {
     if (!selectedBook) return
     setPreferences(next)
     writeStudyPreferences(selectedBook.id, next)
+  }
+
+  async function saveReviewSchedule(next: ReviewSchedule): Promise<boolean> {
+    if (!api || !selectedBook) return false
+    try {
+      await api.updateMyWordbook(selectedBook.id, { reviewSchedule: next })
+      await refreshMyWordbooks(selectedBook.id)
+      await refreshSelectedBook()
+      setNotice(isDefaultReviewSchedule(next) ? '已恢复默认遗忘曲线。' : '自定义复习方案已保存。')
+      return true
+    } catch {
+      setNotice('复习方案保存失败，请稍后重试。')
+      return false
+    }
   }
 
   function saveShortcuts(next: StudyShortcutPreferences) {
@@ -613,27 +646,29 @@ export function WordbookPage() {
   // 听写训练 draws from L2+ only (must be 熟悉 before spelling), matching its deck
   // and the backend's dictationAvailable = l2 + l3 + l4.
   const dictationEligibleCount = progress.levels.l2 + progress.levels.l3 + progress.levels.l4
-  // Spaced-review decks (see isReviewDue): 复习巩固 defaults to the words whose review
-  // interval has elapsed (due); an optional 提前复习 deck holds the L1|L2 words not yet due.
+  // Adaptive review includes every learned rung, orders the most overdue first, and keeps
+  // not-yet-due words in the optional 提前复习 deck.
   const reviewNow = new Date()
-  const isReviewLevel = (entry: WorkspaceEntry) => levelOf(entry) === 1 || levelOf(entry) === 2
-  const reviewDueEntries = activeBook.entries.filter((entry) => isReviewDue(entry, reviewNow))
-  const reviewAheadEntries = activeBook.entries.filter((entry) => isReviewLevel(entry) && !isReviewDue(entry, reviewNow))
+  const reviewSchedule = activeBook.reviewSchedule
+  const isReviewLevel = (entry: WorkspaceEntry) => levelOf(entry) > 0
+  const byReviewPriority = (left: WorkspaceEntry, right: WorkspaceEntry) => reviewPriority(left, reviewSchedule) - reviewPriority(right, reviewSchedule)
+  const reviewDueEntries = activeBook.entries.filter((entry) => isReviewDue(entry, reviewNow, reviewSchedule)).sort(byReviewPriority)
+  const reviewAheadEntries = activeBook.entries.filter((entry) => isReviewLevel(entry) && !isReviewDue(entry, reviewNow, reviewSchedule)).sort(byReviewPriority)
   const reviewDueCount = reviewDueEntries.length
   const reviewAheadCount = reviewAheadEntries.length
+  const newPlan = dailyNewPlan(preferences.plan.newWords, completedNew, progress.unstudied)
   const planCounts = {
-    new: Math.min(preferences.plan.newWords, progress.unstudied + completedNew),
+    new: newPlan.target,
     // Keep today's due-review target stable while due words leave the deck.
     review: reviewDueCount + completedReview,
     dictation: Math.min(preferences.plan.dictation, Math.max(completedDictation, dictationEligibleCount)),
   }
-  // L3 words whose 7-day window has elapsed — a correct dictation promotes them to L4 (精通).
+  // Due L3 words are prioritized by the dictation deck; a mature successful check promotes them.
   const finalCheckDue = dashboard?.finalCheckDue ?? 0
   const dictationDetail = finalCheckDue > 0
-    ? `听音拼写，检测掌握 · ${finalCheckDue} 词满一周可冲刺精通`
+    ? `听音拼写，检测掌握 · ${finalCheckDue} 词到期可冲刺精通`
     : '听音拼写，检测掌握'
-  // "强化记忆，巩固掌握 · 今日到期 X · 可提前复习 Y" — omit the segments that are 0.
-  const reviewDetail = ['强化记忆，巩固掌握']
+  const reviewDetail = [isDefaultReviewSchedule(reviewSchedule) ? '默认遗忘曲线' : '自定义遗忘曲线']
     .concat(reviewDueCount > 0 ? [`今日到期 ${reviewDueCount}`] : [])
     .concat(reviewAheadCount > 0 ? [`可提前复习 ${reviewAheadCount}`] : [])
     .join(' · ')
@@ -641,13 +676,19 @@ export function WordbookPage() {
     if (nextMode === 'new') {
       return activeBook.entries
         .filter((entry) => levelOf(entry) === 0)
-        .slice(0, preferences.plan.newWords)
+        .slice(0, newPlan.remaining)
     }
     // 复习巩固's default deck is the due words only; the ahead deck is served separately.
     if (nextMode === 'review') {
       return reviewDueEntries
     }
-    return activeBook.entries.filter((entry) => levelOf(entry) >= 2).slice(0, preferences.plan.dictation)
+    return activeBook.entries
+      .filter((entry) => levelOf(entry) >= 2)
+      .sort((left, right) => {
+        const dueOrder = Number(isReviewDue(right, reviewNow, reviewSchedule)) - Number(isReviewDue(left, reviewNow, reviewSchedule))
+        return dueOrder || reviewPriority(left, reviewSchedule) - reviewPriority(right, reviewSchedule)
+      })
+      .slice(0, preferences.plan.dictation)
   }
   // The review session runs on whichever deck the current scope selects.
   const reviewSessionEntries = reviewScope === 'ahead' ? reviewAheadEntries : reviewDueEntries
@@ -714,6 +755,8 @@ export function WordbookPage() {
         preferences={preferences}
         wordCount={wordCount}
         onChange={savePreferences}
+        reviewSchedule={reviewSchedule}
+        onReviewScheduleSave={saveReviewSchedule}
         shortcuts={shortcuts}
         onShortcutsChange={saveShortcuts}
         pronunciationPreferences={pronunciationPreferences}
@@ -729,6 +772,7 @@ export function WordbookPage() {
         accent={pronunciationPreferences.accent}
         reviewAheadCount={studyMode === 'review' && reviewScope === 'due' ? reviewAheadCount : 0}
         onContinueAhead={() => setReviewScope('ahead')}
+        onProgressCommitted={scheduleStudyProgressRefresh}
         onClose={() => void exitStudy()}
       />}
       <ImportWordbookDialog
@@ -764,12 +808,13 @@ export function WordbookPage() {
 
 function PlanCard({ icon, title, count, available, aheadAvailable = 0, aheadButton, loading, completed, detail, button, onClick, onSettings }: { icon: 'book' | 'repeat' | 'headphones'; title: string; count: number; available: number; aheadAvailable?: number; aheadButton?: string; loading: boolean; completed: number; detail: string; button: string; onClick: () => void; onSettings: () => void }) {
   const progress = count ? Math.min(100, completed / count * 100) : 0
+  const remaining = remainingPlanWords(count, completed)
   // The start button follows the actual studyable deck (`available`), not the day-plan tally
   // — the tally keeps counting words finished earlier today. When the primary deck is empty
   // but an ahead deck (e.g. 复习巩固's 提前复习) has words, stay enabled with its label.
   const startable = available > 0 || aheadAvailable > 0
-  const label = loading ? '加载中…' : available > 0 ? button : aheadAvailable > 0 ? (aheadButton ?? button) : '暂无可学单词'
-  return <article className="plan-card"><WorkspaceIcon name={icon} /><h3>{title}</h3><button type="button" className="plan-card-settings" aria-label={`设置${title}`} title={`设置${title}`} onClick={onSettings}><WorkspaceIcon name="settings" /></button><p>{detail}</p><strong>{count}<small>词</small></strong><div className="plan-card-progress"><span className="plan-card-progress-track"><i style={{ width: `${progress}%` }} /></span><span className="plan-card-progress-count">{Math.min(completed, count)}/{count}</span></div><button type="button" disabled={!startable} onClick={onClick}>{label}</button></article>
+  const label = loading ? '加载中…' : count > 0 && remaining === 0 && available > 0 ? '继续加练' : available > 0 ? button : aheadAvailable > 0 ? (aheadButton ?? button) : count > 0 && remaining === 0 ? '今日计划已完成' : '暂无可学单词'
+  return <article className="plan-card"><WorkspaceIcon name={icon} /><h3>{title}</h3><button type="button" className="plan-card-settings" aria-label={`设置${title}`} title={`设置${title}`} onClick={onSettings}><WorkspaceIcon name="settings" /></button><p>{detail}</p><strong>{remaining}<small>词待完成</small></strong><div className="plan-card-progress"><span className="plan-card-progress-track"><i style={{ width: `${progress}%` }} /></span><span className="plan-card-progress-count">{Math.min(completed, count)}/{count}</span></div><button type="button" disabled={!startable} onClick={onClick}>{label}</button></article>
 }
 
 function QuickAction({ icon, title, detail, onClick }: { icon: 'book' | 'repeat' | 'headphones' | 'card'; title: string; detail: string; onClick: () => void }) {
@@ -827,7 +872,45 @@ function StudyStreak({ days, loading }: { days: number | undefined; loading: boo
   return <section className="study-streak"><h2><WorkspaceIcon name="fire" />连续学习</h2>{days === undefined ? <p className="workspace-data-state" role={loading ? 'status' : undefined}>{loading ? '正在载入连续学习数据。' : '连续学习数据暂不可用。'}</p> : <><strong>{days} <small>天</small></strong><p>继续加油，养成好习惯！</p><div>{['一','二','三','四','五','六','日'].map((day, index) => <span key={day}><small>{day}</small><i className={index < Math.min(7, days) ? 'complete' : ''}>{index < Math.min(7, days) ? '✓' : ''}</i></span>)}</div></>}</section>
 }
 
-function StudySettingsDialog({ section, preferences, shortcuts, pronunciationPreferences, wordCount, onChange, onShortcutsChange, onPronunciationChange, onClose }: { section: SettingsSection; preferences: WordbookStudyPreferences; shortcuts: StudyShortcutPreferences; pronunciationPreferences: PronunciationPreferences; wordCount: number; onChange: (next: WordbookStudyPreferences) => void; onShortcutsChange: (next: StudyShortcutPreferences) => void; onPronunciationChange: (next: PronunciationPreferences) => void; onClose: () => void }) {
+const REVIEW_SCHEDULE_FIELDS: Array<{ key: keyof ReviewSchedule; label: string; detail: string }> = [
+  { key: 'learningDays', label: '初识后复习', detail: '第一次完成新词学习后的间隔' },
+  { key: 'familiarDays', label: '熟悉后复习', detail: '通过单词卡后的基础间隔' },
+  { key: 'masteredDays', label: '掌握后复习', detail: '完成听写后的基础间隔' },
+  { key: 'expertDays', label: '精通后复习', detail: '进入长期记忆后的基础间隔' },
+  { key: 'lapseDays', label: '答错后复习', detail: '遗忘或拼写错误后的短期回访' },
+  { key: 'maxDays', label: '最长间隔', detail: '连续答对时不会超过该间隔' },
+]
+
+type StudySettingsDialogProps = {
+  section: SettingsSection
+  preferences: WordbookStudyPreferences
+  shortcuts: StudyShortcutPreferences
+  pronunciationPreferences: PronunciationPreferences
+  reviewSchedule: ReviewSchedule
+  wordCount: number
+  onChange: (next: WordbookStudyPreferences) => void
+  onShortcutsChange: (next: StudyShortcutPreferences) => void
+  onPronunciationChange: (next: PronunciationPreferences) => void
+  onReviewScheduleSave: (next: ReviewSchedule) => Promise<boolean>
+  onClose: () => void
+}
+
+function StudySettingsDialog({
+  section,
+  preferences,
+  shortcuts,
+  pronunciationPreferences,
+  reviewSchedule,
+  wordCount,
+  onChange,
+  onShortcutsChange,
+  onPronunciationChange,
+  onReviewScheduleSave,
+  onClose,
+}: StudySettingsDialogProps) {
+  const [scheduleDraft, setScheduleDraft] = useState<ReviewSchedule>(() => structuredClone(reviewSchedule))
+  const [scheduleError, setScheduleError] = useState('')
+  const [scheduleSaving, setScheduleSaving] = useState(false)
   useEffect(() => {
     const previousOverflow = document.body.style.overflow
     document.body.style.overflow = 'hidden'
@@ -853,6 +936,28 @@ function StudySettingsDialog({ section, preferences, shortcuts, pronunciationPre
     ...preferences,
     plan: { ...preferences.plan, [key]: Math.max(0, Math.min(999, Math.round(value || 0))) },
   })
+  const updateReviewSchedule = (key: keyof ReviewSchedule, value: number) => {
+    setScheduleDraft((current) => ({
+      ...current,
+      [key]: Math.max(0, Math.min(3650, Math.round(value || 0))),
+    }))
+    setScheduleError('')
+  }
+  const finish = async () => {
+    if (section !== 'plan' || sameReviewSchedule(scheduleDraft, reviewSchedule)) {
+      onClose()
+      return
+    }
+    const parsed = parseReviewSchedule(scheduleDraft)
+    if (!parsed) {
+      setScheduleError('各间隔需为 1–3650 天，并满足：初识 ≤ 熟悉 ≤ 掌握 ≤ 精通 ≤ 最长间隔，答错回访 ≤ 最长间隔。')
+      return
+    }
+    setScheduleSaving(true)
+    const saved = await onReviewScheduleSave(parsed)
+    setScheduleSaving(false)
+    if (saved) onClose()
+  }
   const updateMode = (key: keyof DictationDisplayPreferences, value: boolean | 'zh' | 'en') => {
     if (section === 'plan' || section === 'pronunciation' || section === 'shortcuts') return
     onChange({
@@ -871,7 +976,21 @@ function StudySettingsDialog({ section, preferences, shortcuts, pronunciationPre
       {section === 'plan' ? <div className="study-plan-settings">
         <label><span><strong>每日新词</strong><small>计划学习的未学习单词数</small></span><input type="number" min="0" max="999" inputMode="numeric" value={preferences.plan.newWords} onChange={(event) => updatePlan('newWords', Number(event.target.value))} /><em>词</em></label>
         <label><span><strong>每日听写</strong><small>每轮听写抽取的单词数</small></span><input type="number" min="0" max="999" inputMode="numeric" value={preferences.plan.dictation} onChange={(event) => updatePlan('dictation', Number(event.target.value))} /><em>词</em></label>
-        <p className="study-settings-note">当前词本共 {wordCount} 词。页面会自动按未学习、待复习和可用词数缩减计划，不会显示超过词本容量的任务。</p>
+        <section className="review-schedule-settings" aria-labelledby="review-schedule-title">
+          <header>
+            <span><strong id="review-schedule-title">遗忘曲线复习方案</strong><small>{isDefaultReviewSchedule(scheduleDraft) ? '当前为默认方案' : '当前为自定义方案'}</small></span>
+            <button type="button" disabled={scheduleSaving || isDefaultReviewSchedule(scheduleDraft)} onClick={() => { setScheduleDraft(structuredClone(DEFAULT_REVIEW_SCHEDULE)); setScheduleError('') }}>恢复默认</button>
+          </header>
+          <div>
+            {REVIEW_SCHEDULE_FIELDS.map((field) => <label key={field.key}>
+              <span><strong>{field.label}</strong><small>{field.detail}</small></span>
+              <input type="number" min="1" max="3650" inputMode="numeric" value={scheduleDraft[field.key]} onChange={(event) => updateReviewSchedule(field.key, Number(event.target.value))} />
+              <em>天</em>
+            </label>)}
+          </div>
+          {scheduleError && <p className="review-schedule-error" role="alert">{scheduleError}</p>}
+        </section>
+        <p className="study-settings-note">默认采用 1 / 3 / 7 / 21 天的渐进间隔。页面会根据答题结果自适应延长或缩短，并按未学习、待复习和可用词数调整任务。当前词本共 {wordCount} 词。</p>
       </div> : section === 'pronunciation' ? <div className="study-mode-settings">
         <fieldset><legend>默认英语口音</legend><div className="meaning-preference">
           <button type="button" className={pronunciationPreferences.accent === 'gb' ? 'selected' : ''} onClick={() => onPronunciationChange({ accent: 'gb' })}>英式发音</button>
@@ -894,7 +1013,7 @@ function StudySettingsDialog({ section, preferences, shortcuts, pronunciationPre
           <SettingToggle label="标出错字母" detail="用红色下划线标记输入中位置错误的字母" checked={preferences.modes.dictation.underlineMistakes} onChange={(value) => updateMode('underlineMistakes', value)} />
         </>}
       </div>}
-      <footer><Button onClick={onClose}>完成</Button></footer>
+      <footer><Button disabled={scheduleSaving} onClick={() => { void finish() }}>{scheduleSaving ? '保存中…' : '完成'}</Button></footer>
     </section>
   </div>
 }
@@ -932,7 +1051,10 @@ function ShortcutSettings({ value, onChange }: { value: StudyShortcutPreferences
   </div>
 }
 
-function StudySessionDialog({ book, mode, preferences, shortcuts, accent, reviewAheadCount = 0, onContinueAhead, onClose }: { book: WorkspaceBook; mode: StudyMode; preferences: StudyDisplayPreferences & Partial<DictationDisplayPreferences>; shortcuts: StudyShortcutPreferences; accent: EnglishAccent; reviewAheadCount?: number; onContinueAhead?: () => void; onClose: () => void }) {
+function StudySessionDialog({ book, mode, preferences, shortcuts, accent, reviewAheadCount = 0, onContinueAhead, onProgressCommitted, onClose }: { book: WorkspaceBook; mode: StudyMode; preferences: StudyDisplayPreferences & Partial<DictationDisplayPreferences>; shortcuts: StudyShortcutPreferences; accent: EnglishAccent; reviewAheadCount?: number; onContinueAhead?: () => void; onProgressCommitted?: () => void; onClose: () => void }) {
+  // The open session owns a fixed deck. Background progress refreshes must not replace or empty it
+  // while the learner is midway through the round.
+  const [sessionBook] = useState(book)
   const guardedCloseRef = useRef<() => void>(onClose)
   const requestClose = useCallback(() => guardedCloseRef.current(), [])
   const registerCloseGuard = useCallback((handler: () => void) => { guardedCloseRef.current = handler }, [])
@@ -952,21 +1074,25 @@ function StudySessionDialog({ book, mode, preferences, shortcuts, accent, review
   return <div className="workspace-modal-backdrop study-session-backdrop" role="presentation">
     <section className="workspace-study-modal" role="dialog" aria-modal="true" aria-label={`${mode === 'new' ? '新词学习' : mode === 'review' ? '复习巩固' : '听写训练'}悬浮窗口`}>
       <button type="button" className="workspace-modal-close session-close" aria-label="关闭学习窗口" onClick={requestClose}>×</button>
-      <WordbookStudyMode book={book} mode={mode} preferences={preferences} shortcuts={shortcuts} accent={accent} reportEnabled reviewAheadCount={reviewAheadCount} onContinueAhead={onContinueAhead} onExit={onClose} registerCloseGuard={registerCloseGuard} />
+      <WordbookStudyMode book={sessionBook} mode={mode} preferences={preferences} shortcuts={shortcuts} accent={accent} reportEnabled reviewAheadCount={reviewAheadCount} onContinueAhead={onContinueAhead} onProgressCommitted={onProgressCommitted} onExit={onClose} registerCloseGuard={registerCloseGuard} />
     </section>
   </div>
 }
 
-function WordbookStudyMode({ book, mode, preferences, shortcuts, accent, reportEnabled, reviewAheadCount = 0, onContinueAhead, onExit, registerCloseGuard }: { book: WorkspaceBook; mode: StudyMode; preferences: StudyDisplayPreferences & Partial<DictationDisplayPreferences>; shortcuts: StudyShortcutPreferences; accent: EnglishAccent; reportEnabled: boolean; reviewAheadCount?: number; onContinueAhead?: () => void; onExit: () => void; registerCloseGuard?: (handler: () => void) => void }) {
+function WordbookStudyMode({ book, mode, preferences, shortcuts, accent, reportEnabled, reviewAheadCount = 0, onContinueAhead, onProgressCommitted, onExit, registerCloseGuard }: { book: WorkspaceBook; mode: StudyMode; preferences: StudyDisplayPreferences & Partial<DictationDisplayPreferences>; shortcuts: StudyShortcutPreferences; accent: EnglishAccent; reportEnabled: boolean; reviewAheadCount?: number; onContinueAhead?: () => void; onProgressCommitted?: () => void; onExit: () => void; registerCloseGuard?: (handler: () => void) => void }) {
   const api = getWorkspaceApi()
   const pendingReports = useRef<Set<Promise<unknown>>>(new Set())
   const reportChain = useRef<Promise<unknown>>(Promise.resolve())
   const enqueueReport = useCallback((operation: () => Promise<unknown>) => {
-    const promise = reportChain.current.then(operation).catch(() => undefined)
+    const promise = reportChain.current.then(async () => {
+      const result = await operation()
+      onProgressCommitted?.()
+      return result
+    }).catch(() => undefined)
     reportChain.current = promise
     pendingReports.current.add(promise)
     void promise.finally(() => pendingReports.current.delete(promise))
-  }, [])
+  }, [onProgressCommitted])
   const reportVerdict = useCallback((word: string, verdict: 'know' | 'unknown') => {
     if (!reportEnabled || !api) return
     const event = mode === 'new'
@@ -989,7 +1115,7 @@ function WordbookStudyMode({ book, mode, preferences, shortcuts, accent, reportE
   useEffect(() => {
     registerCloseGuard?.(() => { void exitAfterReports() })
   }, [exitAfterReports, registerCloseGuard])
-  const flashcards = useFlashcardSession(book.entries, reportVerdict, reportMastered, mode === 'new' ? 3 : 1)
+  const flashcards = useFlashcardSession(book.entries, reportVerdict, reportMastered)
   const dictation = useDictationSession(book.entries, reportGrade)
   const spokenItem = mode === 'dictation' ? dictation.current : flashcards.current
   const { pronounce, stop } = usePronounce(spokenItem?.word ?? '', mode === 'dictation' ? .78 : .85, accent)
@@ -1021,11 +1147,11 @@ function WordbookStudyMode({ book, mode, preferences, shortcuts, accent, reportE
   if (book.entries.length === 0) return <section className="workspace-study"><StudyHeader book={book} mode={mode} onExit={() => void exitAfterReports()} /><EmptyState title={`暂无可用于${modeTitle}的单词`} body={emptyBody} action={<Button onClick={() => void exitAfterReports()}>关闭窗口</Button>} /></section>
 
   if (mode !== 'dictation') {
-    return <section className="workspace-study"><StudyHeader book={book} mode={mode} onExit={() => void exitAfterReports()} />{flashcards.done ? <div className="workspace-session-summary"><p>本轮{modeTitle}完成</p><h2>认识 <strong>{flashcards.knownCount}</strong> 词，共 {flashcards.totalCount} 词</h2><p>{flashcards.unknownCount ? `${flashcards.unknownCount} 个词已标记为不认识，可稍后继续复习。` : '这一轮表现很好，继续保持。'}</p><div><Button onClick={flashcards.restart}>再来一轮</Button>{mode === 'review' && onContinueAhead && reviewAheadCount > 0 && <Button onClick={onContinueAhead}>继续复习未到期的 {reviewAheadCount} 词</Button>}<Button variant="secondary" onClick={() => void exitAfterReports()}>关闭窗口</Button></div></div> :<><div className="workspace-study-progress"><span>{modeTitle}</span><strong>{flashcards.reviewedCount} / {flashcards.totalCount}</strong></div>{flashcards.current && <Flashcard item={flashcards.current} flipped={flashcards.flipped} onFlip={flashcards.flip} onMastered={flashcards.markMastered} preferences={preferences} />}<FlashcardControls flipped={flashcards.flipped} onFlip={flashcards.flip} onKnow={flashcards.markKnown} onUnknown={flashcards.markUnknown} recognitionProgress={mode === 'new' ? { current: flashcards.currentRecognitionStreak, required: 3 } : undefined} /><ShortcutHint shortcuts={[{ keys: shortcutLabel(shortcuts.unknown), action: '不认识' }, { keys: shortcutLabel(shortcuts.pronounce), action: '发音' }, { keys: shortcutLabel(shortcuts.known), action: '认识' }, { keys: shortcutLabel(shortcuts.flip), action: '翻面' }]} /></>}</section>
+    return <section className="workspace-study"><StudyHeader book={book} mode={mode} onExit={() => void exitAfterReports()} />{flashcards.done ? <div className="workspace-session-summary"><p>本轮{modeTitle}完成</p><h2>认识 <strong>{flashcards.knownCount}</strong> 词，共 {flashcards.totalCount} 词</h2><p>{flashcards.unknownCount ? `${flashcards.unknownCount} 个词本轮曾标为不认识，后续会按计划继续复习。` : '这一轮表现很好，继续保持。'}</p><div><Button onClick={flashcards.restart}>再来一轮</Button>{mode === 'review' && onContinueAhead && reviewAheadCount > 0 && <Button onClick={onContinueAhead}>继续复习未到期的 {reviewAheadCount} 词</Button>}<Button variant="secondary" onClick={() => void exitAfterReports()}>关闭窗口</Button></div></div> :<><div className="workspace-study-progress"><span>{modeTitle}</span><strong>已完成 {flashcards.reviewedCount} / {flashcards.totalCount}</strong></div>{flashcards.current && <Flashcard item={flashcards.current} flipped={flashcards.flipped} onFlip={flashcards.flip} onMastered={flashcards.markMastered} preferences={preferences} />}<FlashcardControls flipped={flashcards.flipped} onFlip={flashcards.flip} onKnow={flashcards.markKnown} onUnknown={flashcards.markUnknown} nextReviewDays={mode === 'new' ? book.reviewSchedule.learningDays : undefined} /><ShortcutHint shortcuts={[{ keys: shortcutLabel(shortcuts.unknown), action: '不认识' }, { keys: shortcutLabel(shortcuts.pronounce), action: '发音' }, { keys: shortcutLabel(shortcuts.known), action: '认识' }, { keys: shortcutLabel(shortcuts.flip), action: '翻面' }]} /></>}</section>
   }
 
   const lastAnswer = dictation.answers[dictation.answers.length - 1]
-  return <section className="workspace-study"><StudyHeader book={book} mode={mode} onExit={() => void exitAfterReports()} />{dictation.phase === 'summary' ? <div className="workspace-session-summary"><DictationSummary total={dictation.deck.length} correct={dictation.correctCount} wrong={dictation.wrongDeck} attempts={dictation.attemptCount} incorrect={dictation.incorrectCount} onRetryAll={dictation.retryAll} onRetryWrong={dictation.retryWrong} /><Button variant="secondary" onClick={() => void exitAfterReports()}>关闭窗口</Button></div> : <><div className="workspace-study-progress"><span>听写训练</span><strong>已过关 {dictation.passedCount} / {dictation.deck.length}</strong></div>{dictation.current && <DictationPrompt item={dictation.current} answer={dictation.answer} onAnswerChange={dictation.setAnswer} onSubmit={dictation.submit} onNext={dictation.next} onPlay={pronounce} phase={dictation.phase} grade={dictation.phase === 'feedback' ? lastAnswer?.grade ?? null : null} error={dictation.inputError} isLast={dictation.isLast} currentStreak={dictation.currentStreak} requiredStreak={dictation.requiredStreak} preferences={preferences as DictationDisplayPreferences} />}<ShortcutHint shortcuts={[{ keys: shortcutLabel(shortcuts.dictationPronounce), action: '播放发音' }, { keys: 'Enter', action: dictation.phase === 'prompt' ? '提交' : '继续' }]} /></>}</section>
+  return <section className="workspace-study"><StudyHeader book={book} mode={mode} onExit={() => void exitAfterReports()} />{dictation.phase === 'summary' ? <div className="workspace-session-summary"><DictationSummary total={dictation.deck.length} correct={dictation.correctCount} wrong={dictation.wrongDeck} attempts={dictation.attemptCount} incorrect={dictation.incorrectCount} meaningPreference={preferences.meaningPreference} onRetryAll={dictation.retryAll} onRetryWrong={dictation.retryWrong} /><Button variant="secondary" onClick={() => void exitAfterReports()}>关闭窗口</Button></div> : <><div className="workspace-study-progress"><span>听写训练</span><strong>已过关 {dictation.passedCount} / {dictation.deck.length}</strong></div>{dictation.current && <DictationPrompt item={dictation.current} answer={dictation.answer} onAnswerChange={dictation.setAnswer} onSubmit={dictation.submit} onNext={dictation.next} onPlay={pronounce} phase={dictation.phase} grade={dictation.phase === 'feedback' ? lastAnswer?.grade ?? null : null} error={dictation.inputError} isLast={dictation.isLast} currentStreak={dictation.currentStreak} requiredStreak={dictation.requiredStreak} preferences={preferences as DictationDisplayPreferences} />}<ShortcutHint shortcuts={[{ keys: shortcutLabel(shortcuts.dictationPronounce), action: '播放发音' }, { keys: 'Enter', action: dictation.phase === 'prompt' ? '提交' : '继续' }]} /></>}</section>
 }
 
 function StudyHeader({ book, mode, onExit }: { book: WorkspaceBook; mode: StudyMode; onExit: () => void }) {

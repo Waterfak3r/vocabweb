@@ -50,6 +50,11 @@
   gap: 0.9rem;
 }
 
+.meaning-empty {
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
 .meaning-item {
   display: flex;
   align-items: flex-start;

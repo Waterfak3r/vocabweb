@@ -1,4 +1,5 @@
 import type { WordbookItem } from '../../domain/types'
+import { firstAvailableMeaning, type MeaningLanguagePreference } from '../../domain/meaningSelection'
 import { Button } from '../ui/Button'
 
 export type DictationSummaryProps = {
@@ -7,6 +8,7 @@ export type DictationSummaryProps = {
   wrong: WordbookItem[]
   attempts?: number
   incorrect?: number
+  meaningPreference?: MeaningLanguagePreference
   onRetryAll: () => void
   onRetryWrong: () => void
 }
@@ -17,6 +19,7 @@ export function DictationSummary({
   wrong,
   attempts = total,
   incorrect = wrong.length,
+  meaningPreference = 'zh',
   onRetryAll,
   onRetryWrong,
 }: DictationSummaryProps) {
@@ -32,16 +35,19 @@ export function DictationSummary({
         <div className="dictation-wrong">
           <p className="marginal">错词</p>
           <ul className="dictation-wrong-list">
-            {wrong.map((item) => (
-              <li className="dictation-wrong-row" key={item.id}>
-                <span className="dictation-wrong-word">{item.word}</span>
-                {item.meanings[0] && (
+            {wrong.map((item) => {
+              const meaning = firstAvailableMeaning(item, meaningPreference)
+              return (
+                <li className="dictation-wrong-row" key={item.id}>
+                  <span className="dictation-wrong-word">{item.word}</span>
+                  {meaning && (
                   <span className="dictation-wrong-gloss">
-                    {item.meanings[0].definition}
+                    {meaning.definition}
                   </span>
-                )}
-              </li>
-            ))}
+                  )}
+                </li>
+              )
+            })}
           </ul>
         </div>
       )}

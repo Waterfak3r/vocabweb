@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { deriveLocalStudySummary, mostRecentWordbook, summarizeMyWordbooks } from './studyApi'
+import { DEFAULT_REVIEW_SCHEDULE } from './reviewSchedule'
 import type { MyWordbook } from './workspaceApi'
 import type { WordbookItem } from '../domain/types'
 
@@ -15,6 +16,7 @@ function book(overrides: Partial<MyWordbook> & { id: string; updatedAt: string }
       mastered: 0, learning: 0, review: 0, unstudied: 0, percent: 0,
       levels: { l0: 0, l1: 0, l2: 0, l3: 0, l4: 0 },
     },
+    reviewSchedule: overrides.reviewSchedule ?? DEFAULT_REVIEW_SCHEDULE,
   }
 }
 

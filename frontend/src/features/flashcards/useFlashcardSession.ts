@@ -6,7 +6,7 @@ export type FlashcardSession = {
   /** Cards still to review (unknowns re-queue at the end) */
   current: WordbookItem | undefined
   flipped: boolean
-  /** 1-based position within the original deck */
+  /** Cards completed in this round. A retry does not inflate progress. */
   reviewedCount: number
   /** Increments after every verdict, including re-queued appearances. */
   appearanceIndex: number
@@ -14,8 +14,6 @@ export type FlashcardSession = {
   knownCount: number
   unknownCount: number
   done: boolean
-  /** Consecutive recognition passes already earned for the current new word. */
-  currentRecognitionStreak: number
   flip: () => void
   markKnown: () => void
   markUnknown: () => void
@@ -31,30 +29,29 @@ export type FlashcardVerdictReporter = (
 
 export type FlashcardMasteredReporter = (word: string) => void
 
-export function advanceRecognition(current: number, verdict: FlashcardVerdict, required = 3) {
-  if (verdict === 'unknown') return { streak: 0, completed: false }
-  const streak = Math.min(required, current + 1)
-  return { streak, completed: streak >= required }
+export function nextQueueAfterVerdict<T>(queue: readonly T[], verdict: FlashcardVerdict): T[] {
+  if (!queue.length) return []
+  return verdict === 'know'
+    ? queue.slice(1)
+    : [...queue.slice(1), queue[0]!]
 }
 
 /**
  * Session-only flashcard queue:
- * 掌握 removes the card; 不熟 sends it to the back of the queue.
+ * 认识 completes the card once; 掌握 removes it; 不认识 sends it to the back of the queue.
  * A verdict can be made from either face; flipping is a learner aid, not a gate.
  */
 export function useFlashcardSession(
-  items: readonly (WordbookItem & { recognitionStreak?: 0 | 1 | 2 })[],
+  items: readonly WordbookItem[],
   onVerdict?: FlashcardVerdictReporter,
   onMastered?: FlashcardMasteredReporter,
-  requiredRecognitions = 1,
 ): FlashcardSession {
   const [queue, setQueue] = useState<WordbookItem[]>(() => shuffled(items))
   const [flipped, setFlipped] = useState(false)
   const [knownIds, setKnownIds] = useState<string[]>([])
   const [unknownIds, setUnknownIds] = useState<string[]>([])
   const [reviewedCount, setReviewedCount] = useState(0)
-  const initialStreaks = () => Object.fromEntries(items.map((item) => [item.id, item.recognitionStreak ?? 0]))
-  const [recognitionStreaks, setRecognitionStreaks] = useState<Record<string, number>>(initialStreaks)
+  const [appearanceIndex, setAppearanceIndex] = useState(0)
 
   const totalCount = items.length
   const current = queue[0]
@@ -64,48 +61,37 @@ export function useFlashcardSession(
 
   const markKnown = useCallback(() => {
     if (!current) return
-    const { streak: nextStreak, completed } = advanceRecognition(recognitionStreaks[current.id] ?? 0, 'know', requiredRecognitions)
-    setRecognitionStreaks((streaks) => ({ ...streaks, [current.id]: nextStreak }))
-    if (completed) {
-      setKnownIds((ids) => ids.includes(current.id) ? ids : [...ids, current.id])
-      setUnknownIds((ids) => ids.filter((id) => id !== current.id))
-      setQueue((q) => q.slice(1))
-    } else {
-      setQueue((q) => [...q.slice(1), q[0]])
-    }
+    setKnownIds((ids) => ids.includes(current.id) ? ids : [...ids, current.id])
+    setQueue((q) => nextQueueAfterVerdict(q, 'know'))
     setReviewedCount((count) => count + 1)
+    setAppearanceIndex((index) => index + 1)
     setFlipped(false)
     try {
       onVerdict?.(current.word, 'know')
     } catch {
       // Reporting learning activity must never interrupt the card session.
     }
-  }, [current, onVerdict, recognitionStreaks, requiredRecognitions])
+  }, [current, onVerdict])
 
   const markUnknown = useCallback(() => {
     if (!current) return
     setUnknownIds((ids) => (ids.includes(current.id) ? ids : [...ids, current.id]))
-    setRecognitionStreaks((streaks) => ({ ...streaks, [current.id]: 0 }))
-    // Re-queue at the end; don't advance the counter — we'll see it again.
-    setQueue((q) => [...q.slice(1), q[0]])
-    setReviewedCount((count) => Math.min(count + 1, totalCount))
+    setQueue((q) => nextQueueAfterVerdict(q, 'unknown'))
+    setAppearanceIndex((index) => index + 1)
     setFlipped(false)
     try {
       onVerdict?.(current.word, 'unknown')
     } catch {
       // Reporting learning activity must never interrupt the card session.
     }
-  }, [current, totalCount, onVerdict])
+  }, [current, onVerdict])
 
   const markMastered = useCallback(() => {
     if (!current || !flipped) return
-    // Remove the card outright — no requeue, and it stays out of the known/unknown
-    // tallies — but it still advances the reviewed counter. A card the user first
-    // marked 不熟 must leave that tally too, or the summary would claim there is
-    // still something to review.
-    setUnknownIds((ids) => ids.filter((id) => id !== current.id))
+    // Remove the card outright — no requeue, and it stays out of the known tally.
     setQueue((q) => q.slice(1))
     setReviewedCount((count) => count + 1)
+    setAppearanceIndex((index) => index + 1)
     setFlipped(false)
     try {
       onMastered?.(current.word)
@@ -120,26 +106,25 @@ export function useFlashcardSession(
     setKnownIds([])
     setUnknownIds([])
     setReviewedCount(0)
-    setRecognitionStreaks(initialStreaks())
+    setAppearanceIndex(0)
   }, [items])
 
   return useMemo(
     () => ({
       current,
       flipped,
-      reviewedCount: done ? totalCount : Math.min(reviewedCount + 1, totalCount),
-      appearanceIndex: reviewedCount,
+      reviewedCount,
+      appearanceIndex,
       totalCount,
       knownCount: knownIds.length,
       unknownCount: unknownIds.length,
       done,
-      currentRecognitionStreak: current ? recognitionStreaks[current.id] ?? 0 : 0,
       flip,
       markKnown,
       markUnknown,
       markMastered,
       restart,
     }),
-    [current, flipped, reviewedCount, totalCount, knownIds.length, unknownIds.length, done, recognitionStreaks, flip, markKnown, markUnknown, markMastered, restart],
+    [current, flipped, reviewedCount, appearanceIndex, totalCount, knownIds.length, unknownIds.length, done, flip, markKnown, markUnknown, markMastered, restart],
   )
 }

@@ -33,7 +33,7 @@ type Props = {
   saving?: boolean
   onClose: () => void
   onSave: (id: string, patch: WordbookWordPatch) => Promise<void>
-  /** 标熟: marks the word 精通 (L4) and stops it appearing in study decks. Absent -> button hidden. */
+  /** 标熟: marks the word 精通 (L4); adaptive long-term review can still schedule it later. */
   onMarkKnown?: (id: string) => Promise<void>
   onBatch: (action: BatchWordAction, ids: string[]) => Promise<BatchWordResult>
 }

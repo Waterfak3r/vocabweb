@@ -154,3 +154,68 @@ describe('WorkspaceApi batch word actions', () => {
     )
   })
 })
+
+describe('WorkspaceApi adaptive review schedule', () => {
+  it('preserves interval and due metadata and rejects malformed schedules', async () => {
+    const word = {
+      id: 'word-1',
+      word: 'resilient',
+      phonetic: '/rɪˈzɪliənt/',
+      addedAt: '2026-01-01T09:00:00.000Z',
+      source: 'user',
+      meanings: [],
+      status: 'review',
+      level: 2,
+      recognitionStreak: 0,
+      reviewIntervalDays: 7,
+      nextReviewAt: '2026-01-12T09:00:00.000Z',
+      lastStudiedAt: '2026-01-05T09:00:00.000Z',
+    }
+    const fetch = vi.fn<FetchLike>()
+      .mockResolvedValueOnce(new Response(JSON.stringify([word])))
+      .mockResolvedValueOnce(new Response(JSON.stringify([{ ...word, reviewIntervalDays: -1 }])))
+    const api = new WorkspaceApi('https://api.example.test/', { fetch, clientId: () => 'learner' })
+
+    await expect(api.listWords('my-book')).resolves.toEqual([
+      expect.objectContaining({
+        level: 2,
+        reviewIntervalDays: 7,
+        nextReviewAt: '2026-01-12T09:00:00.000Z',
+      }),
+    ])
+    await expect(api.listWords('my-book')).rejects.toThrow('word list response is invalid')
+  })
+
+  it('sends and parses a per-wordbook review plan', async () => {
+    const reviewSchedule = {
+      learningDays: 2,
+      familiarDays: 5,
+      masteredDays: 10,
+      expertDays: 30,
+      lapseDays: 2,
+      maxDays: 45,
+    }
+    const fetch = vi.fn<FetchLike>().mockResolvedValue(new Response(JSON.stringify({
+      id: 'my-book',
+      title: '自定义方案',
+      description: '',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-02T00:00:00.000Z',
+      wordCount: 0,
+      progress: { mastered: 0, learning: 0, review: 0, unstudied: 0, percent: 0, levels: { l0: 0, l1: 0, l2: 0, l3: 0, l4: 0 } },
+      reviewSchedule,
+    })))
+    const api = new WorkspaceApi('https://api.example.test/', { fetch, clientId: () => 'learner' })
+
+    await expect(api.updateMyWordbook('my-book', { reviewSchedule })).resolves.toEqual(
+      expect.objectContaining({ id: 'my-book', reviewSchedule }),
+    )
+    expect(fetch).toHaveBeenCalledWith(
+      new URL('https://api.example.test/api/my/wordbooks/my-book'),
+      expect.objectContaining({
+        method: 'PATCH',
+        body: JSON.stringify({ reviewSchedule }),
+      }),
+    )
+  })
+})

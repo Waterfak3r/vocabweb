@@ -42,16 +42,16 @@ export type CatalogDetail = CatalogCard & { words: StudyWordEntry[]; };
 export interface MyWordbook {
   id: string; title: string; description: string; sourceCatalogId?: string;
   category?: string; createdAt: string; updatedAt: string; deletedAt?: string; words: WordbookWord[];
+  /** Omitted by legacy data; the default adaptive schedule is resolved at read time. */
+  reviewSchedule?: ReviewSchedule;
 }
 export interface MyWordbookCard {
   id: string; title: string; description: string; sourceCatalogId?: string; category?: string; createdAt: string; updatedAt: string;
-  wordCount: number; progress: WordbookProgress;
+  wordCount: number; progress: WordbookProgress; reviewSchedule: ReviewSchedule;
 }
 
 /** Proficiency ladder: 0 未学习 / 1 初识 / 2 熟悉 / 3 掌握 / 4 精通. */
 export type WordLevel = 0 | 1 | 2 | 3 | 4;
-/** An L3 word promotes to L4 only once this window has elapsed since it reached L3. */
-export const FINAL_CHECK_WINDOW_MS = 7 * 86_400_000;
 export const LEVEL_NAMES: Record<WordLevel, string> = { 0: "未学习", 1: "初识", 2: "熟悉", 3: "掌握", 4: "精通" };
 
 export type LearningEventInput =
@@ -59,24 +59,49 @@ export type LearningEventInput =
   | { kind: "flashcard"; wordbookId: string; word?: string; wordId?: string; verdict: "know" | "unknown" }
   | { kind: "dictation"; wordbookId: string; word?: string; wordId?: string; correct: boolean }
   | { kind: "mark"; wordbookId: string; word?: string; wordId?: string; level: WordLevel };
+export interface RetainedReviewState {
+  levelReachedAt?: string;
+  recognitionStreak: 0 | 1 | 2;
+  reviewIntervalDays: number;
+  nextReviewAt?: string;
+  easeFactor: number;
+  relearning: boolean;
+}
 export type LearningEvent =
   | ({ kind: "new"; wordbookId: string; word: string; wordId: string; verdict?: "know" | "unknown"; id: string; occurredAt: string })
   | ({ kind: "flashcard"; wordbookId: string; word: string; wordId: string; verdict: "know" | "unknown"; id: string; occurredAt: string })
   | ({ kind: "dictation"; wordbookId: string; word: string; wordId: string; correct: boolean; id: string; occurredAt: string })
-  | ({ kind: "mark"; wordbookId: string; word: string; wordId: string; level: WordLevel; id: string; occurredAt: string });
+  | ({
+      kind: "mark"; wordbookId: string; word: string; wordId: string; level: WordLevel; id: string; occurredAt: string;
+      /** Internal compacted baseline; never accepted from the public event endpoint or shown as activity. */
+      retainedState?: RetainedReviewState;
+    });
 export type WordLearningStatus = "new" | "learning" | "review" | "mastered";
 export interface LevelCounts { l0: number; l1: number; l2: number; l3: number; l4: number; }
 export interface WordbookProgress { mastered: number; learning: number; review: number; unstudied: number; percent: number; levels: LevelCounts; }
+/** Per-wordbook adaptive review plan. Intervals are positive, monotonic integer day counts. */
+export interface ReviewSchedule {
+  learningDays: number;
+  familiarDays: number;
+  masteredDays: number;
+  expertDays: number;
+  lapseDays: number;
+  maxDays: number;
+}
 /**
  * A stored word plus its replayed proficiency. `levelReachedAt` is omitted while still at L0;
- * `lastStudiedAt` (occurredAt of the last event of ANY kind, mark included) drives the spaced-review
- * due rule and is omitted only when the word has never been touched.
+ * `nextReviewAt` and `reviewIntervalDays` are derived from the event history, so old data gains the
+ * adaptive schedule without a persistence migration.
  */
 export type StudiedWord = WordbookWord & {
   level: WordLevel;
   levelReachedAt?: string;
   lastStudiedAt?: string;
-  /** Consecutive "know" verdicts while the word is still L0. */
+  /** Current adaptive interval. Zero means the word has not entered spaced review yet. */
+  reviewIntervalDays: number;
+  /** Exact next due instant. Omitted only while the word remains unstudied at L0. */
+  nextReviewAt?: string;
+  /** Legacy compatibility field; new learning now enters L1 after one honest recognition. */
   recognitionStreak: 0 | 1 | 2;
 };
 export interface LearningQueueItem extends StudiedWord { status: WordLearningStatus; }
@@ -93,14 +118,14 @@ export interface StudyDashboard {
   calendar: Array<{ date: string; count: number; active: boolean }>;
   week: { newCount: number; reviewCount: number; dictationCount: number; total: number };
   streakDays: number;
-  /** Words currently at L3 whose 7-day window has passed; their next correct dictation reaches L4. */
+  /** Due L3 words whose next successful dictation can complete the final proficiency step. */
   finalCheckDue: number;
   updatedAt: string;
 }
 
 export interface CatalogQuery { q?: string; exam?: CatalogExam; goal?: LearningGoal; sort?: CatalogSort; }
 export interface CreateMyWordbookInput { title: string; description?: string; category?: string; words?: StudyWordEntry[]; }
-export interface UpdateMyWordbookInput { category: string | null; }
+export interface UpdateMyWordbookInput { category?: string | null; reviewSchedule?: ReviewSchedule; }
 /** The uploading account, supplied by the auth layer; drives the author display name and authorUserId. */
 export interface CatalogAuthor { userId: string; username: string; }
 /** Legacy direct upload remains supported; modern uploads reference the private wordbook. */

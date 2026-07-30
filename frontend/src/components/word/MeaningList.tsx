@@ -8,6 +8,7 @@ export type MeaningListProps = {
 
 /** Glosses with a left hairline — marginalia, not cards-in-cards. */
 export function MeaningList({ meanings, showExamples = true }: MeaningListProps) {
+  if (!meanings.length) return <p className="meaning-empty">暂无可用释义</p>
   return (
     <ol className="meaning-list">
       {meanings.map((meaning, index) => (

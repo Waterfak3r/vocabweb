@@ -3,7 +3,7 @@ export type FlashcardControlsProps = {
   onFlip: () => void
   onKnow: () => void
   onUnknown: () => void
-  recognitionProgress?: { current: number; required: number }
+  nextReviewDays?: number
 }
 
 export function FlashcardControls({
@@ -11,7 +11,7 @@ export function FlashcardControls({
   onFlip,
   onKnow,
   onUnknown,
-  recognitionProgress,
+  nextReviewDays,
 }: FlashcardControlsProps) {
   return (
     <div className="study-actions study-verdicts">
@@ -28,9 +28,9 @@ export function FlashcardControls({
         <span>认识</span>
         <i aria-hidden="true" />
       </button>
-      {recognitionProgress && (
-        <p className="study-recognition-progress" aria-live="polite">
-          连续认识 {recognitionProgress.current} / {recognitionProgress.required}
+      {nextReviewDays !== undefined && (
+        <p className="study-next-review-hint">
+          认识后进入「初识」，约 {nextReviewDays} 天后复习
         </p>
       )}
     </div>
