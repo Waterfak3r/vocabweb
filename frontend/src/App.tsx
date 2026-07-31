@@ -7,8 +7,12 @@ import { AppShell } from './components/layout/AppShell'
 const HomePage = lazy(() => import('./pages/HomePage').then((m) => ({ default: m.HomePage })))
 const MarketplacePage = lazy(() => import('./pages/MarketplacePage').then((m) => ({ default: m.MarketplacePage })))
 const MarketplaceDetailPage = lazy(() => import('./pages/MarketplaceDetailPage').then((m) => ({ default: m.MarketplaceDetailPage })))
+const ContributionsInboxPage = lazy(() => import('./pages/ContributionsInboxPage').then((m) => ({ default: m.ContributionsInboxPage })))
+const ContributionDetailPage = lazy(() => import('./pages/ContributionDetailPage').then((m) => ({ default: m.ContributionDetailPage })))
+const RevisionDetailPage = lazy(() => import('./pages/RevisionDetailPage').then((m) => ({ default: m.RevisionDetailPage })))
 const WordbookPage = lazy(() => import('./pages/WordbookPage').then((m) => ({ default: m.WordbookPage })))
 const MessagesPage = lazy(() => import('./pages/MessagesPage').then((m) => ({ default: m.MessagesPage })))
+const AccountPage = lazy(() => import('./pages/AccountPage').then((m) => ({ default: m.AccountPage })))
 const SourcesPage = lazy(() => import('./pages/SourcesPage').then((m) => ({ default: m.SourcesPage })))
 const PrivacyPage = lazy(() => import('./pages/PrivacyPage').then((m) => ({ default: m.PrivacyPage })))
 
@@ -44,9 +48,13 @@ function App() {
         <Route element={<AppShell />}>
           <Route index element={<HomePage />} />
           <Route path="marketplace" element={<MarketplacePage />} />
+          <Route path="marketplace/contributions" element={<ContributionsInboxPage />} />
+          <Route path="marketplace/:id/contributions/:contributionId" element={<ContributionDetailPage />} />
+          <Route path="marketplace/:id/revisions/:revisionId" element={<RevisionDetailPage />} />
           <Route path="marketplace/:id" element={<MarketplaceDetailPage />} />
           <Route path="wordbook" element={<WordbookPage />} />
           <Route path="messages" element={<MessagesPage />} />
+          <Route path="account" element={<AccountPage />} />
           <Route path="sources" element={<SourcesPage />} />
           <Route path="privacy" element={<PrivacyPage />} />
           <Route path="flashcards" element={<Navigate to="/wordbook?mode=flashcards" replace />} />

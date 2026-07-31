@@ -1,4 +1,13 @@
-import { useCallback, useEffect, useState } from 'react'
+import {
+  createContext,
+  createElement,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from 'react'
 import { getWorkspaceApi, type AuthUser } from '../data/workspaceApi'
 import { rotateStudyClientId, setStudyClientId } from '../data/studyApi'
 
@@ -9,6 +18,8 @@ export type UseAuth = {
   register: (username: string, password: string) => Promise<AuthUser>
   logout: () => Promise<void>
 }
+
+const AuthContext = createContext<UseAuth | null>(null)
 
 /** Server confirmation must happen before local identity is separated/reloaded. */
 export async function completeLogout(
@@ -31,7 +42,7 @@ export async function completeLogout(
  * data clientId, which we persist over the local anonymous id and then reload so
  * every consumer re-reads clean state under the account's data home.
  */
-export function useAuth(): UseAuth {
+function useAuthState(): UseAuth {
   const [user, setUser] = useState<AuthUser | null>(null)
   const [loading, setLoading] = useState(true)
 
@@ -98,5 +109,20 @@ export function useAuth(): UseAuth {
     await completeLogout(() => api.logout())
   }, [])
 
-  return { user, loading, login, register, logout }
+  return useMemo(
+    () => ({ user, loading, login, register, logout }),
+    [user, loading, login, register, logout],
+  )
+}
+
+/** One session lookup shared by the header and every routed account surface. */
+export function AuthProvider({ children }: { children: ReactNode }) {
+  const auth = useAuthState()
+  return createElement(AuthContext.Provider, { value: auth }, children)
+}
+
+export function useAuth(): UseAuth {
+  const auth = useContext(AuthContext)
+  if (!auth) throw new Error('useAuth must be used within AuthProvider')
+  return auth
 }

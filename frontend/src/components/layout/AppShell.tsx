@@ -1,5 +1,6 @@
 import { Outlet, useLocation } from 'react-router'
 import { Suspense, useEffect } from 'react'
+import { AuthProvider } from '../../hooks/useAuth'
 import { selectPersistFailed, useWordbook } from '../../data/wordbookStore'
 import { SiteFooter } from './SiteFooter'
 import { SiteHeader } from './SiteHeader'
@@ -16,23 +17,25 @@ export function AppShell() {
   }, [pathname])
 
   return (
-    <div className="app-shell">
-      <a className="skip-link" href="#main-content">
-        跳到主要内容
-      </a>
-      <SiteHeader />
-      {persistFailed && (
-        <p className="storage-warning" role="alert">
-          本地存储不可用，最近的更改不会被保存——请检查浏览器隐私模式或存储空间。
-        </p>
-      )}
-      <main id="main-content" className="site-main" tabIndex={-1}>
-        {/* Inside the shell so header/nav stay visible while a lazy page chunk loads. */}
-        <Suspense fallback={<p className="page-loading">加载中…</p>}>
-          <Outlet />
-        </Suspense>
-      </main>
-      <SiteFooter />
-    </div>
+    <AuthProvider>
+      <div className="app-shell">
+        <a className="skip-link" href="#main-content">
+          跳到主要内容
+        </a>
+        <SiteHeader />
+        {persistFailed && (
+          <p className="storage-warning" role="alert">
+            本地存储不可用，最近的更改不会被保存——请检查浏览器隐私模式或存储空间。
+          </p>
+        )}
+        <main id="main-content" className="site-main" tabIndex={-1}>
+          {/* Inside the shell so header/nav stay visible while a lazy page chunk loads. */}
+          <Suspense fallback={<p className="page-loading">加载中…</p>}>
+            <Outlet />
+          </Suspense>
+        </main>
+        <SiteFooter />
+      </div>
+    </AuthProvider>
   )
 }

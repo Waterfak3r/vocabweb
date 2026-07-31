@@ -4,15 +4,29 @@ import { dirname, resolve } from "node:path";
 import { isValidWordQuery, normalizeWord } from "../words/normalize.js";
 import { isJsonObject } from "./validation.js";
 import {
-  BATCH_SIZE, DEFAULT_WORDBOOK_STUDY_PREFERENCES, RETENTION_MS, card, catalogCard, clone, compactLearningEvents, day, defaultClient,
+  applyCatalogChanges,
+  catalogAtRevision,
+  catalogDiffStats,
+  diffCatalogWords,
+  inverseRevisionAgainstHead,
+  sameCatalogWord,
+  threeWayContribution,
+  validateContributionMerge,
+} from "./collaboration.js";
+import {
+  BATCH_SIZE, DEFAULT_WORDBOOK_STUDY_PREFERENCES, RETENTION_MS, card, catalogCard as buildCatalogCard, clone, compactLearningEvents, day, defaultClient,
   EMPTY, ladderEventLevels, ladderOf, ladderStates, migrate, progress, queueItem, replayLadder, reviewDue, reviewLane, reviewScheduleOf,
   sameMeanings, shiftDay, studiedWord, toCatalogWords, toWordbookWords, visibleTo,
 } from "./ladder.js";
 import type { ClientData, State } from "./ladder.js";
 import type {
-  AccountUser, BatchWordInput, BatchWordResult, CatalogCard, CatalogQuery, CatalogWordbook, CommitImportDraftInput, CreateImportDraftInput, CreateMyWordbookInput,
+  AccountUser, BatchWordInput, BatchWordResult, CatalogAuthor, CatalogCard, CatalogConflict, CatalogContribution, CatalogContributionView,
+  CatalogQuery, CatalogRevision, CatalogRevisionSummary, CatalogRevisionView, CatalogWordChange, CatalogWordbook,
+  CommitImportDraftInput, ContributionMutationResult, ContributionPreview, CreateCatalogContributionInput, CreateImportDraftInput, CreateMyWordbookInput,
+  CursorPage, CursorQuery,
   ImportDraft, ImportDraftEntry, LearningEvent, LearningEventInput, LearningQueueItem, MyWordbook, MyWordbookCard,
-  MeaningPreference, ResolvedImportDraftEntry, ReviewSchedule, StartStudyRoundInput, StudyChoiceOption, StudyDashboard, StudyRound, StudyRoundAnswerInput, StudyRoundMutationResult,
+  MeaningPreference, ResolveCatalogContributionInput, ResolvedImportDraftEntry, RevertPreview, RevertRevisionInput, ReviewSchedule, RevisionMutationResult,
+  StartStudyRoundInput, StudyChoiceOption, StudyDashboard, StudyRound, StudyRoundAnswerInput, StudyRoundMutationResult,
   StudyRoundTask, StudyRoundTaskOptions, StudyStore, StudyWordEntry, SyncedStudySettings, UpdateCatalogWordbookInput, UpdateMyWordbookInput,
   UpdateStudySettingsInput, UpdateWordInput, UpdateWordResult, UploadCatalogWordbookInput, WordbookStudyPreferences, WordbookWord,
   WordLearningStatus, WordLevel,
@@ -201,6 +215,15 @@ export abstract class BaseStore implements StudyStore {
     user.role = role;
     return clone(user);
   }); }
+  async updateUserPassword(userId: string, passwordHash: string, keepSessionTokenHash: string): Promise<AccountUser | null> { return await this.mutate((state) => {
+    const user = state.users.find((item) => item.id === userId);
+    if (!user) return null;
+    user.passwordHash = passwordHash;
+    state.sessions = state.sessions.filter(
+      (session) => session.userId !== userId || session.tokenHash === keepSessionTokenHash,
+    );
+    return clone(user);
+  }); }
   async exportUserData(userId: string): Promise<unknown | null> { return await this.read((state) => {
     const user = state.users.find((item) => item.id === userId);
     if (!user) return null;
@@ -208,6 +231,10 @@ export abstract class BaseStore implements StudyStore {
       account: { username: user.username, role: user.role, createdAt: user.createdAt },
       collection: clone(this.clientView(state, user.clientId)),
       catalogUploads: clone(state.catalog.filter((book) => book.authorUserId === user.id)),
+      contributions: clone(state.contributions.filter((contribution) => contribution.contributorUserId === user.id)),
+      revisions: clone(state.revisions.filter(
+        (revision) => revision.authorUserId === user.id || revision.committerUserId === user.id,
+      )),
     };
   }); }
   async deleteUser(userId: string): Promise<boolean> { return await this.mutate((state) => {
@@ -221,6 +248,25 @@ export abstract class BaseStore implements StudyStore {
       state.catalog.filter((book) => book.authorUserId === userId || book.ownerClientId === user.clientId).map((book) => book.id),
     );
     state.catalog = state.catalog.filter((book) => !removedCatalogIds.has(book.id));
+    state.revisions = state.revisions.filter((revision) => !removedCatalogIds.has(revision.catalogId));
+    state.contributions = state.contributions.filter((contribution) => {
+      if (removedCatalogIds.has(contribution.catalogId)) return false;
+      if (contribution.contributorUserId !== userId) return true;
+      if (contribution.status !== "merged") return false;
+      delete contribution.contributorUserId;
+      contribution.contributor = "已注销用户";
+      return true;
+    });
+    for (const revision of state.revisions) {
+      if (revision.authorUserId === userId) {
+        delete revision.authorUserId;
+        revision.author = "已注销用户";
+      }
+      if (revision.committerUserId === userId) {
+        delete revision.committerUserId;
+        revision.committer = "已注销用户";
+      }
+    }
     for (const client of Object.values(state.clients)) {
       client.favorites = client.favorites.filter((id) => !removedCatalogIds.has(id));
     }
@@ -351,19 +397,19 @@ export abstract class BaseStore implements StudyStore {
     const client = this.clientView(state, clientId); const q = query.q?.toLowerCase();
     // The public marketplace lists public entries only; unlisted/private stay off the shelves.
     const books = state.catalog.filter((book) => book.visibility === "public" && (!q || `${book.title} ${book.description} ${book.author}`.toLowerCase().includes(q)) && (!query.exam || book.exams.includes(query.exam)) && (!query.goal || book.goals.includes(query.goal)));
-    const ordered = [...books].sort((a, b) => query.sort === "hot" ? b.uses - a.uses : query.sort === "newest" ? b.createdAt.localeCompare(a.createdAt) : query.sort === "rating" ? b.rating - a.rating : b.uses - a.uses);
-    return ordered.map((book) => catalogCard(book, client, clientId, this.favoriteCount(state, book.id)));
+    const ordered = [...books].sort((a, b) => query.sort === "hot" ? b.uses - a.uses : query.sort === "newest" ? b.updatedAt.localeCompare(a.updatedAt) : query.sort === "rating" ? b.rating - a.rating : b.uses - a.uses);
+    return ordered.map((book) => this.catalogCard(state, book, client, clientId));
   }); }
   async listFavorites(clientId: string): Promise<CatalogCard[]> { return await this.read((state) => {
     const client = this.clientView(state, clientId);
     // Keep an already-favorited unlisted entry manageable, while private remains owner-only.
-    return state.catalog.filter((book) => client.favorites.includes(book.id) && (book.visibility !== "private" || book.ownerClientId === clientId)).map((book) => catalogCard(book, client, clientId, this.favoriteCount(state, book.id)));
+    return state.catalog.filter((book) => client.favorites.includes(book.id) && (book.visibility !== "private" || book.ownerClientId === clientId)).map((book) => this.catalogCard(state, book, client, clientId));
   }); }
-  async listUploads(clientId: string): Promise<CatalogCard[]> { return await this.read((state) => { const client = this.clientView(state, clientId); return state.catalog.filter((book) => book.ownerClientId === clientId).map((book) => catalogCard(book, client, clientId, this.favoriteCount(state, book.id))); }); }
+  async listUploads(clientId: string): Promise<CatalogCard[]> { return await this.read((state) => { const client = this.clientView(state, clientId); return state.catalog.filter((book) => book.ownerClientId === clientId).map((book) => this.catalogCard(state, book, client, clientId)); }); }
   async getCatalog(clientId: string, id: string) { return await this.read((state) => {
     const found = state.catalog.find((book) => book.id === id);
     if (!found || !visibleTo(found, clientId)) return null;
-    return { ...catalogCard(found, this.clientView(state, clientId), clientId, this.favoriteCount(state, found.id)), words: clone(found.words) };
+    return { ...this.catalogCard(state, found, this.clientView(state, clientId), clientId), words: clone(found.words) };
   }); }
   async toggleFavorite(clientId: string, id: string): Promise<{ favorited: boolean; favoriteCount: number } | null> { return await this.mutate((state) => {
     const book = state.catalog.find((item) => item.id === id);
@@ -377,45 +423,100 @@ export abstract class BaseStore implements StudyStore {
     const client = this.client(state, clientId); const existing = client.wordbooks.find((book) => !book.deletedAt && book.sourceCatalogId === id);
     if (existing) return { wordbook: card(existing, client.events), created: false };
     this.recordAdoption(source, clientId); const at = this.now().toISOString();
-    const book: MyWordbook = { id: `my-${randomUUID()}`, title: source.title, description: source.description, sourceCatalogId: source.id, createdAt: at, updatedAt: at, words: toWordbookWords(source.words, at) };
+    const book: MyWordbook = {
+      id: `my-${randomUUID()}`,
+      title: source.title,
+      description: source.description,
+      sourceCatalogId: source.id,
+      sourceRevisionId: source.headRevisionId,
+      createdAt: at,
+      updatedAt: at,
+      words: toWordbookWords(source.words, at),
+    };
     client.wordbooks.push(book); return { wordbook: card(book, client.events), created: true };
   }); }
   async uploadCatalog(clientId: string, input: UploadCatalogWordbookInput): Promise<CatalogCard | null> { return await this.mutate((state) => {
     const client = this.client(state, clientId); const source = input.sourceWordbookId ? client.wordbooks.find((item) => item.id === input.sourceWordbookId && !item.deletedAt) : undefined;
     if (input.sourceWordbookId && !source) return null;
     const now = this.now().toISOString();
+    const revisionId = `revision-${randomUUID()}`;
+    const words = source ? toCatalogWords(source.words) : clone(input.words ?? []);
     const book: CatalogWordbook = {
       id: `catalog-${randomUUID()}`,
       title: input.title ?? source?.title ?? "",
       description: input.description ?? source?.description ?? "",
       // An authenticated upload is attributed to its username; anonymous uploads read "匿名".
-      author: input.author?.username ?? "匿名", exams: input.exams ?? [], goals: input.goals ?? [], rating: 0, uses: 0, createdAt: now,
+      author: input.author?.username ?? "匿名", exams: input.exams ?? [], goals: input.goals ?? [], rating: 0, uses: 0, createdAt: now, updatedAt: now,
+      headRevisionId: revisionId,
       visibility: input.visibility ?? "public",
-      shareCode: this.shareCode(state), words: source ? toCatalogWords(source.words) : clone(input.words ?? []), ownerClientId: clientId,
+      shareCode: this.shareCode(state), words, ownerClientId: clientId,
       ...(input.author ? { authorUserId: input.author.userId } : {}),
       ...(source ? { sourceWordbookId: source.id } : {}),
     };
-    state.catalog.push(book); return catalogCard(book, client, clientId, this.favoriteCount(state, book.id));
+    const changes = diffCatalogWords([], words);
+    state.revisions.push({
+      id: revisionId,
+      catalogId: book.id,
+      kind: "initial",
+      message: input.message ?? "首次发布",
+      ...(input.author ? { authorUserId: input.author.userId } : {}),
+      author: input.author?.username ?? "匿名",
+      createdAt: now,
+      changes,
+      stats: catalogDiffStats(changes),
+    });
+    state.catalog.push(book);
+    return this.catalogCard(state, book, client, clientId);
   }); }
   async upsertSeedCatalog(clientId: string, input: UploadCatalogWordbookInput & { seedKey: string; author: { userId: string; username: string } }): Promise<CatalogCard> { return await this.mutate((state) => {
     const client = this.client(state, clientId);
     const existing = state.catalog.find((book) => book.seedKey === input.seedKey);
     if (existing) {
+      const previousWords = clone(existing.words);
+      const nextTitle = input.title ?? existing.title;
+      const nextDescription = input.description ?? existing.description;
+      const nextExams = clone(input.exams ?? []);
+      const nextGoals = clone(input.goals ?? []);
+      const nextWords = clone(input.words ?? []);
+      const metadataChanged = existing.title !== nextTitle
+        || existing.description !== nextDescription
+        || JSON.stringify(existing.exams) !== JSON.stringify(nextExams)
+        || JSON.stringify(existing.goals) !== JSON.stringify(nextGoals);
       existing.title = input.title ?? existing.title;
       existing.description = input.description ?? existing.description;
-      existing.exams = clone(input.exams ?? []);
-      existing.goals = clone(input.goals ?? []);
-      existing.words = clone(input.words ?? []);
+      existing.exams = nextExams;
+      existing.goals = nextGoals;
+      existing.words = nextWords;
       existing.visibility = "public";
       existing.author = input.author.username;
       existing.authorUserId = input.author.userId;
       existing.ownerClientId = clientId;
+      const now = this.now().toISOString();
       const sourceId = `my-seed-${input.seedKey}`;
-      const source = this.upsertSeedSource(client, sourceId, input.title ?? existing.title, input.description ?? existing.description, input.words ?? [], this.now().toISOString());
+      const source = this.upsertSeedSource(client, sourceId, input.title ?? existing.title, input.description ?? existing.description, input.words ?? [], now);
       existing.sourceWordbookId = source.id;
-      return catalogCard(existing, client, clientId, this.favoriteCount(state, existing.id));
+      const changes = diffCatalogWords(previousWords, nextWords);
+      if (metadataChanged || changes.length) {
+        const revision: CatalogRevision = {
+          id: `revision-${randomUUID()}`,
+          catalogId: existing.id,
+          parentRevisionId: existing.headRevisionId,
+          kind: "update",
+          message: input.message ?? "更新词书",
+          authorUserId: input.author.userId,
+          author: input.author.username,
+          createdAt: now,
+          changes,
+          stats: catalogDiffStats(changes),
+        };
+        state.revisions.push(revision);
+        existing.headRevisionId = revision.id;
+        existing.updatedAt = now;
+      }
+      return this.catalogCard(state, existing, client, clientId);
     }
     const now = this.now().toISOString();
+    const revisionId = `revision-${randomUUID()}`;
     const sourceId = `my-seed-${input.seedKey}`;
     const source = this.upsertSeedSource(client, sourceId, input.title ?? "", input.description ?? "", input.words ?? [], now);
     const book: CatalogWordbook = {
@@ -430,6 +531,8 @@ export abstract class BaseStore implements StudyStore {
       rating: 0,
       uses: 0,
       createdAt: now,
+      updatedAt: now,
+      headRevisionId: revisionId,
       visibility: "public",
       shareCode: this.shareCode(state),
       words: clone(input.words ?? []),
@@ -438,15 +541,33 @@ export abstract class BaseStore implements StudyStore {
       legacyUses: 0,
       adopterClientIds: [],
     };
+    const changes = diffCatalogWords([], book.words);
+    state.revisions.push({
+      id: revisionId,
+      catalogId: book.id,
+      kind: "initial",
+      message: input.message ?? "首次发布",
+      authorUserId: input.author.userId,
+      author: input.author.username,
+      createdAt: now,
+      changes,
+      stats: catalogDiffStats(changes),
+    });
     state.catalog.push(book);
-    return catalogCard(book, client, clientId, this.favoriteCount(state, book.id));
+    return this.catalogCard(state, book, client, clientId);
   }); }
   async updateCatalog(clientId: string, id: string, input: UpdateCatalogWordbookInput): Promise<CatalogCard | null> { return await this.mutate((state) => {
     const catalog = state.catalog.find((item) => item.id === id && item.ownerClientId === clientId); if (!catalog) return null;
     const client = this.client(state, clientId);
-    const sourceId = input.sourceWordbookId ?? catalog.sourceWordbookId;
-    const source = sourceId ? client.wordbooks.find((item) => item.id === sourceId && !item.deletedAt) : undefined;
-    if (sourceId && !source) return null;
+    const source = input.sourceWordbookId
+      ? client.wordbooks.find((item) => item.id === input.sourceWordbookId && !item.deletedAt)
+      : undefined;
+    if (input.sourceWordbookId && !source) return null;
+    const previousWords = clone(catalog.words);
+    const previousTitle = catalog.title;
+    const previousDescription = catalog.description;
+    const previousExams = clone(catalog.exams);
+    const previousGoals = clone(catalog.goals);
     if (source) { catalog.words = toCatalogWords(source.words); catalog.sourceWordbookId = source.id; }
     if (input.title !== undefined) catalog.title = input.title;
     if (input.description !== undefined) catalog.description = input.description;
@@ -455,7 +576,45 @@ export abstract class BaseStore implements StudyStore {
     if (input.visibility !== undefined) catalog.visibility = input.visibility;
     // Going public (or any authenticated edit) re-attributes the entry to the acting account.
     if (input.author !== undefined) { catalog.author = input.author.username; catalog.authorUserId = input.author.userId; }
-    return catalogCard(catalog, client, clientId, this.favoriteCount(state, catalog.id));
+    const changes = diffCatalogWords(previousWords, catalog.words);
+    const metadataChanged = previousTitle !== catalog.title
+      || previousDescription !== catalog.description
+      || JSON.stringify(previousExams) !== JSON.stringify(catalog.exams)
+      || JSON.stringify(previousGoals) !== JSON.stringify(catalog.goals);
+    const snapshotUpdated = input.sourceWordbookId !== undefined || changes.length > 0 || metadataChanged;
+    if (snapshotUpdated) {
+      const at = this.now().toISOString();
+      const revision: CatalogRevision = {
+        id: `revision-${randomUUID()}`,
+        catalogId: catalog.id,
+        parentRevisionId: catalog.headRevisionId,
+        kind: "update",
+        message: input.message ?? "更新词书",
+        ...(input.author ? { authorUserId: input.author.userId } : {}),
+        author: input.author?.username ?? catalog.author,
+        createdAt: at,
+        changes,
+        stats: catalogDiffStats(changes),
+      };
+      state.revisions.push(revision);
+      catalog.headRevisionId = revision.id;
+      catalog.updatedAt = at;
+    }
+    if (catalog.visibility !== "public") {
+      const at = this.now().toISOString();
+      for (const contribution of state.contributions) {
+        if (contribution.catalogId !== catalog.id || contribution.status !== "open") continue;
+        contribution.status = "closed";
+        contribution.updatedAt = at;
+        contribution.handledAt = at;
+        contribution.resolutionNote = "词书已停止公开";
+        if (input.author) {
+          contribution.handledByUserId = input.author.userId;
+          contribution.handledBy = input.author.username;
+        }
+      }
+    }
+    return this.catalogCard(state, catalog, client, clientId);
   }); }
   async importShareCode(clientId: string, shareCode: string): Promise<{ wordbook: MyWordbookCard; created: boolean } | null> {
     // This is intentionally one mutation instead of delegating to direct-id add:
@@ -470,10 +629,333 @@ export abstract class BaseStore implements StudyStore {
       const at = this.now().toISOString();
       const book: MyWordbook = {
         id: `my-${randomUUID()}`, title: source.title, description: source.description,
-        sourceCatalogId: source.id, createdAt: at, updatedAt: at, words: toWordbookWords(source.words, at),
+        sourceCatalogId: source.id, sourceRevisionId: source.headRevisionId,
+        createdAt: at, updatedAt: at, words: toWordbookWords(source.words, at),
       };
       client.wordbooks.push(book);
       return { wordbook: card(book, client.events), created: true };
+    });
+  }
+
+  // --- Catalog collaboration, immutable revisions, and reverts ---
+  async getContributionPreview(clientId: string, userId: string, wordbookId: string): Promise<ContributionPreview | null> {
+    return await this.read((state) => {
+      const result = this.contributionPreview(state, clientId, userId, wordbookId);
+      return result.kind === "ready" ? clone(result.preview) : null;
+    });
+  }
+
+  async createContribution(
+    clientId: string,
+    author: CatalogAuthor,
+    catalogId: string,
+    input: CreateCatalogContributionInput,
+  ): Promise<ContributionMutationResult> {
+    return await this.mutate((state) => {
+      const catalog = state.catalog.find((book) => book.id === catalogId);
+      if (!catalog) return { kind: "not-found" };
+      if (!this.collaborationEnabled(state, catalog)) return { kind: "disabled" };
+      const client = this.client(state, clientId);
+      const source = client.wordbooks.find(
+        (book) => !book.deletedAt && book.sourceCatalogId === catalogId,
+      );
+      if (!source) return { kind: "not-found" };
+      const previewResult = this.contributionPreview(state, clientId, author.userId, source.id);
+      if (previewResult.kind === "disabled") return { kind: "disabled" };
+      if (previewResult.kind !== "ready") return { kind: "not-found" };
+      const preview = previewResult.preview;
+      if (
+        input.expectedHeadRevisionId !== preview.expectedHeadRevisionId
+        || input.expectedSourceUpdatedAt !== preview.expectedSourceUpdatedAt
+      ) {
+        return {
+          kind: "stale",
+          headRevisionId: preview.expectedHeadRevisionId,
+          sourceUpdatedAt: preview.expectedSourceUpdatedAt,
+        };
+      }
+      const duplicate = state.contributions.find(
+        (contribution) => contribution.catalogId === catalogId
+          && contribution.contributorUserId === author.userId
+          && contribution.status === "open",
+      );
+      if (duplicate) return { kind: "duplicate-open", contributionId: duplicate.id };
+      if (!preview.changes.length) return { kind: "empty" };
+      if (preview.changes.length > 500) return { kind: "too-large", count: preview.changes.length };
+      const at = this.now().toISOString();
+      const contribution: CatalogContribution = {
+        id: `contribution-${randomUUID()}`,
+        catalogId,
+        sourceWordbookId: source.id,
+        contributorUserId: author.userId,
+        contributor: author.username,
+        baseRevisionId: preview.baseRevisionId,
+        submittedHeadRevisionId: preview.headRevisionId,
+        title: input.title,
+        description: input.description ?? "",
+        status: "open",
+        changes: clone(preview.changes),
+        stats: catalogDiffStats(preview.changes),
+        createdAt: at,
+        updatedAt: at,
+      };
+      state.contributions.push(contribution);
+      return {
+        kind: "created",
+        contribution: this.contributionView(catalog, contribution, author.userId),
+      };
+    });
+  }
+
+  async listCatalogContributions(
+    clientId: string,
+    userId: string | undefined,
+    catalogId: string,
+    query: CursorQuery,
+  ): Promise<CursorPage<CatalogContributionView> | null> {
+    return await this.read((state) => {
+      const catalog = state.catalog.find((book) => book.id === catalogId);
+      if (!catalog || (catalog.visibility !== "public" && catalog.ownerClientId !== clientId)) return null;
+      const contributions = state.contributions
+        .filter((contribution) => contribution.catalogId === catalogId)
+        .map((contribution) => this.contributionView(catalog, contribution, userId));
+      return this.paginate(contributions, query);
+    });
+  }
+
+  async getCatalogContribution(
+    clientId: string,
+    userId: string | undefined,
+    catalogId: string,
+    contributionId: string,
+  ): Promise<CatalogContributionView | null> {
+    return await this.read((state) => {
+      const catalog = state.catalog.find((book) => book.id === catalogId);
+      const contribution = state.contributions.find(
+        (item) => item.id === contributionId && item.catalogId === catalogId,
+      );
+      if (!catalog || !contribution) return null;
+      const canSee = catalog.visibility === "public"
+        || catalog.ownerClientId === clientId
+        || contribution.contributorUserId === userId;
+      return canSee ? this.contributionView(catalog, contribution, userId) : null;
+    });
+  }
+
+  async mergeContribution(
+    clientId: string,
+    author: CatalogAuthor,
+    catalogId: string,
+    contributionId: string,
+    input: ResolveCatalogContributionInput,
+  ): Promise<ContributionMutationResult> {
+    return await this.mutate((state) => {
+      const catalog = state.catalog.find((book) => book.id === catalogId);
+      const contribution = state.contributions.find(
+        (item) => item.id === contributionId && item.catalogId === catalogId,
+      );
+      if (!catalog || !contribution || contribution.status !== "open") return { kind: "not-found" };
+      if (catalog.authorUserId !== author.userId || catalog.ownerClientId !== clientId) return { kind: "forbidden" };
+      if (!this.collaborationEnabled(state, catalog)) return { kind: "disabled" };
+      if (input.expectedHeadRevisionId && input.expectedHeadRevisionId !== catalog.headRevisionId) {
+        return { kind: "stale", headRevisionId: catalog.headRevisionId };
+      }
+      const validated = validateContributionMerge(catalog.words, contribution.changes);
+      const ownerClient = this.client(state, clientId);
+      const source = ownerClient.wordbooks.find(
+        (book) => book.id === catalog.sourceWordbookId && !book.deletedAt,
+      );
+      if (!source) return { kind: "disabled" };
+      const conflicts = [
+        ...validated.conflicts,
+        ...this.sourceConflicts(source, catalog.words, validated.changes),
+      ];
+      if (conflicts.length) return { kind: "conflict", conflicts };
+
+      const at = this.now().toISOString();
+      catalog.words = applyCatalogChanges(catalog.words, validated.changes);
+      this.applyChangesToSource(ownerClient, source, validated.changes, at);
+      const revision: CatalogRevision = {
+        id: `revision-${randomUUID()}`,
+        catalogId,
+        parentRevisionId: catalog.headRevisionId,
+        kind: "merge",
+        message: contribution.title,
+        ...(contribution.contributorUserId ? { authorUserId: contribution.contributorUserId } : {}),
+        author: contribution.contributor,
+        committerUserId: author.userId,
+        committer: author.username,
+        createdAt: at,
+        changes: clone(validated.changes),
+        stats: catalogDiffStats(validated.changes),
+        contributionId: contribution.id,
+      };
+      state.revisions.push(revision);
+      catalog.headRevisionId = revision.id;
+      catalog.updatedAt = at;
+      contribution.status = "merged";
+      contribution.updatedAt = at;
+      contribution.handledAt = at;
+      contribution.handledByUserId = author.userId;
+      contribution.handledBy = author.username;
+      contribution.mergedRevisionId = revision.id;
+      if (input.resolutionNote) contribution.resolutionNote = input.resolutionNote;
+      return {
+        kind: "updated",
+        contribution: this.contributionView(catalog, contribution, author.userId),
+      };
+    });
+  }
+
+  async closeContribution(
+    clientId: string,
+    author: CatalogAuthor,
+    catalogId: string,
+    contributionId: string,
+    input: ResolveCatalogContributionInput,
+  ): Promise<ContributionMutationResult> {
+    return await this.mutate((state) => {
+      const catalog = state.catalog.find((book) => book.id === catalogId);
+      const contribution = state.contributions.find(
+        (item) => item.id === contributionId && item.catalogId === catalogId,
+      );
+      if (!catalog || !contribution || contribution.status !== "open") return { kind: "not-found" };
+      const owner = catalog.authorUserId === author.userId && catalog.ownerClientId === clientId;
+      const contributor = contribution.contributorUserId === author.userId;
+      if (!owner && !contributor) return { kind: "forbidden" };
+      const at = this.now().toISOString();
+      contribution.status = "closed";
+      contribution.updatedAt = at;
+      contribution.handledAt = at;
+      contribution.handledByUserId = author.userId;
+      contribution.handledBy = author.username;
+      if (input.resolutionNote) contribution.resolutionNote = input.resolutionNote;
+      return {
+        kind: "updated",
+        contribution: this.contributionView(catalog, contribution, author.userId),
+      };
+    });
+  }
+
+  async listCatalogRevisions(
+    clientId: string,
+    userId: string | undefined,
+    catalogId: string,
+    query: CursorQuery,
+  ): Promise<CursorPage<CatalogRevisionView> | null> {
+    return await this.read((state) => {
+      const catalog = state.catalog.find((book) => book.id === catalogId);
+      if (!catalog || !visibleTo(catalog, clientId)) return null;
+      const revisions = state.revisions
+        .filter((revision) => revision.catalogId === catalogId)
+        .map((revision) => this.revisionView(state, catalog, revision, userId));
+      return this.paginate(revisions, query);
+    });
+  }
+
+  async getCatalogRevision(
+    clientId: string,
+    userId: string | undefined,
+    catalogId: string,
+    revisionId: string,
+  ): Promise<CatalogRevisionView | null> {
+    return await this.read((state) => {
+      const catalog = state.catalog.find((book) => book.id === catalogId);
+      const revision = state.revisions.find(
+        (item) => item.id === revisionId && item.catalogId === catalogId,
+      );
+      if (!catalog || !revision || !visibleTo(catalog, clientId)) return null;
+      return this.revisionView(state, catalog, revision, userId);
+    });
+  }
+
+  async getRevertPreview(
+    clientId: string,
+    userId: string,
+    catalogId: string,
+    revisionId: string,
+  ): Promise<RevertPreview | null> {
+    return await this.read((state) => {
+      const catalog = state.catalog.find((book) => book.id === catalogId);
+      const target = state.revisions.find(
+        (revision) => revision.id === revisionId && revision.catalogId === catalogId,
+      );
+      if (!catalog || !target || catalog.authorUserId !== userId || catalog.ownerClientId !== clientId) return null;
+      if (!this.collaborationEnabled(state, catalog)) return null;
+      return this.revertPreview(state, catalog, target);
+    });
+  }
+
+  async revertRevision(
+    clientId: string,
+    author: CatalogAuthor,
+    catalogId: string,
+    revisionId: string,
+    input: RevertRevisionInput,
+  ): Promise<RevisionMutationResult> {
+    return await this.mutate((state) => {
+      const catalog = state.catalog.find((book) => book.id === catalogId);
+      const target = state.revisions.find(
+        (revision) => revision.id === revisionId && revision.catalogId === catalogId,
+      );
+      if (!catalog || !target) return { kind: "not-found" };
+      if (catalog.authorUserId !== author.userId || catalog.ownerClientId !== clientId) return { kind: "forbidden" };
+      if (!this.collaborationEnabled(state, catalog)) return { kind: "disabled" };
+      if (input.expectedHeadRevisionId !== catalog.headRevisionId) {
+        return { kind: "stale", headRevisionId: catalog.headRevisionId };
+      }
+      const preview = this.revertPreview(state, catalog, target);
+      if (preview.conflicts.length) return { kind: "conflict", conflicts: preview.conflicts };
+      if (preview.alreadyReverted || !preview.changes.length) return { kind: "already-reverted" };
+      const ownerClient = this.client(state, clientId);
+      const source = ownerClient.wordbooks.find(
+        (book) => book.id === catalog.sourceWordbookId && !book.deletedAt,
+      );
+      if (!source) return { kind: "disabled" };
+      const at = this.now().toISOString();
+      catalog.words = applyCatalogChanges(catalog.words, preview.changes);
+      this.applyChangesToSource(ownerClient, source, preview.changes, at);
+      const revision: CatalogRevision = {
+        id: `revision-${randomUUID()}`,
+        catalogId,
+        parentRevisionId: catalog.headRevisionId,
+        kind: "revert",
+        message: input.message ?? `回滚 ${target.id.slice(-8)}`,
+        authorUserId: author.userId,
+        author: author.username,
+        committerUserId: author.userId,
+        committer: author.username,
+        createdAt: at,
+        changes: clone(preview.changes),
+        stats: catalogDiffStats(preview.changes),
+        revertsRevisionId: target.id,
+      };
+      state.revisions.push(revision);
+      catalog.headRevisionId = revision.id;
+      catalog.updatedAt = at;
+      return { kind: "updated", revision: this.revisionView(state, catalog, revision, author.userId) };
+    });
+  }
+
+  async listAccountContributions(
+    clientId: string,
+    userId: string,
+    scope: "review" | "authored",
+    query: CursorQuery,
+  ): Promise<CursorPage<CatalogContributionView> & { openCount: number }> {
+    return await this.read((state) => {
+      const contributions = state.contributions.filter((contribution) => {
+        const catalog = state.catalog.find((book) => book.id === contribution.catalogId);
+        return catalog && (scope === "review"
+          ? catalog.authorUserId === userId && catalog.ownerClientId === clientId
+          : contribution.contributorUserId === userId);
+      });
+      const openCount = contributions.filter((contribution) => contribution.status === "open").length;
+      const views = contributions.map((contribution) => {
+        const catalog = state.catalog.find((book) => book.id === contribution.catalogId)!;
+        return this.contributionView(catalog, contribution, userId);
+      });
+      return { ...this.paginate(views, query), openCount };
     });
   }
 
@@ -567,6 +1049,8 @@ export abstract class BaseStore implements StudyStore {
     const index = state.catalog.findIndex((book) => book.id === id && book.ownerClientId === clientId);
     if (index < 0) return false;
     state.catalog.splice(index, 1);
+    state.revisions = state.revisions.filter((revision) => revision.catalogId !== id);
+    state.contributions = state.contributions.filter((contribution) => contribution.catalogId !== id);
     // Copies other clients made via "add" are independent snapshots and stay; only
     // the marketplace listing and every client's favorite reference to it are removed.
     for (const client of Object.values(state.clients)) client.favorites = client.favorites.filter((favorite) => favorite !== id);
@@ -666,8 +1150,9 @@ export abstract class BaseStore implements StudyStore {
       const normalized = normalizeWord(line.word);
       const entry: ImportDraftEntry = {
         id: randomUUID(), line: line.line, ...(normalized ? { word: normalized } : {}),
-        ...(line.pos ? { pos: line.pos } : {}), ...(line.enDefinition ? { enDefinition: line.enDefinition } : {}),
+        ...(line.phonetic ? { phonetic: line.phonetic } : {}), ...(line.pos ? { pos: line.pos } : {}), ...(line.enDefinition ? { enDefinition: line.enDefinition } : {}),
         ...(line.zhMeaning ? { zhMeaning: line.zhMeaning } : {}), ...(line.example ? { example: line.example } : {}),
+        ...(line.meanings !== undefined ? { meanings: clone(line.meanings) } : {}),
         status: "processing",
       };
       if (!isValidWordQuery(normalized)) { entry.status = "invalid"; entry.reason = "英文单词格式无效"; return entry; }
@@ -1128,6 +1613,222 @@ export abstract class BaseStore implements StudyStore {
   }); }
 
   // --- Shared state plumbing ---
+  private collaborationEnabled(state: State, catalog: CatalogWordbook): boolean {
+    if (
+      catalog.visibility !== "public"
+      || !catalog.authorUserId
+      || !catalog.ownerClientId
+      || !catalog.sourceWordbookId
+      || !state.users.some((user) => user.id === catalog.authorUserId)
+    ) return false;
+    const owner = state.clients[catalog.ownerClientId];
+    return Boolean(owner?.wordbooks.some(
+      (wordbook) => wordbook.id === catalog.sourceWordbookId && !wordbook.deletedAt,
+    ));
+  }
+
+  private revisionSummary(revision: CatalogRevision | undefined): CatalogRevisionSummary | undefined {
+    if (!revision) return undefined;
+    return {
+      id: revision.id,
+      kind: revision.kind,
+      message: revision.message,
+      author: revision.author,
+      ...(revision.committer ? { committer: revision.committer } : {}),
+      createdAt: revision.createdAt,
+      stats: clone(revision.stats),
+      ...(revision.contributionId ? { contributionId: revision.contributionId } : {}),
+      ...(revision.revertsRevisionId ? { revertsRevisionId: revision.revertsRevisionId } : {}),
+    };
+  }
+
+  private catalogCard(state: State, book: CatalogWordbook, client: ClientData, clientId: string): CatalogCard {
+    return buildCatalogCard(book, client, clientId, this.favoriteCount(state, book.id), {
+      enabled: this.collaborationEnabled(state, book),
+      openContributionCount: state.contributions.filter(
+        (contribution) => contribution.catalogId === book.id && contribution.status === "open",
+      ).length,
+      latestRevision: this.revisionSummary(
+        state.revisions.find((revision) => revision.id === book.headRevisionId),
+      ),
+    });
+  }
+
+  private contributionPreview(
+    state: State,
+    clientId: string,
+    userId: string,
+    wordbookId: string,
+  ): { kind: "ready"; preview: ContributionPreview } | { kind: "not-found" | "disabled" } {
+    if (!state.users.some((user) => user.id === userId)) return { kind: "not-found" };
+    const source = this.clientView(state, clientId).wordbooks.find(
+      (wordbook) => wordbook.id === wordbookId && !wordbook.deletedAt,
+    );
+    if (!source?.sourceCatalogId) return { kind: "not-found" };
+    const catalog = state.catalog.find((book) => book.id === source.sourceCatalogId);
+    if (!catalog) return { kind: "not-found" };
+    if (!this.collaborationEnabled(state, catalog)) return { kind: "disabled" };
+    const revisions = state.revisions.filter((revision) => revision.catalogId === catalog.id);
+    const knownBaseline = source.sourceRevisionId
+      ? revisions.find((revision) => revision.id === source.sourceRevisionId)
+      : undefined;
+    const baseRevisionId = knownBaseline?.id ?? catalog.headRevisionId;
+    const baseline = catalogAtRevision(revisions, baseRevisionId);
+    if (!baseline) return { kind: "not-found" };
+    const threeWay = threeWayContribution(baseline, toCatalogWords(source.words), catalog.words);
+    return {
+      kind: "ready",
+      preview: {
+        catalogId: catalog.id,
+        catalogTitle: catalog.title,
+        sourceWordbookId: source.id,
+        baseRevisionId,
+        headRevisionId: catalog.headRevisionId,
+        expectedSourceUpdatedAt: source.updatedAt,
+        expectedHeadRevisionId: catalog.headRevisionId,
+        legacyBaseline: !knownBaseline,
+        changes: threeWay.changes,
+        stats: catalogDiffStats(threeWay.changes),
+        overlaps: threeWay.overlaps,
+      },
+    };
+  }
+
+  private contributionView(
+    catalog: CatalogWordbook,
+    contribution: CatalogContribution,
+    userId: string | undefined,
+  ): CatalogContributionView {
+    const owner = catalog.authorUserId === userId;
+    return {
+      ...clone(contribution),
+      catalogTitle: catalog.title,
+      canMerge: contribution.status === "open" && owner,
+      canClose: contribution.status === "open"
+        && (owner || contribution.contributorUserId === userId),
+    };
+  }
+
+  private revisionView(
+    state: State,
+    catalog: CatalogWordbook,
+    revision: CatalogRevision,
+    userId: string | undefined,
+  ): CatalogRevisionView {
+    return {
+      ...clone(revision),
+      catalogTitle: catalog.title,
+      canRevert: catalog.authorUserId === userId && this.collaborationEnabled(state, catalog),
+    };
+  }
+
+  private sourceConflicts(
+    source: MyWordbook,
+    publicWords: StudyWordEntry[],
+    changes: CatalogWordChange[],
+  ): CatalogConflict[] {
+    const publicByKey = new Map(publicWords.map((word) => [normalizeWord(word.word), word]));
+    const sourceByKey = new Map(toCatalogWords(source.words).map((word) => [normalizeWord(word.word), word]));
+    const conflicts: CatalogConflict[] = [];
+    for (const change of changes) {
+      const expected = publicByKey.get(change.key);
+      const current = sourceByKey.get(change.key);
+      if (sameCatalogWord(expected, current)) continue;
+      conflicts.push({
+        key: change.key,
+        reason: "source-diverged",
+        ...(expected ? { base: clone(expected) } : {}),
+        ...(current ? { current: clone(current) } : {}),
+        ...(change.kind === "delete" ? {} : { proposed: clone(change.after) }),
+      });
+    }
+    return conflicts;
+  }
+
+  private applyChangesToSource(
+    client: ClientData,
+    source: MyWordbook,
+    changes: CatalogWordChange[],
+    at: string,
+  ): void {
+    const deletedWordIds = new Set<string>();
+    for (const change of changes) {
+      const index = source.words.findIndex((word) => normalizeWord(word.word) === change.key);
+      if (change.kind === "delete") {
+        if (index >= 0) {
+          const [deleted] = source.words.splice(index, 1);
+          if (deleted) deletedWordIds.add(deleted.id);
+        }
+      } else if (index >= 0) {
+        const retained = source.words[index]!;
+        source.words[index] = {
+          ...clone(change.after),
+          id: retained.id,
+          addedAt: retained.addedAt,
+        };
+      } else {
+        source.words.push({
+          ...clone(change.after),
+          id: randomUUID(),
+          addedAt: at,
+        });
+      }
+    }
+    if (deletedWordIds.size) {
+      client.events = client.events.filter(
+        (event) => event.wordbookId !== source.id || !deletedWordIds.has(event.wordId),
+      );
+      client.studyRounds = client.studyRounds.filter((round) => round.wordbookId !== source.id);
+    }
+    source.updatedAt = at;
+  }
+
+  private revertPreview(state: State, catalog: CatalogWordbook, target: CatalogRevision): RevertPreview {
+    const inverse = inverseRevisionAgainstHead(target, catalog.words);
+    const owner = catalog.ownerClientId ? state.clients[catalog.ownerClientId] : undefined;
+    const source = owner?.wordbooks.find(
+      (wordbook) => wordbook.id === catalog.sourceWordbookId && !wordbook.deletedAt,
+    );
+    const sourceConflicts = source ? this.sourceConflicts(source, catalog.words, inverse.changes) : [];
+    const conflicts = [...inverse.conflicts, ...sourceConflicts];
+    return {
+      catalogId: catalog.id,
+      revisionId: target.id,
+      headRevisionId: catalog.headRevisionId,
+      changes: clone(inverse.changes),
+      stats: catalogDiffStats(inverse.changes),
+      conflicts,
+      alreadyReverted: inverse.alreadyReverted && conflicts.length === 0,
+    };
+  }
+
+  private paginate<T extends { id: string; createdAt: string }>(items: T[], query: CursorQuery): CursorPage<T> {
+    const ordered = [...items].sort(
+      (left, right) => right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id),
+    );
+    let start = 0;
+    if (query.cursor) {
+      try {
+        const decoded = JSON.parse(Buffer.from(query.cursor, "base64url").toString("utf8")) as { createdAt?: unknown; id?: unknown };
+        if (typeof decoded.createdAt === "string" && typeof decoded.id === "string") {
+          const index = ordered.findIndex(
+            (item) => item.createdAt === decoded.createdAt && item.id === decoded.id,
+          );
+          if (index >= 0) start = index + 1;
+        }
+      } catch {
+        start = 0;
+      }
+    }
+    const limit = Math.max(1, Math.min(50, query.limit ?? 20));
+    const page = ordered.slice(start, start + limit);
+    const last = page.at(-1);
+    const nextCursor = last && start + page.length < ordered.length
+      ? Buffer.from(JSON.stringify({ createdAt: last.createdAt, id: last.id }), "utf8").toString("base64url")
+      : undefined;
+    return { items: clone(page), ...(nextCursor ? { nextCursor } : {}) };
+  }
+
   private client(state: State, id: string): ClientData {
     if (!Object.hasOwn(state.clients, id)) state.clients[id] = defaultClient();
     return state.clients[id]!;

@@ -47,6 +47,7 @@ async function register(baseUrl: string, clientId: string, username: string) {
       username: string;
       clientId: string;
       role: "user" | "admin";
+      createdAt: string;
       capabilities: string[];
     },
     cookie: setCookie.split(";")[0]!,
@@ -58,7 +59,14 @@ test("sessions override client headers, claimed ids require auth, and logout is 
   const app = await fixture();
   try {
     const alice = await register(app.baseUrl, ALICE_CLIENT, "Alice");
-    assert.deepEqual(alice.user, { username: "Alice", clientId: ALICE_CLIENT, role: "user", capabilities: [] });
+    assert.match(alice.user.createdAt, /^\d{4}-\d{2}-\d{2}T/);
+    assert.deepEqual(alice.user, {
+      username: "Alice",
+      clientId: ALICE_CLIENT,
+      role: "user",
+      createdAt: alice.user.createdAt,
+      capabilities: [],
+    });
 
     const claimedWithoutCookie = await fetch(`${app.baseUrl}/api/my/wordbooks`, { headers: jsonHeaders(ALICE_CLIENT) });
     assert.equal(claimedWithoutCookie.status, 401);
@@ -75,7 +83,13 @@ test("sessions override client headers, claimed ids require auth, and logout is 
     const me = await fetch(`${app.baseUrl}/api/auth/me`, { headers: { cookie: alice.cookie } });
     assert.equal(me.status, 200);
     assert.equal(me.headers.get("cache-control"), "private, no-store");
-    assert.deepEqual(await me.json(), { username: "Alice", clientId: ALICE_CLIENT, role: "user", capabilities: [] });
+    assert.deepEqual(await me.json(), {
+      username: "Alice",
+      clientId: ALICE_CLIENT,
+      role: "user",
+      createdAt: alice.user.createdAt,
+      capabilities: [],
+    });
 
     const firstLogout = await fetch(`${app.baseUrl}/api/auth/logout`, { method: "POST", headers: { cookie: alice.cookie } });
     assert.equal(firstLogout.status, 204);
@@ -376,6 +390,59 @@ test("accounts can export their data and password-confirmed deletion removes pri
   }
 });
 
+test("password changes verify the current secret and revoke other sessions", async () => {
+  const app = await fixture();
+  try {
+    const alice = await register(app.baseUrl, ALICE_CLIENT, "Alice");
+    const secondLogin = await fetch(`${app.baseUrl}/api/auth/login`, {
+      method: "POST",
+      headers: jsonHeaders("client-second-0001"),
+      body: JSON.stringify({ username: "Alice", password: "password-123" }),
+    });
+    assert.equal(secondLogin.status, 200);
+    const secondCookie = secondLogin.headers.get("set-cookie")!.split(";")[0]!;
+
+    const wrongCurrent = await fetch(`${app.baseUrl}/api/account/password`, {
+      method: "POST",
+      headers: jsonHeaders(ALICE_CLIENT, alice.cookie),
+      body: JSON.stringify({ currentPassword: "wrong-password", newPassword: "new-password-456" }),
+    });
+    assert.equal(wrongCurrent.status, 403);
+    assert.equal((await wrongCurrent.json() as { error: { code: string } }).error.code, "INVALID_PASSWORD");
+
+    const unchanged = await fetch(`${app.baseUrl}/api/account/password`, {
+      method: "POST",
+      headers: jsonHeaders(ALICE_CLIENT, alice.cookie),
+      body: JSON.stringify({ currentPassword: "password-123", newPassword: "password-123" }),
+    });
+    assert.equal(unchanged.status, 409);
+
+    const changed = await fetch(`${app.baseUrl}/api/account/password`, {
+      method: "POST",
+      headers: jsonHeaders(ALICE_CLIENT, alice.cookie),
+      body: JSON.stringify({ currentPassword: "password-123", newPassword: "new-password-456" }),
+    });
+    assert.equal(changed.status, 204);
+    assert.equal((await fetch(`${app.baseUrl}/api/auth/me`, { headers: { cookie: alice.cookie } })).status, 200);
+    assert.equal((await fetch(`${app.baseUrl}/api/auth/me`, { headers: { cookie: secondCookie } })).status, 401);
+
+    const oldLogin = await fetch(`${app.baseUrl}/api/auth/login`, {
+      method: "POST",
+      headers: jsonHeaders("client-third-00001"),
+      body: JSON.stringify({ username: "Alice", password: "password-123" }),
+    });
+    assert.equal(oldLogin.status, 401);
+    const newLogin = await fetch(`${app.baseUrl}/api/auth/login`, {
+      method: "POST",
+      headers: jsonHeaders("client-third-00001"),
+      body: JSON.stringify({ username: "Alice", password: "new-password-456" }),
+    });
+    assert.equal(newLogin.status, 200);
+  } finally {
+    await app.close();
+  }
+});
+
 test("login uses an independent IP rate limit", async () => {
   const app = await fixture({
     loginRateLimiter: new FixedWindowRateLimiter({ windowMs: 60_000, maxRequests: 1 }),
@@ -461,7 +528,15 @@ test("authentication crypto work has a global concurrency ceiling", async () => 
 });
 
 test("client merge remaps colliding book, word, and event ids with references intact", async () => {
-  const store = new InspectableStore({ version: 3, catalog: [], clients: {}, users: [], sessions: [] });
+  const store = new InspectableStore({
+    version: 3,
+    catalog: [],
+    revisions: [],
+    contributions: [],
+    clients: {},
+    users: [],
+    sessions: [],
+  });
   const entry = { word: "resilient", phonetic: "", meanings: [], source: "user" as const };
   const targetBook = await store.createMyWordbook(ALICE_CLIENT, { title: "Target", words: [entry] });
   const sourceBook = await store.createMyWordbook(ANON_CLIENT, { title: "Source", words: [entry] });
@@ -488,4 +563,116 @@ test("client merge remaps colliding book, word, and event ids with references in
     assert.ok(book?.words.some((word) => word.id === event.wordId));
   }
   assert.equal(store.data.clients[ANON_CLIENT], undefined);
+});
+
+test("collaboration API supports preview, public audit, atomic merge, version history, and revert", async () => {
+  const app = await fixture();
+  try {
+    const publisher = await register(app.baseUrl, ALICE_CLIENT, "Publisher");
+    const contributor = await register(app.baseUrl, BOB_CLIENT, "Contributor");
+    const sourceResponse = await fetch(`${app.baseUrl}/api/my/wordbooks`, {
+      method: "POST",
+      headers: jsonHeaders(ALICE_CLIENT, publisher.cookie),
+      body: JSON.stringify({
+        title: "Shared words",
+        words: [
+          { word: "alpha", phonetic: "/alpha/", meanings: [{ pos: "noun", definition: "alpha" }], source: "user", zhMeaning: "甲", zhMeaningSource: "user" },
+          { word: "beta", phonetic: "/beta/", meanings: [{ pos: "noun", definition: "beta" }], source: "user", zhMeaning: "乙", zhMeaningSource: "user" },
+        ],
+      }),
+    });
+    assert.equal(sourceResponse.status, 201);
+    const source = await sourceResponse.json() as { id: string };
+    const uploadResponse = await fetch(`${app.baseUrl}/api/catalog/uploads`, {
+      method: "POST",
+      headers: jsonHeaders(ALICE_CLIENT, publisher.cookie),
+      body: JSON.stringify({ sourceWordbookId: source.id, visibility: "public", message: "首次发布" }),
+    });
+    assert.equal(uploadResponse.status, 201);
+    const catalog = await uploadResponse.json() as { id: string; headRevisionId: string; collaborationEnabled: boolean };
+    assert.equal(catalog.collaborationEnabled, true);
+    assert.match(catalog.headRevisionId, /^revision-/);
+
+    const joinedResponse = await fetch(`${app.baseUrl}/api/catalog/wordbooks/${catalog.id}/add`, {
+      method: "POST",
+      headers: jsonHeaders(BOB_CLIENT, contributor.cookie),
+    });
+    assert.equal(joinedResponse.status, 201);
+    const joined = await joinedResponse.json() as { wordbook: { id: string; sourceRevisionId: string } };
+    assert.equal(joined.wordbook.sourceRevisionId, catalog.headRevisionId);
+    const wordsResponse = await fetch(`${app.baseUrl}/api/my/wordbooks/${joined.wordbook.id}/words`, {
+      headers: jsonHeaders(BOB_CLIENT, contributor.cookie),
+    });
+    const words = await wordsResponse.json() as Array<{ id: string; word: string }>;
+    const alpha = words.find((word) => word.word === "alpha")!;
+    const updateResponse = await fetch(`${app.baseUrl}/api/my/wordbooks/${joined.wordbook.id}/words/${alpha.id}`, {
+      method: "PATCH",
+      headers: jsonHeaders(BOB_CLIENT, contributor.cookie),
+      body: JSON.stringify({ zhMeaning: "改进后的甲" }),
+    });
+    assert.equal(updateResponse.status, 200);
+
+    const previewResponse = await fetch(`${app.baseUrl}/api/my/wordbooks/${joined.wordbook.id}/contribution-preview`, {
+      headers: jsonHeaders(BOB_CLIENT, contributor.cookie),
+    });
+    assert.equal(previewResponse.status, 200);
+    const preview = await previewResponse.json() as {
+      catalogId: string;
+      expectedSourceUpdatedAt: string;
+      expectedHeadRevisionId: string;
+      changes: Array<{ kind: string; key: string }>;
+    };
+    assert.deepEqual(preview.changes.map((change) => [change.kind, change.key]), [["update", "alpha"]]);
+    const createResponse = await fetch(`${app.baseUrl}/api/catalog/wordbooks/${catalog.id}/contributions`, {
+      method: "POST",
+      headers: jsonHeaders(BOB_CLIENT, contributor.cookie),
+      body: JSON.stringify({
+        title: "完善 alpha 释义",
+        description: "更准确的中文释义",
+        expectedSourceUpdatedAt: preview.expectedSourceUpdatedAt,
+        expectedHeadRevisionId: preview.expectedHeadRevisionId,
+      }),
+    });
+    assert.equal(createResponse.status, 201);
+    const contribution = await createResponse.json() as { id: string; status: string };
+
+    const publicAudit = await fetch(`${app.baseUrl}/api/catalog/wordbooks/${catalog.id}/contributions/${contribution.id}`, {
+      headers: jsonHeaders(ANON_CLIENT),
+    });
+    assert.equal(publicAudit.status, 200);
+    assert.equal((await publicAudit.json() as { status: string }).status, "open");
+
+    const mergeResponse = await fetch(`${app.baseUrl}/api/catalog/wordbooks/${catalog.id}/contributions/${contribution.id}/merge`, {
+      method: "POST",
+      headers: jsonHeaders(ALICE_CLIENT, publisher.cookie),
+      body: JSON.stringify({ resolutionNote: "感谢完善" }),
+    });
+    assert.equal(mergeResponse.status, 200);
+    assert.equal((await mergeResponse.json() as { status: string }).status, "merged");
+    const mergedCatalog = await (await fetch(`${app.baseUrl}/api/catalog/wordbooks/${catalog.id}`, {
+      headers: jsonHeaders(ALICE_CLIENT, publisher.cookie),
+    })).json() as { words: Array<{ word: string; zhMeaning?: string }>; headRevisionId: string };
+    assert.equal(mergedCatalog.words.find((word) => word.word === "alpha")?.zhMeaning, "改进后的甲");
+
+    const revisionsResponse = await fetch(`${app.baseUrl}/api/catalog/wordbooks/${catalog.id}/revisions`, {
+      headers: jsonHeaders(ALICE_CLIENT, publisher.cookie),
+    });
+    assert.equal(revisionsResponse.status, 200);
+    const revisions = await revisionsResponse.json() as { items: Array<{ id: string; kind: string }> };
+    const mergeRevision = revisions.items.find((revision) => revision.kind === "merge")!;
+    const revertPreviewResponse = await fetch(`${app.baseUrl}/api/catalog/wordbooks/${catalog.id}/revisions/${mergeRevision.id}/revert-preview`, {
+      headers: jsonHeaders(ALICE_CLIENT, publisher.cookie),
+    });
+    assert.equal(revertPreviewResponse.status, 200);
+    const revertPreview = await revertPreviewResponse.json() as { headRevisionId: string };
+    const revertResponse = await fetch(`${app.baseUrl}/api/catalog/wordbooks/${catalog.id}/revisions/${mergeRevision.id}/revert`, {
+      method: "POST",
+      headers: jsonHeaders(ALICE_CLIENT, publisher.cookie),
+      body: JSON.stringify({ expectedHeadRevisionId: revertPreview.headRevisionId }),
+    });
+    assert.equal(revertResponse.status, 201);
+    assert.equal((await revertResponse.json() as { kind: string }).kind, "revert");
+  } finally {
+    await app.close();
+  }
 });

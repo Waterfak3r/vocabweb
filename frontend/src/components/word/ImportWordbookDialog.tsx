@@ -191,9 +191,10 @@ export function ImportWordbookDialog({ open, api, onClose, onCreated, initialTit
       const nextDraft = await api.createImportDraft({
         title: title.trim(), description: description.trim() || undefined,
         ...(targetWordbookId ? { targetWordbookId } : {}),
-        lines: nextParsed.entries.filter((entry) => entry.status === 'ready').map(({ line, word, pos, enDefinition, zhMeaning, example }) => ({
+        lines: nextParsed.entries.filter((entry) => entry.status === 'ready').map(({ line, word, phonetic, pos, enDefinition, zhMeaning, example, meanings }) => ({
           line, word, ...(pos ? { pos } : {}), ...(enDefinition ? { enDefinition } : {}),
-          ...(zhMeaning ? { zhMeaning } : {}), ...(example ? { example } : {}),
+          ...(phonetic ? { phonetic } : {}), ...(zhMeaning ? { zhMeaning } : {}), ...(example ? { example } : {}),
+          ...(meanings ? { meanings } : {}),
         })),
       })
       setDraft(nextDraft)
@@ -300,7 +301,7 @@ export function ImportWordbookDialog({ open, api, onClose, onCreated, initialTit
     <div className={styles.backdrop} role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) onClose() }}>
       <section className={styles.dialog} role="dialog" aria-modal="true" aria-labelledby="wordbook-import-title">
         <header className={styles.header}>
-          <h2 className={styles.title} id="wordbook-import-title">{targetWordbookId || draft?.targetWordbookId ? '补充上传单词' : '新建单词本'}</h2>
+          <h2 className={styles.title} id="wordbook-import-title">{targetWordbookId || draft?.targetWordbookId ? '导入到单词本' : '新建单词本'}</h2>
           <button className={styles.close} type="button" aria-label="关闭" disabled={busy} onClick={onClose}>×</button>
         </header>
         <div className={styles.body}>
@@ -336,18 +337,20 @@ export function ImportWordbookDialog({ open, api, onClose, onCreated, initialTit
 
           {step === 'source' && <>
             <div className={styles.field}>
-              <label htmlFor="import-content">粘贴单词</label>
+              <label htmlFor="import-content">粘贴单词或 CSV</label>
               <textarea id="import-content" value={content} onChange={(event) => { setContent(event.target.value); setParsed(null); setDraft(null) }} placeholder={'a lot of,phrase,a large amount,许多,We had a lot of time.\nresilient,adjective,,有韧性的'} />
               <span className={styles.hint}>
                 一行对应一个单词，以 , 作为分隔符，依次为：词条, 词性, 英文释义, 中文释义, 例句（只有词条为必填项）。字段内含逗号时请用双引号包裹。
                 <br />
                 e.g. act,(v),(description),(中文意思),(例句)
                 <br />
+                从单词本导出的六列 CSV 支持多条释义，空白单词行会接续上一词条。
+                <br />
                 Tip：你可以将这个规则和示例复制给 DeepSeek，让它帮忙处理完你的单词表再导入。
               </span>
             </div>
             <div className={styles.upload}>
-              <strong>或选择文件</strong>
+              <strong>或选择文件导入</strong>
               <span className={styles.hint}>支持 CSV、TXT、Markdown、DOCX，单个文件不超过 1MB。</span>
               <input type="file" accept=".csv,.txt,.md,.markdown,.docx,text/csv,text/plain,text/markdown,application/vnd.openxmlformats-officedocument.wordprocessingml.document" disabled={busy} onChange={(event) => { void chooseFile(event.target.files?.[0]) }} />
             </div>

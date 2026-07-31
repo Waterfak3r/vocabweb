@@ -32,7 +32,14 @@ export type CatalogSort = 'recommended' | 'hot' | 'newest' | 'rating'
 /** 公开=进广场列表；邀请码=仅凭分享码导入；私密=仅自己可见。 */
 export type CatalogVisibility = 'public' | 'unlisted' | 'private'
 export type AuthCapability = 'site.settings.write' | 'messages.moderate' | 'messages.contact.read'
-export type AuthUser = { username: string; clientId: string; role: 'user' | 'admin'; capabilities: AuthCapability[] }
+export type AuthUser = {
+  username: string
+  clientId: string
+  role: 'user' | 'admin'
+  /** Optional only for a short rolling-deploy window against an older backend. */
+  createdAt?: string
+  capabilities: AuthCapability[]
+}
 export type CatalogExam = 'IELTS' | 'TOEFL' | 'GRE' | '高考' | '四级' | '六级' | '四六级' | '考研'
 export type LearningGoal = '写作' | '阅读' | '听力' | '口语'
 export type CatalogQuery = { q?: string; exam?: CatalogExam; goal?: LearningGoal; sort?: CatalogSort }
@@ -49,18 +56,107 @@ export type CatalogWordbook = {
   rating: number
   uses: number
   createdAt: string
+  updatedAt?: string
+  headRevisionId?: string
   shareCode: string
   wordCount: number
   favoriteCount: number
   favorited: boolean
   added: boolean
   uploaded: boolean
+  collaborationEnabled?: boolean
+  openContributionCount?: number
+  latestRevision?: CatalogRevisionSummary
   /** Present on servers with community accounts; absent values render as legacy public entries. */
   visibility?: CatalogVisibility
   /** Owner upload feeds may expose this so snapshot updates can select the exact source wordbook. */
   sourceWordbookId?: string
 }
 export type CatalogDetail = CatalogWordbook & { words: WordEntry[] }
+
+export type CatalogRevisionKind = 'initial' | 'update' | 'merge' | 'revert'
+export type CatalogContributionStatus = 'open' | 'merged' | 'closed'
+export type CatalogDiffStats = {
+  additions: number
+  deletions: number
+  updates: number
+  changedWords: number
+}
+export type CatalogWordChange =
+  | { kind: 'add'; key: string; after: WordEntry }
+  | { kind: 'delete'; key: string; before: WordEntry }
+  | { kind: 'update'; key: string; before: WordEntry; after: WordEntry }
+export type CatalogRevisionSummary = {
+  id: string
+  kind: CatalogRevisionKind
+  message: string
+  author: string
+  committer?: string
+  createdAt: string
+  stats: CatalogDiffStats
+  contributionId?: string
+  revertsRevisionId?: string
+}
+export type CatalogRevision = CatalogRevisionSummary & {
+  catalogId: string
+  catalogTitle: string
+  parentRevisionId?: string
+  changes: CatalogWordChange[]
+  canRevert: boolean
+}
+export type CatalogContribution = {
+  id: string
+  catalogId: string
+  catalogTitle: string
+  sourceWordbookId: string
+  contributor: string
+  baseRevisionId: string
+  submittedHeadRevisionId: string
+  title: string
+  description: string
+  status: CatalogContributionStatus
+  changes: CatalogWordChange[]
+  stats: CatalogDiffStats
+  createdAt: string
+  updatedAt: string
+  handledAt?: string
+  handledBy?: string
+  resolutionNote?: string
+  mergedRevisionId?: string
+  canMerge: boolean
+  canClose: boolean
+}
+export type CatalogConflict = {
+  key: string
+  reason: 'overlapping-change' | 'source-diverged'
+  base?: WordEntry
+  current?: WordEntry
+  proposed?: WordEntry
+}
+export type ContributionPreview = {
+  catalogId: string
+  catalogTitle: string
+  sourceWordbookId: string
+  baseRevisionId: string
+  headRevisionId: string
+  expectedSourceUpdatedAt: string
+  expectedHeadRevisionId: string
+  legacyBaseline: boolean
+  changes: CatalogWordChange[]
+  stats: CatalogDiffStats
+  overlaps: CatalogConflict[]
+}
+export type RevertPreview = {
+  catalogId: string
+  revisionId: string
+  headRevisionId: string
+  changes: CatalogWordChange[]
+  stats: CatalogDiffStats
+  conflicts: CatalogConflict[]
+  alreadyReverted: boolean
+}
+export type CursorPage<T> = { items: T[]; nextCursor?: string }
+export type ContributionInboxPage = CursorPage<CatalogContribution> & { openCount: number }
 
 export type WordbookProgress = {
   mastered: number
@@ -78,6 +174,7 @@ export type MyWordbook = {
   description: string
   category?: string
   sourceCatalogId?: string
+  sourceRevisionId?: string
   createdAt: string
   updatedAt: string
   wordCount: number
@@ -165,10 +262,12 @@ export type StudyRoundTaskOptions = {
 export type ImportDraftLine = {
   line: number
   word: string
+  phonetic?: string
   pos?: string
   enDefinition?: string
   zhMeaning?: string
   example?: string
+  meanings?: WordMeaning[]
 }
 
 export type ImportDraftStatus = 'processing' | 'ready' | 'invalid' | 'duplicate' | 'unmatched' | 'conflict'
@@ -221,6 +320,7 @@ export class WorkspaceApiError extends Error {
     public readonly status: number,
     public readonly code?: string,
     message = `Backend request failed (${status}).`,
+    public readonly details?: Record<string, unknown>,
   ) {
     super(message)
     this.name = 'WorkspaceApiError'
@@ -241,7 +341,7 @@ async function responseError(response: Response): Promise<WorkspaceApiError> {
     if (isRecord(payload) && isRecord(payload.error)) {
       const code = isText(payload.error.code) ? payload.error.code : undefined
       const message = isText(payload.error.message) ? payload.error.message : undefined
-      return new WorkspaceApiError(response.status, code, message)
+      return new WorkspaceApiError(response.status, code, message, payload)
     }
   } catch {
     // Fall back to a stable status-only error when the body is empty or malformed.
@@ -368,7 +468,12 @@ function parseMyWordbook(value: unknown): MyWordbook | null {
   const studyPreferences = value.studyPreferences === undefined
     ? undefined
     : parseWordbookStudyPreferences(value.studyPreferences)
-  if (!progress || (value.sourceCatalogId !== undefined && !isText(value.sourceCatalogId)) || (value.category !== undefined && !isText(value.category))) return null
+  if (
+    !progress
+    || (value.sourceCatalogId !== undefined && !isText(value.sourceCatalogId))
+    || (value.sourceRevisionId !== undefined && !isText(value.sourceRevisionId))
+    || (value.category !== undefined && !isText(value.category))
+  ) return null
   if (!reviewSchedule || (value.studyPreferences !== undefined && !studyPreferences)) return null
   return {
     id: value.id,
@@ -376,12 +481,60 @@ function parseMyWordbook(value: unknown): MyWordbook | null {
     description: value.description,
     category: value.category,
     sourceCatalogId: value.sourceCatalogId,
+    sourceRevisionId: value.sourceRevisionId,
     createdAt: value.createdAt,
     updatedAt: value.updatedAt,
     wordCount: value.wordCount,
     progress,
     reviewSchedule,
     ...(studyPreferences ? { studyPreferences } : {}),
+  }
+}
+
+function parseDiffStats(value: unknown): CatalogDiffStats | null {
+  if (
+    !isRecord(value)
+    || !isCount(value.additions)
+    || !isCount(value.deletions)
+    || !isCount(value.updates)
+    || !isCount(value.changedWords)
+  ) return null
+  return {
+    additions: value.additions,
+    deletions: value.deletions,
+    updates: value.updates,
+    changedWords: value.changedWords,
+  }
+}
+
+function isRevisionKind(value: unknown): value is CatalogRevisionKind {
+  return value === 'initial' || value === 'update' || value === 'merge' || value === 'revert'
+}
+
+function parseRevisionSummary(value: unknown): CatalogRevisionSummary | null {
+  if (
+    !isRecord(value)
+    || !isText(value.id)
+    || !isRevisionKind(value.kind)
+    || !isText(value.message)
+    || !isText(value.author)
+    || !isText(value.createdAt)
+    || (value.committer !== undefined && !isText(value.committer))
+    || (value.contributionId !== undefined && !isText(value.contributionId))
+    || (value.revertsRevisionId !== undefined && !isText(value.revertsRevisionId))
+  ) return null
+  const stats = parseDiffStats(value.stats)
+  if (!stats) return null
+  return {
+    id: value.id,
+    kind: value.kind,
+    message: value.message,
+    author: value.author,
+    committer: value.committer,
+    createdAt: value.createdAt,
+    stats,
+    contributionId: value.contributionId,
+    revertsRevisionId: value.revertsRevisionId,
   }
 }
 
@@ -395,17 +548,53 @@ function parseCatalog(value: unknown): CatalogWordbook | null {
   if (typeof favorited !== 'boolean' || typeof added !== 'boolean' || typeof value.uploaded !== 'boolean') return null
   if (value.visibility !== undefined && value.visibility !== 'public' && value.visibility !== 'unlisted' && value.visibility !== 'private') return null
   if (value.sourceWordbookId !== undefined && !isText(value.sourceWordbookId)) return null
+  if (value.updatedAt !== undefined && !isText(value.updatedAt)) return null
+  if (value.headRevisionId !== undefined && !isText(value.headRevisionId)) return null
+  if (value.collaborationEnabled !== undefined && typeof value.collaborationEnabled !== 'boolean') return null
+  if (value.openContributionCount !== undefined && !isCount(value.openContributionCount)) return null
+  const latestRevision = value.latestRevision === undefined ? undefined : parseRevisionSummary(value.latestRevision)
+  if (value.latestRevision !== undefined && !latestRevision) return null
   const favoriteCount = isCount(value.favoriteCount) ? value.favoriteCount : 0
-  return { id: value.id, title: value.title, description: value.description, author: value.author, exams, goals, rating: value.rating, uses: value.uses, createdAt: value.createdAt, shareCode: value.shareCode, wordCount: value.wordCount, favoriteCount, favorited, added, uploaded: value.uploaded, visibility: value.visibility, sourceWordbookId: value.sourceWordbookId }
+  return {
+    id: value.id,
+    title: value.title,
+    description: value.description,
+    author: value.author,
+    exams,
+    goals,
+    rating: value.rating,
+    uses: value.uses,
+    createdAt: value.createdAt,
+    updatedAt: value.updatedAt,
+    headRevisionId: value.headRevisionId,
+    shareCode: value.shareCode,
+    wordCount: value.wordCount,
+    favoriteCount,
+    favorited,
+    added,
+    uploaded: value.uploaded,
+    collaborationEnabled: value.collaborationEnabled,
+    openContributionCount: value.openContributionCount,
+    latestRevision: latestRevision ?? undefined,
+    visibility: value.visibility,
+    sourceWordbookId: value.sourceWordbookId,
+  }
 }
 
 function parseAuthUser(value: unknown): AuthUser | null {
   if (!isRecord(value) || !isText(value.username) || !isText(value.clientId)) return null
   if (value.role !== 'user' && value.role !== 'admin') return null
+  if (value.createdAt !== undefined && !isText(value.createdAt)) return null
   if (!Array.isArray(value.capabilities)) return null
   const allowed: AuthCapability[] = ['site.settings.write', 'messages.moderate', 'messages.contact.read']
   if (!value.capabilities.every((item): item is AuthCapability => typeof item === 'string' && allowed.includes(item as AuthCapability))) return null
-  return { username: value.username, clientId: value.clientId, role: value.role, capabilities: [...value.capabilities] }
+  return {
+    username: value.username,
+    clientId: value.clientId,
+    role: value.role,
+    ...(value.createdAt ? { createdAt: value.createdAt } : {}),
+    capabilities: [...value.capabilities],
+  }
 }
 
 function parseMeaning(value: unknown): WordMeaning | null {
@@ -436,6 +625,186 @@ function parseCatalogDetail(value: unknown): CatalogDetail | null {
   if (!card || !isRecord(value) || !Array.isArray(value.words)) return null
   const words = value.words.map(parseCatalogEntry)
   return words.some((word) => word === null) ? null : { ...card, words: words as WordEntry[] }
+}
+
+export function parseCatalogWordChange(value: unknown): CatalogWordChange | null {
+  if (!isRecord(value) || !isText(value.key)) return null
+  if (value.kind === 'add') {
+    const after = parseCatalogEntry(value.after)
+    return after ? { kind: 'add', key: value.key, after } : null
+  }
+  if (value.kind === 'delete') {
+    const before = parseCatalogEntry(value.before)
+    return before ? { kind: 'delete', key: value.key, before } : null
+  }
+  if (value.kind === 'update') {
+    const before = parseCatalogEntry(value.before)
+    const after = parseCatalogEntry(value.after)
+    return before && after ? { kind: 'update', key: value.key, before, after } : null
+  }
+  return null
+}
+
+function parseCatalogConflict(value: unknown): CatalogConflict | null {
+  if (
+    !isRecord(value)
+    || !isText(value.key)
+    || (value.reason !== 'overlapping-change' && value.reason !== 'source-diverged')
+  ) return null
+  const base = value.base === undefined ? undefined : parseCatalogEntry(value.base)
+  const current = value.current === undefined ? undefined : parseCatalogEntry(value.current)
+  const proposed = value.proposed === undefined ? undefined : parseCatalogEntry(value.proposed)
+  if (
+    (value.base !== undefined && !base)
+    || (value.current !== undefined && !current)
+    || (value.proposed !== undefined && !proposed)
+  ) return null
+  return {
+    key: value.key,
+    reason: value.reason,
+    base: base ?? undefined,
+    current: current ?? undefined,
+    proposed: proposed ?? undefined,
+  }
+}
+
+function parseCatalogRevision(value: unknown): CatalogRevision | null {
+  const summary = parseRevisionSummary(value)
+  if (
+    !summary
+    || !isRecord(value)
+    || !isText(value.catalogId)
+    || !isText(value.catalogTitle)
+    || (value.parentRevisionId !== undefined && !isText(value.parentRevisionId))
+    || !Array.isArray(value.changes)
+    || typeof value.canRevert !== 'boolean'
+  ) return null
+  const changes = value.changes.map(parseCatalogWordChange)
+  if (changes.some((change) => change === null)) return null
+  return {
+    ...summary,
+    catalogId: value.catalogId,
+    catalogTitle: value.catalogTitle,
+    parentRevisionId: value.parentRevisionId,
+    changes: changes as CatalogWordChange[],
+    canRevert: value.canRevert,
+  }
+}
+
+function parseCatalogContribution(value: unknown): CatalogContribution | null {
+  if (
+    !isRecord(value)
+    || !isText(value.id)
+    || !isText(value.catalogId)
+    || !isText(value.catalogTitle)
+    || !isText(value.sourceWordbookId)
+    || !isText(value.contributor)
+    || !isText(value.baseRevisionId)
+    || !isText(value.submittedHeadRevisionId)
+    || !isText(value.title)
+    || !isText(value.description)
+    || (value.status !== 'open' && value.status !== 'merged' && value.status !== 'closed')
+    || !Array.isArray(value.changes)
+    || !isText(value.createdAt)
+    || !isText(value.updatedAt)
+    || typeof value.canMerge !== 'boolean'
+    || typeof value.canClose !== 'boolean'
+    || (value.handledAt !== undefined && !isText(value.handledAt))
+    || (value.handledBy !== undefined && !isText(value.handledBy))
+    || (value.resolutionNote !== undefined && !isText(value.resolutionNote))
+    || (value.mergedRevisionId !== undefined && !isText(value.mergedRevisionId))
+  ) return null
+  const stats = parseDiffStats(value.stats)
+  const changes = value.changes.map(parseCatalogWordChange)
+  if (!stats || changes.some((change) => change === null)) return null
+  return {
+    id: value.id,
+    catalogId: value.catalogId,
+    catalogTitle: value.catalogTitle,
+    sourceWordbookId: value.sourceWordbookId,
+    contributor: value.contributor,
+    baseRevisionId: value.baseRevisionId,
+    submittedHeadRevisionId: value.submittedHeadRevisionId,
+    title: value.title,
+    description: value.description,
+    status: value.status,
+    changes: changes as CatalogWordChange[],
+    stats,
+    createdAt: value.createdAt,
+    updatedAt: value.updatedAt,
+    handledAt: value.handledAt,
+    handledBy: value.handledBy,
+    resolutionNote: value.resolutionNote,
+    mergedRevisionId: value.mergedRevisionId,
+    canMerge: value.canMerge,
+    canClose: value.canClose,
+  }
+}
+
+function parseContributionPreview(value: unknown): ContributionPreview | null {
+  if (
+    !isRecord(value)
+    || !isText(value.catalogId)
+    || !isText(value.catalogTitle)
+    || !isText(value.sourceWordbookId)
+    || !isText(value.baseRevisionId)
+    || !isText(value.headRevisionId)
+    || !isText(value.expectedSourceUpdatedAt)
+    || !isText(value.expectedHeadRevisionId)
+    || typeof value.legacyBaseline !== 'boolean'
+    || !Array.isArray(value.changes)
+    || !Array.isArray(value.overlaps)
+  ) return null
+  const stats = parseDiffStats(value.stats)
+  const changes = value.changes.map(parseCatalogWordChange)
+  const overlaps = value.overlaps.map(parseCatalogConflict)
+  if (!stats || changes.some((change) => change === null) || overlaps.some((conflict) => conflict === null)) return null
+  return {
+    catalogId: value.catalogId,
+    catalogTitle: value.catalogTitle,
+    sourceWordbookId: value.sourceWordbookId,
+    baseRevisionId: value.baseRevisionId,
+    headRevisionId: value.headRevisionId,
+    expectedSourceUpdatedAt: value.expectedSourceUpdatedAt,
+    expectedHeadRevisionId: value.expectedHeadRevisionId,
+    legacyBaseline: value.legacyBaseline,
+    changes: changes as CatalogWordChange[],
+    stats,
+    overlaps: overlaps as CatalogConflict[],
+  }
+}
+
+function parseRevertPreview(value: unknown): RevertPreview | null {
+  if (
+    !isRecord(value)
+    || !isText(value.catalogId)
+    || !isText(value.revisionId)
+    || !isText(value.headRevisionId)
+    || !Array.isArray(value.changes)
+    || !Array.isArray(value.conflicts)
+    || typeof value.alreadyReverted !== 'boolean'
+  ) return null
+  const stats = parseDiffStats(value.stats)
+  const changes = value.changes.map(parseCatalogWordChange)
+  const conflicts = value.conflicts.map(parseCatalogConflict)
+  if (!stats || changes.some((change) => change === null) || conflicts.some((conflict) => conflict === null)) return null
+  return {
+    catalogId: value.catalogId,
+    revisionId: value.revisionId,
+    headRevisionId: value.headRevisionId,
+    changes: changes as CatalogWordChange[],
+    stats,
+    conflicts: conflicts as CatalogConflict[],
+    alreadyReverted: value.alreadyReverted,
+  }
+}
+
+function parseCursorPage<T>(value: unknown, parser: (item: unknown) => T | null): CursorPage<T> | null {
+  if (!isRecord(value) || !Array.isArray(value.items) || (value.nextCursor !== undefined && !isText(value.nextCursor))) return null
+  const items = value.items.map(parser)
+  return items.some((item) => item === null)
+    ? null
+    : { items: items as T[], ...(value.nextCursor ? { nextCursor: value.nextCursor } : {}) }
 }
 
 function isWordLevel(value: unknown): value is WordLevel {
@@ -656,10 +1025,12 @@ function parseImportDraftEntry(value: unknown): ImportDraftEntry | null {
   const status = parseImportStatus(value.status) ?? 'ready'
   if (
     (value.id !== undefined && !isText(value.id)) ||
+    (value.phonetic !== undefined && !isText(value.phonetic)) ||
     (value.pos !== undefined && !isText(value.pos)) ||
     (value.enDefinition !== undefined && !isText(value.enDefinition)) ||
     (value.zhMeaning !== undefined && !isText(value.zhMeaning)) ||
     (value.example !== undefined && !isText(value.example)) ||
+    (value.meanings !== undefined && (!Array.isArray(value.meanings) || value.meanings.some((meaning) => parseMeaning(meaning) === null))) ||
     (value.entry !== undefined && parseCatalogEntry(value.entry) === null) ||
     (value.reason !== undefined && !isText(value.reason)) ||
     (value.conflictWith !== undefined && !isText(value.conflictWith)) ||
@@ -668,10 +1039,12 @@ function parseImportDraftEntry(value: unknown): ImportDraftEntry | null {
   return {
     line: value.line,
     word: value.word,
+    phonetic: value.phonetic,
     pos: value.pos,
     enDefinition: value.enDefinition,
     zhMeaning: value.zhMeaning,
     example: value.example,
+    meanings: value.meanings === undefined ? undefined : value.meanings.map(parseMeaning) as WordMeaning[],
     id: value.id,
     status,
     reason: value.reason,
@@ -737,10 +1110,90 @@ export class WorkspaceApi {
   getCatalog(id: string) { return this.json(`api/catalog/wordbooks/${encodeURIComponent(id)}`, {}, parseCatalogDetail) }
   async toggleFavorite(id: string) { return this.json<{ favorited: boolean; favoriteCount: number }>(`api/catalog/wordbooks/${encodeURIComponent(id)}/favorite`, { method: 'POST' }, (value) => isRecord(value) && typeof value.favorited === 'boolean' && isCount(value.favoriteCount) ? { favorited: value.favorited, favoriteCount: value.favoriteCount } : null) }
   async addCatalog(id: string) { return this.json<{ wordbook: MyWordbook; created: boolean }>(`api/catalog/wordbooks/${encodeURIComponent(id)}/add`, { method: 'POST' }, (value) => isRecord(value) && typeof value.created === 'boolean' && parseMyWordbook(value.wordbook) ? { wordbook: parseMyWordbook(value.wordbook)!, created: value.created } : null) }
-  async upload(input: { title: string; description?: string; exams?: string[]; goals?: string[]; words: WordEntry[]; visibility?: CatalogVisibility }) { return this.json('api/catalog/uploads', { method: 'POST', body: JSON.stringify(input) }, parseCatalog) }
-  uploadWordbook(input: { sourceWordbookId: string; title?: string; description?: string; exams?: string[]; goals?: string[]; visibility?: CatalogVisibility }) { return this.json('api/catalog/uploads', { method: 'POST', body: JSON.stringify(input) }, parseCatalog) }
-  updateCatalogSnapshot(catalogId: string, input: { sourceWordbookId?: string; title?: string; description?: string; exams?: string[]; goals?: string[]; visibility?: CatalogVisibility }) { return this.json(`api/catalog/wordbooks/${encodeURIComponent(catalogId)}`, { method: 'PATCH', body: JSON.stringify(input) }, parseCatalog) }
+  async upload(input: { title: string; description?: string; exams?: string[]; goals?: string[]; words: WordEntry[]; visibility?: CatalogVisibility; message?: string }) { return this.json('api/catalog/uploads', { method: 'POST', body: JSON.stringify(input) }, parseCatalog) }
+  uploadWordbook(input: { sourceWordbookId: string; title?: string; description?: string; exams?: string[]; goals?: string[]; visibility?: CatalogVisibility; message?: string }) { return this.json('api/catalog/uploads', { method: 'POST', body: JSON.stringify(input) }, parseCatalog) }
+  updateCatalogSnapshot(catalogId: string, input: { sourceWordbookId?: string; title?: string; description?: string; exams?: string[]; goals?: string[]; visibility?: CatalogVisibility; message?: string }) { return this.json(`api/catalog/wordbooks/${encodeURIComponent(catalogId)}`, { method: 'PATCH', body: JSON.stringify(input) }, parseCatalog) }
   async importShareCode(shareCode: string) { return this.json<{ wordbook: MyWordbook; created: boolean }>('api/catalog/imports', { method: 'POST', body: JSON.stringify({ shareCode }) }, (value) => isRecord(value) && typeof value.created === 'boolean' && parseMyWordbook(value.wordbook) ? { wordbook: parseMyWordbook(value.wordbook)!, created: value.created } : null) }
+  getContributionPreview(wordbookId: string) {
+    return this.json(`api/my/wordbooks/${encodeURIComponent(wordbookId)}/contribution-preview`, {}, parseContributionPreview)
+  }
+  createContribution(catalogId: string, input: {
+    title: string
+    description?: string
+    expectedSourceUpdatedAt: string
+    expectedHeadRevisionId: string
+  }) {
+    return this.json(
+      `api/catalog/wordbooks/${encodeURIComponent(catalogId)}/contributions`,
+      { method: 'POST', body: JSON.stringify(input) },
+      parseCatalogContribution,
+    )
+  }
+  listCatalogContributions(catalogId: string, cursor?: string, limit = 20) {
+    const url = new URL(`api/catalog/wordbooks/${encodeURIComponent(catalogId)}/contributions`, this.baseUrl)
+    if (cursor) url.searchParams.set('cursor', cursor)
+    url.searchParams.set('limit', String(limit))
+    return this.jsonUrl(url, {}, (value) => parseCursorPage(value, parseCatalogContribution))
+  }
+  getCatalogContribution(catalogId: string, contributionId: string) {
+    return this.json(
+      `api/catalog/wordbooks/${encodeURIComponent(catalogId)}/contributions/${encodeURIComponent(contributionId)}`,
+      {},
+      parseCatalogContribution,
+    )
+  }
+  mergeContribution(catalogId: string, contributionId: string, input: { expectedHeadRevisionId?: string; resolutionNote?: string } = {}) {
+    return this.json(
+      `api/catalog/wordbooks/${encodeURIComponent(catalogId)}/contributions/${encodeURIComponent(contributionId)}/merge`,
+      { method: 'POST', body: JSON.stringify(input) },
+      parseCatalogContribution,
+    )
+  }
+  closeContribution(catalogId: string, contributionId: string, resolutionNote?: string) {
+    return this.json(
+      `api/catalog/wordbooks/${encodeURIComponent(catalogId)}/contributions/${encodeURIComponent(contributionId)}/close`,
+      { method: 'POST', body: JSON.stringify({ ...(resolutionNote !== undefined ? { resolutionNote } : {}) }) },
+      parseCatalogContribution,
+    )
+  }
+  listCatalogRevisions(catalogId: string, cursor?: string, limit = 20) {
+    const url = new URL(`api/catalog/wordbooks/${encodeURIComponent(catalogId)}/revisions`, this.baseUrl)
+    if (cursor) url.searchParams.set('cursor', cursor)
+    url.searchParams.set('limit', String(limit))
+    return this.jsonUrl(url, {}, (value) => parseCursorPage(value, parseCatalogRevision))
+  }
+  getCatalogRevision(catalogId: string, revisionId: string) {
+    return this.json(
+      `api/catalog/wordbooks/${encodeURIComponent(catalogId)}/revisions/${encodeURIComponent(revisionId)}`,
+      {},
+      parseCatalogRevision,
+    )
+  }
+  getRevertPreview(catalogId: string, revisionId: string) {
+    return this.json(
+      `api/catalog/wordbooks/${encodeURIComponent(catalogId)}/revisions/${encodeURIComponent(revisionId)}/revert-preview`,
+      {},
+      parseRevertPreview,
+    )
+  }
+  revertRevision(catalogId: string, revisionId: string, input: { expectedHeadRevisionId: string; message?: string }) {
+    return this.json(
+      `api/catalog/wordbooks/${encodeURIComponent(catalogId)}/revisions/${encodeURIComponent(revisionId)}/revert`,
+      { method: 'POST', body: JSON.stringify(input) },
+      parseCatalogRevision,
+    )
+  }
+  listAccountContributions(scope: 'review' | 'authored', cursor?: string, limit = 20) {
+    const url = new URL('api/account/contributions', this.baseUrl)
+    url.searchParams.set('scope', scope)
+    url.searchParams.set('limit', String(limit))
+    if (cursor) url.searchParams.set('cursor', cursor)
+    return this.jsonUrl(url, {}, (value): ContributionInboxPage | null => {
+      if (!isRecord(value) || !isCount(value.openCount)) return null
+      const page = parseCursorPage(value, parseCatalogContribution)
+      return page ? { ...page, openCount: value.openCount } : null
+    })
+  }
   getStudySettings() { return this.json('api/my/study-settings', {}, parseStudySettingsSnapshot) }
   updateStudySettings(input: { shortcuts?: StudyShortcutPreferences; pronunciation?: PronunciationPreferences }) {
     return this.json('api/my/study-settings', { method: 'PATCH', body: JSON.stringify(input) }, parseSyncedStudySettings)
@@ -836,6 +1289,12 @@ export class WorkspaceApi {
   register(username: string, password: string) { return this.json('api/auth/register', { method: 'POST', body: JSON.stringify({ username, password }) }, parseAuthUser) }
   login(username: string, password: string) { return this.json('api/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) }, parseAuthUser) }
   logout() { return this.empty('api/auth/logout', { method: 'POST' }) }
+  changePassword(currentPassword: string, newPassword: string) {
+    return this.empty('api/account/password', {
+      method: 'POST',
+      body: JSON.stringify({ currentPassword, newPassword }),
+    })
+  }
   async exportAccount(): Promise<unknown> {
     const response = await this.fetch(new URL('api/account/export', this.baseUrl), this.requestInit({}))
     if (!response.ok) throw await responseError(response)
@@ -870,6 +1329,17 @@ export class WorkspaceApi {
     timeoutMs = this.timeoutMs,
   ): Promise<T> {
     const payload = await this.request(new URL(path, this.baseUrl), init, timeoutMs)
+    const parsed = parser(payload)
+    if (parsed === null) throw new Error('Backend response is invalid.')
+    return parsed
+  }
+  private async jsonUrl<T>(
+    url: URL,
+    init: RequestInit,
+    parser: (value: unknown) => T | null,
+    timeoutMs = this.timeoutMs,
+  ): Promise<T> {
+    const payload = await this.request(url, init, timeoutMs)
     const parsed = parser(payload)
     if (parsed === null) throw new Error('Backend response is invalid.')
     return parsed

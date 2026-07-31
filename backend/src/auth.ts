@@ -10,15 +10,30 @@ const SCRYPT_KEY_LENGTH = 64;
 const SCRYPT_OPTIONS = { N: 16_384, r: 8, p: 1, maxmem: 64 * 1024 * 1024 } as const;
 
 export type AuthCredentials = { username: string; password: string };
+export type PasswordChange = { currentPassword: string; newPassword: string };
+
+function normalizedPassword(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const password = value.normalize("NFC");
+  return password.length >= PASSWORD_MIN && password.length <= PASSWORD_MAX ? password : null;
+}
 
 export function parseAuthCredentials(value: unknown): AuthCredentials | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
   const input = value as Record<string, unknown>;
-  if (typeof input.username !== "string" || typeof input.password !== "string") return null;
+  if (typeof input.username !== "string") return null;
   const username = input.username.trim().normalize("NFKC");
-  const password = input.password.normalize("NFC");
-  if (!USERNAME_RE.test(username) || password.length < PASSWORD_MIN || password.length > PASSWORD_MAX) return null;
+  const password = normalizedPassword(input.password);
+  if (!USERNAME_RE.test(username) || !password) return null;
   return { username, password };
+}
+
+export function parsePasswordChange(value: unknown): PasswordChange | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const input = value as Record<string, unknown>;
+  const currentPassword = normalizedPassword(input.currentPassword);
+  const newPassword = normalizedPassword(input.newPassword);
+  return currentPassword && newPassword ? { currentPassword, newPassword } : null;
 }
 
 function derive(password: string, salt: Buffer): Promise<Buffer> {

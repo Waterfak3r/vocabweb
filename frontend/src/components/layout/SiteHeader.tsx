@@ -1,11 +1,10 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
-import { NavLink } from 'react-router'
+import { Link, NavLink, useLocation } from 'react-router'
 import { AuthDialog, type AuthMode } from '../account/AuthDialog'
 import { useAuth } from '../../hooks/useAuth'
 import { useTheme } from '../../hooks/useTheme'
 import { getEngagementApi } from '../../data/engagementApi'
 import { getWorkspaceApi } from '../../data/workspaceApi'
-import { rotateStudyClientId } from '../../data/studyApi'
 
 const NAVIGATION = [
   { to: '/', label: '查词', icon: 'search', end: true },
@@ -69,6 +68,7 @@ export function SiteHeader() {
   const [logoutError, setLogoutError] = useState('')
   const [loggingOut, setLoggingOut] = useState(false)
   const [unreadMessages, setUnreadMessages] = useState(0)
+  const [pendingContributions, setPendingContributions] = useState(0)
   const [donationOpen, setDonationOpen] = useState(false)
   const [donationImageFailed, setDonationImageFailed] = useState(false)
   const [donationImageUrl, setDonationImageUrl] = useState('')
@@ -82,6 +82,7 @@ export function SiteHeader() {
   const donationTriggerRef = useRef<HTMLButtonElement>(null)
   const { user, loading, login, register, logout } = useAuth()
   const { theme, toggleTheme } = useTheme()
+  const { pathname } = useLocation()
   const engagementApi = getEngagementApi()
 
   useEffect(() => {
@@ -105,6 +106,22 @@ export function SiteHeader() {
     void api.unreadMessageCount().then((count) => { if (active) setUnreadMessages(count) }).catch(() => undefined)
     return () => { active = false }
   }, [user])
+
+  useEffect(() => {
+    if (!user) {
+      setPendingContributions(0)
+      return
+    }
+    const api = getWorkspaceApi()
+    if (!api) return
+    let active = true
+    void api.listAccountContributions('review', undefined, 1)
+      .then((page) => {
+        if (active) setPendingContributions(page.openCount)
+      })
+      .catch(() => undefined)
+    return () => { active = false }
+  }, [pathname, user])
 
   useEffect(() => {
     const clear = () => setUnreadMessages(0)
@@ -192,38 +209,6 @@ export function SiteHeader() {
     } catch {
       setLogoutError('退出失败，请检查网络后重试。')
       setLoggingOut(false)
-    }
-  }
-
-  async function exportAccountData() {
-    const api = getWorkspaceApi()
-    if (!api) return
-    setLogoutError('')
-    try {
-      const payload = await api.exportAccount()
-      const url = URL.createObjectURL(new Blob([`${JSON.stringify(payload, null, 2)}\n`], { type: 'application/json' }))
-      const link = document.createElement('a')
-      link.href = url
-      link.download = `vacabweb-export-${new Date().toISOString().slice(0, 10)}.json`
-      link.click()
-      URL.revokeObjectURL(url)
-    } catch {
-      setLogoutError('数据导出失败，请稍后重试。')
-    }
-  }
-
-  async function deleteAccount() {
-    const api = getWorkspaceApi()
-    if (!api || !window.confirm('注销后，私人词书、学习记录、会话和发布内容将被永久删除。继续吗？')) return
-    const password = window.prompt('请输入当前密码确认注销账号：')
-    if (!password) return
-    setLogoutError('')
-    try {
-      await api.deleteAccount(password)
-      rotateStudyClientId()
-      window.location.assign('/')
-    } catch {
-      setLogoutError('注销失败，请确认密码后重试。')
     }
   }
 
@@ -341,7 +326,7 @@ export function SiteHeader() {
         <div ref={accountMenuRef} className="account-menu">
           <button
             ref={accountTriggerRef}
-            className="nav-link account-trigger"
+            className={`nav-link account-trigger${pathname === '/account' ? ' active' : ''}`}
             type="button"
             aria-expanded={accountOpen}
             aria-haspopup="menu"
@@ -353,6 +338,7 @@ export function SiteHeader() {
           >
             <NavIcon name="account" />
             账号
+            {pendingContributions > 0 && <span className="nav-unread" aria-label={`${pendingContributions} 条待审核建议`}>{pendingContributions > 99 ? '99+' : pendingContributions}</span>}
             <svg className="nav-chevron" viewBox="0 0 16 16" aria-hidden="true">
               <path d="m4.5 6 3.5 3.5L11.5 6" />
             </svg>
@@ -364,9 +350,11 @@ export function SiteHeader() {
               ) : user ? (
                 <>
                   <p className="account-user">{user.username}</p>
+                  <Link role="menuitem" to="/account" onClick={() => setAccountOpen(false)}>个人资料</Link>
+                  <Link role="menuitem" to="/marketplace/contributions" onClick={() => setAccountOpen(false)}>
+                    协作收件箱{pendingContributions > 0 ? `（${pendingContributions}）` : ''}
+                  </Link>
                   {user.capabilities.includes('site.settings.write') && <button type="button" role="menuitem" onClick={openDonationSettings}>配置打赏码</button>}
-                  <button type="button" role="menuitem" onClick={() => void exportAccountData()}>导出我的数据</button>
-                  <button type="button" role="menuitem" className="account-logout" onClick={() => void deleteAccount()}>注销账号</button>
                   <button
                     type="button"
                     role="menuitem"

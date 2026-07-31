@@ -19,7 +19,9 @@ export interface WordbookWord extends StudyWordEntry { id: string; addedAt: stri
 export interface CatalogWordbook {
   id: string; title: string; description: string; author: string;
   exams: CatalogExam[]; goals: LearningGoal[]; rating: number; uses: number;
-  createdAt: string; shareCode: string; words: StudyWordEntry[]; ownerClientId?: string;
+  createdAt: string; updatedAt: string; shareCode: string; words: StudyWordEntry[]; ownerClientId?: string;
+  /** Current immutable content version. Every content mutation advances this pointer. */
+  headRevisionId: string;
   /** Listing scope; `author` is the display name ("匿名" for anonymous uploads). */
   visibility: CatalogVisibility;
   /** Set when an authenticated account owns the entry; absent for anonymous/legacy uploads. */
@@ -35,12 +37,17 @@ export interface CatalogWordbook {
 }
 export type CatalogCard = Omit<CatalogWordbook, "words" | "ownerClientId" | "sourceWordbookId" | "authorUserId" | "seedKey" | "legacyUses" | "adopterClientIds"> & {
   wordCount: number; favoriteCount: number; favorited: boolean; added: boolean; uploaded: boolean;
+  collaborationEnabled: boolean;
+  openContributionCount: number;
+  latestRevision?: CatalogRevisionSummary;
   /** Only exposed to the owner, so the upload UI can refresh the correct private source. */
   sourceWordbookId?: string;
 };
 export type CatalogDetail = CatalogCard & { words: StudyWordEntry[]; };
 export interface MyWordbook {
   id: string; title: string; description: string; sourceCatalogId?: string;
+  /** Immutable public version copied when this wordbook was joined. */
+  sourceRevisionId?: string;
   category?: string; createdAt: string; updatedAt: string; deletedAt?: string; words: WordbookWord[];
   /** Omitted by legacy data; the default adaptive schedule is resolved at read time. */
   reviewSchedule?: ReviewSchedule;
@@ -48,10 +55,143 @@ export interface MyWordbook {
   studyPreferences?: WordbookStudyPreferences;
 }
 export interface MyWordbookCard {
-  id: string; title: string; description: string; sourceCatalogId?: string; category?: string; createdAt: string; updatedAt: string;
+  id: string; title: string; description: string; sourceCatalogId?: string; sourceRevisionId?: string; category?: string; createdAt: string; updatedAt: string;
   wordCount: number; progress: WordbookProgress; reviewSchedule: ReviewSchedule;
   studyPreferences?: WordbookStudyPreferences;
 }
+
+export type CatalogRevisionKind = "initial" | "update" | "merge" | "revert";
+export type CatalogContributionStatus = "open" | "merged" | "closed";
+export interface CatalogDiffStats {
+  additions: number;
+  deletions: number;
+  updates: number;
+  changedWords: number;
+}
+export type CatalogWordChange =
+  | { kind: "add"; key: string; after: StudyWordEntry }
+  | { kind: "delete"; key: string; before: StudyWordEntry }
+  | { kind: "update"; key: string; before: StudyWordEntry; after: StudyWordEntry };
+export interface CatalogRevision {
+  id: string;
+  catalogId: string;
+  parentRevisionId?: string;
+  kind: CatalogRevisionKind;
+  message: string;
+  authorUserId?: string;
+  author: string;
+  committerUserId?: string;
+  committer?: string;
+  createdAt: string;
+  changes: CatalogWordChange[];
+  stats: CatalogDiffStats;
+  contributionId?: string;
+  revertsRevisionId?: string;
+}
+export type CatalogRevisionSummary = Pick<
+  CatalogRevision,
+  "id" | "kind" | "message" | "author" | "committer" | "createdAt" | "stats" | "contributionId" | "revertsRevisionId"
+>;
+export interface CatalogContribution {
+  id: string;
+  catalogId: string;
+  sourceWordbookId: string;
+  contributorUserId?: string;
+  contributor: string;
+  baseRevisionId: string;
+  submittedHeadRevisionId: string;
+  title: string;
+  description: string;
+  status: CatalogContributionStatus;
+  changes: CatalogWordChange[];
+  stats: CatalogDiffStats;
+  createdAt: string;
+  updatedAt: string;
+  handledAt?: string;
+  handledByUserId?: string;
+  handledBy?: string;
+  resolutionNote?: string;
+  mergedRevisionId?: string;
+}
+export interface CatalogContributionView extends CatalogContribution {
+  catalogTitle: string;
+  canMerge: boolean;
+  canClose: boolean;
+}
+export interface CatalogRevisionView extends CatalogRevision {
+  catalogTitle: string;
+  canRevert: boolean;
+}
+export interface CatalogConflict {
+  key: string;
+  reason: "overlapping-change" | "source-diverged";
+  base?: StudyWordEntry;
+  current?: StudyWordEntry;
+  proposed?: StudyWordEntry;
+}
+export interface ContributionPreview {
+  catalogId: string;
+  catalogTitle: string;
+  sourceWordbookId: string;
+  baseRevisionId: string;
+  headRevisionId: string;
+  expectedSourceUpdatedAt: string;
+  expectedHeadRevisionId: string;
+  legacyBaseline: boolean;
+  changes: CatalogWordChange[];
+  stats: CatalogDiffStats;
+  overlaps: CatalogConflict[];
+}
+export interface CreateCatalogContributionInput {
+  title: string;
+  description?: string;
+  expectedSourceUpdatedAt: string;
+  expectedHeadRevisionId: string;
+}
+export interface ResolveCatalogContributionInput {
+  expectedHeadRevisionId?: string;
+  resolutionNote?: string;
+}
+export interface RevertPreview {
+  catalogId: string;
+  revisionId: string;
+  headRevisionId: string;
+  changes: CatalogWordChange[];
+  stats: CatalogDiffStats;
+  conflicts: CatalogConflict[];
+  alreadyReverted: boolean;
+}
+export interface RevertRevisionInput {
+  expectedHeadRevisionId: string;
+  message?: string;
+}
+export interface CursorPage<T> {
+  items: T[];
+  nextCursor?: string;
+}
+export interface CursorQuery {
+  cursor?: string;
+  limit?: number;
+}
+export type ContributionMutationResult =
+  | { kind: "created"; contribution: CatalogContributionView }
+  | { kind: "updated"; contribution: CatalogContributionView }
+  | { kind: "not-found" }
+  | { kind: "forbidden" }
+  | { kind: "disabled" }
+  | { kind: "stale"; headRevisionId: string; sourceUpdatedAt?: string }
+  | { kind: "duplicate-open"; contributionId: string }
+  | { kind: "empty" }
+  | { kind: "too-large"; count: number }
+  | { kind: "conflict"; conflicts: CatalogConflict[] };
+export type RevisionMutationResult =
+  | { kind: "updated"; revision: CatalogRevisionView }
+  | { kind: "not-found" }
+  | { kind: "forbidden" }
+  | { kind: "disabled" }
+  | { kind: "stale"; headRevisionId: string }
+  | { kind: "already-reverted" }
+  | { kind: "conflict"; conflicts: CatalogConflict[] };
 
 /** Proficiency ladder: 0 未学习 / 1 初识 / 2 熟悉 / 3 掌握 / 4 精通. */
 export type WordLevel = 0 | 1 | 2 | 3 | 4;
@@ -237,11 +377,15 @@ export interface CatalogAuthor { userId: string; username: string; }
 /** Legacy direct upload remains supported; modern uploads reference the private wordbook. */
 export interface UploadCatalogWordbookInput extends Partial<CreateMyWordbookInput> {
   sourceWordbookId?: string; exams?: CatalogExam[]; goals?: LearningGoal[];
+  /** Optional immutable revision message; defaults to "首次发布". */
+  message?: string;
   /** Defaults to "public" in the store; "public" uploads must be authenticated (enforced by the route). */
   visibility?: CatalogVisibility; author?: CatalogAuthor;
 }
 export interface UpdateCatalogWordbookInput {
   sourceWordbookId?: string; title?: string; description?: string; exams?: CatalogExam[]; goals?: LearningGoal[];
+  /** Optional immutable revision message; defaults to "更新词书" when content changes. */
+  message?: string;
   /** Switching TO "public" must be authenticated (enforced by the route), which also stamps the author. */
   visibility?: CatalogVisibility; author?: CatalogAuthor;
 }
@@ -250,10 +394,10 @@ export type ImportEntryStatus = "processing" | "ready" | "invalid" | "duplicate"
 export type ImportResolution = "keep" | "replace" | "merge" | "discard";
 export type ImportCommitMode = "append" | "overwrite";
 export interface ImportLineInput {
-  line: number; word: string; pos?: string; enDefinition?: string; zhMeaning?: string; example?: string;
+  line: number; word: string; phonetic?: string; pos?: string; enDefinition?: string; zhMeaning?: string; example?: string; meanings?: StudyMeaning[];
 }
 export interface ImportDraftEntry {
-  id: string; line: number; word?: string; pos?: string; enDefinition?: string; zhMeaning?: string; example?: string;
+  id: string; line: number; word?: string; phonetic?: string; pos?: string; enDefinition?: string; zhMeaning?: string; example?: string; meanings?: StudyMeaning[];
   status: ImportEntryStatus; reason?: string; conflictWith?: string; resolution?: ImportResolution;
   /** The normalized English data resolved by the server, if any. */
   entry?: StudyWordEntry;
@@ -304,6 +448,8 @@ export interface StudyStore {
   getUserByClientId(clientId: string): Promise<AccountUser | null>;
   /** Changes an existing account's durable role. Intended for local administration tooling. */
   setUserRole(username: string, role: UserRole): Promise<AccountUser | null>;
+  /** Replaces a password hash and revokes every session except the one making the change. */
+  updateUserPassword(userId: string, passwordHash: string, keepSessionTokenHash: string): Promise<AccountUser | null>;
   exportUserData(userId: string): Promise<unknown | null>;
   deleteUser(userId: string): Promise<boolean>;
   createSession(tokenHash: string, userId: string, expiresAt: string): Promise<void>;
@@ -322,6 +468,70 @@ export interface StudyStore {
   upsertSeedCatalog(clientId: string, input: UploadCatalogWordbookInput & { seedKey: string; author: CatalogAuthor }): Promise<CatalogCard>;
   updateCatalog(clientId: string, id: string, input: UpdateCatalogWordbookInput): Promise<CatalogCard | null>;
   importShareCode(clientId: string, shareCode: string): Promise<{ wordbook: MyWordbookCard; created: boolean } | null>;
+  getContributionPreview(clientId: string, userId: string, wordbookId: string): Promise<ContributionPreview | null>;
+  createContribution(
+    clientId: string,
+    author: CatalogAuthor,
+    catalogId: string,
+    input: CreateCatalogContributionInput,
+  ): Promise<ContributionMutationResult>;
+  listCatalogContributions(
+    clientId: string,
+    userId: string | undefined,
+    catalogId: string,
+    query: CursorQuery,
+  ): Promise<CursorPage<CatalogContributionView> | null>;
+  getCatalogContribution(
+    clientId: string,
+    userId: string | undefined,
+    catalogId: string,
+    contributionId: string,
+  ): Promise<CatalogContributionView | null>;
+  mergeContribution(
+    clientId: string,
+    author: CatalogAuthor,
+    catalogId: string,
+    contributionId: string,
+    input: ResolveCatalogContributionInput,
+  ): Promise<ContributionMutationResult>;
+  closeContribution(
+    clientId: string,
+    author: CatalogAuthor,
+    catalogId: string,
+    contributionId: string,
+    input: ResolveCatalogContributionInput,
+  ): Promise<ContributionMutationResult>;
+  listCatalogRevisions(
+    clientId: string,
+    userId: string | undefined,
+    catalogId: string,
+    query: CursorQuery,
+  ): Promise<CursorPage<CatalogRevisionView> | null>;
+  getCatalogRevision(
+    clientId: string,
+    userId: string | undefined,
+    catalogId: string,
+    revisionId: string,
+  ): Promise<CatalogRevisionView | null>;
+  getRevertPreview(
+    clientId: string,
+    userId: string,
+    catalogId: string,
+    revisionId: string,
+  ): Promise<RevertPreview | null>;
+  revertRevision(
+    clientId: string,
+    author: CatalogAuthor,
+    catalogId: string,
+    revisionId: string,
+    input: RevertRevisionInput,
+  ): Promise<RevisionMutationResult>;
+  listAccountContributions(
+    clientId: string,
+    userId: string,
+    scope: "review" | "authored",
+    query: CursorQuery,
+  ): Promise<CursorPage<CatalogContributionView> & { openCount: number }>;
   getStudySettings(clientId: string): Promise<SyncedStudySettings | null>;
   updateStudySettings(clientId: string, input: UpdateStudySettingsInput): Promise<SyncedStudySettings>;
   listMyWordbooks(clientId: string, trash: boolean): Promise<MyWordbookCard[]>;

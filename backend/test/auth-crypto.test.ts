@@ -6,6 +6,7 @@ import {
   hashPassword,
   hashSessionToken,
   parseAuthCredentials,
+  parsePasswordChange,
   readSessionToken,
   sessionCookie,
   sessionExpiresAt,
@@ -20,6 +21,18 @@ test("auth credentials normalize usernames and reject malformed input", () => {
   assert.equal(parseAuthCredentials({ username: "a", password: "password123" }), null);
   assert.equal(parseAuthCredentials({ username: "alice!", password: "password123" }), null);
   assert.equal(parseAuthCredentials({ username: "alice", password: "short" }), null);
+});
+
+test("password changes normalize both secrets and reject malformed input", () => {
+  assert.deepEqual(parsePasswordChange({
+    currentPassword: "current-password",
+    newPassword: "ｎew-password",
+  }), {
+    currentPassword: "current-password",
+    newPassword: "ｎew-password",
+  });
+  assert.equal(parsePasswordChange({ currentPassword: "short", newPassword: "new-password" }), null);
+  assert.equal(parsePasswordChange({ currentPassword: "current-password", newPassword: 42 }), null);
 });
 
 test("scrypt password records are salted, versioned, and verifiable", async () => {

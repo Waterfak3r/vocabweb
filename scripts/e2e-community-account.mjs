@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -14,6 +14,8 @@ const repoRoot = resolve(scriptDir, "..");
 const clientIdKey = "vocab-ielts:client-id:v1";
 const username = `验收用户_${Date.now().toString(36)}`;
 const password = "E2e-pass-2026!";
+const changedPassword = "E2e-pass-updated-2026!";
+const visualCaptureDir = process.env.ACCOUNT_VISUAL_CAPTURE?.trim();
 const sourceTitle = `匿名验收词本-${Date.now().toString(36)}`;
 const titles = {
   public: `${sourceTitle}-公开`,
@@ -88,9 +90,15 @@ function watchPage(page, label, errors) {
     errors.push(`[${label}] console.error: ${text}`);
   });
   page.on("requestfailed", (request) => {
-    // Successful logout immediately reloads the document, so Chromium may mark
-    // the already-handled 204 fetch as aborted during navigation.
-    if (request.url().endsWith("/api/auth/logout") && request.failure()?.errorText === "net::ERR_ABORTED") return;
+    // These successful 204 mutations are immediately followed by a reload or
+    // navigation in the verified UI flow, so Chromium may later mark their
+    // already-handled request records as aborted.
+    const completedMutation = [
+      "/api/auth/logout",
+      "/api/account/password",
+      "/api/account",
+    ].some((path) => request.url().endsWith(path));
+    if (completedMutation && request.failure()?.errorText === "net::ERR_ABORTED") return;
     errors.push(`[${label}] requestfailed: ${request.method()} ${request.url()} (${request.failure()?.errorText ?? "unknown"})`);
   });
 }
@@ -138,17 +146,17 @@ async function publish(page, visibility, title) {
 }
 
 async function openAuth(page, action) {
-  await page.getByRole("button", { name: "账号" }).click();
+  await page.getByRole("button", { name: "账号", exact: true }).click();
   await page.getByRole("menuitem", { name: action, exact: true }).click();
   return page.getByRole("dialog", { name: action });
 }
 
-async function signIn(page) {
+async function signIn(page, passwordValue = password) {
   const dialog = await openAuth(page, "登录");
   await dialog.getByLabel("用户名").fill(username);
-  await dialog.getByLabel("密码").fill(password);
+  await dialog.getByLabel("密码").fill(passwordValue);
   await dialog.getByRole("button", { name: "登录", exact: true }).click();
-  await page.getByRole("button", { name: "账号" }).click();
+  await page.getByRole("button", { name: "账号", exact: true }).click();
   await page.getByText(username, { exact: true }).waitFor();
   await page.keyboard.press("Escape");
 }
@@ -215,7 +223,7 @@ async function main() {
     await register.getByLabel("用户名").fill(username);
     await register.getByLabel("密码").fill(password);
     await register.getByRole("button", { name: "注册", exact: true }).click();
-    await owner.getByRole("button", { name: "账号" }).click();
+    await owner.getByRole("button", { name: "账号", exact: true }).click();
     await owner.getByText(username, { exact: true }).waitFor();
     await owner.keyboard.press("Escape");
     const afterRegister = await api(owner, "/api/my/wordbooks");
@@ -223,6 +231,26 @@ async function main() {
     await owner.goto("/wordbook");
     await owner.getByText(sourceTitle, { exact: true }).first().waitFor();
     step("注册成功，匿名词本完整保留");
+
+    await owner.getByRole("button", { name: "账号", exact: true }).click();
+    await owner.getByRole("menuitem", { name: "个人资料" }).click();
+    await owner.getByRole("heading", { name: "账户资料" }).waitFor();
+    await owner.locator(".account-metrics dd").first().waitFor();
+    assert.deepEqual(await owner.locator(".account-metrics dd").allTextContents(), ["1", "1", "0"]);
+    step("账户资料页展示真实词书、收录词和上传统计");
+    if (visualCaptureDir) {
+      const captureDir = resolve(repoRoot, visualCaptureDir);
+      await mkdir(captureDir, { recursive: true });
+      await owner.setViewportSize({ width: 1440, height: 900 });
+      await owner.screenshot({ path: join(captureDir, "account-page-light.png"), fullPage: true });
+      await owner.getByRole("button", { name: "切换到黑夜模式" }).click();
+      await owner.screenshot({ path: join(captureDir, "account-page-dark.png"), fullPage: true });
+      await owner.setViewportSize({ width: 390, height: 844 });
+      await owner.screenshot({ path: join(captureDir, "account-page-mobile.png"), fullPage: true });
+      await owner.getByRole("button", { name: "切换到白天模式" }).click();
+      await owner.setViewportSize({ width: 1280, height: 720 });
+      step("账户资料页视觉快照已生成");
+    }
 
     await owner.goto("/marketplace");
     await owner.getByRole("heading", { name: "共享单词本广场" }).waitFor();
@@ -266,9 +294,9 @@ async function main() {
     step("私密上传无法通过分享码导入");
 
     await owner.goto("/");
-    await owner.getByRole("button", { name: "账号" }).click();
+    await owner.getByRole("button", { name: "账号", exact: true }).click();
     await owner.getByRole("menuitem", { name: "退出登录" }).click();
-    await owner.getByRole("button", { name: "账号" }).click();
+    await owner.getByRole("button", { name: "账号", exact: true }).click();
     await owner.getByText("未登录", { exact: true }).waitFor();
     await owner.keyboard.press("Escape");
     const anonymousAfterLogout = await api(owner, "/api/my/wordbooks");
@@ -285,6 +313,49 @@ async function main() {
     await owner.goto("/wordbook");
     await owner.getByText(sourceTitle, { exact: true }).first().waitFor();
     step("重新登录后账号数据恢复");
+
+    await owner.goto("/account");
+    await owner.getByRole("heading", { name: "账户资料" }).waitFor();
+    const [download] = await Promise.all([
+      owner.waitForEvent("download"),
+      owner.getByRole("button", { name: "导出数据", exact: true }).click(),
+    ]);
+    assert.match(download.suggestedFilename(), /^vacabweb-export-\d{4}-\d{2}-\d{2}\.json$/);
+    await owner.getByText("数据导出文件已生成。", { exact: true }).waitFor();
+    step("账户数据可从资料页下载");
+
+    await owner.getByLabel("当前密码").fill(password);
+    await owner.getByLabel("新密码", { exact: true }).fill(changedPassword);
+    await owner.getByLabel("确认新密码").fill(changedPassword);
+    await owner.getByRole("button", { name: "更新密码", exact: true }).click();
+    await owner.getByText("密码已更新，其他设备上的登录已退出。", { exact: true }).waitFor();
+    step("账户资料页可更新密码");
+
+    await owner.getByRole("button", { name: "账号", exact: true }).click();
+    await owner.getByRole("menuitem", { name: "退出登录" }).click();
+    await owner.getByRole("button", { name: "账号", exact: true }).click();
+    await owner.getByText("未登录", { exact: true }).waitFor();
+    await owner.keyboard.press("Escape");
+    await signIn(owner, changedPassword);
+    step("新密码可重新登录，旧会话流程保持完整");
+
+    await owner.goto("/account");
+    await owner.getByRole("button", { name: "注销账号", exact: true }).click();
+    const deleteDialog = owner.getByRole("dialog", { name: "永久注销账号" });
+    await deleteDialog.getByLabel(`输入用户名“${username}”确认`).fill(username);
+    await deleteDialog.getByLabel("当前密码").fill(changedPassword);
+    if (visualCaptureDir) {
+      await owner.screenshot({
+        path: join(resolve(repoRoot, visualCaptureDir), "account-delete-dialog.png"),
+        fullPage: true,
+      });
+    }
+    await deleteDialog.getByRole("button", { name: "永久注销", exact: true }).click();
+    await owner.waitForURL((url) => url.pathname === "/");
+    await owner.getByRole("button", { name: "账号", exact: true }).click();
+    await owner.getByText("未登录", { exact: true }).waitFor();
+    await owner.keyboard.press("Escape");
+    step("注销确认对话框删除账号并回到匿名状态");
 
     await guestContext.close();
     await ownerContext.close();

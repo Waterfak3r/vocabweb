@@ -177,3 +177,538 @@
   .feedback-backdrop { align-items: end; padding: 0; }
   .feedback-dialog { width: 100%; max-height: 92vh; border-radius: 1rem 1rem 0 0; }
 }
+
+/* ── 账户资料页 ── */
+.account-page {
+  display: grid;
+  gap: 2rem;
+  width: min(76rem, 100%);
+  margin-inline: auto;
+  padding-bottom: 4.5rem;
+}
+
+.account-layout {
+  display: grid;
+  grid-template-columns: minmax(16rem, 0.42fr) minmax(0, 1fr);
+  gap: 2rem;
+  align-items: start;
+}
+
+.account-identity {
+  position: sticky;
+  top: 1.5rem;
+  padding: 1.5rem;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-lg);
+  background: var(--surface-solid);
+  box-shadow: var(--shadow-soft);
+}
+
+.account-monogram {
+  display: grid;
+  width: 4.75rem;
+  height: 4.75rem;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--rule));
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-family: var(--font-serif);
+  font-size: 2rem;
+  font-weight: 700;
+}
+
+.account-identity-copy {
+  margin-top: 1rem;
+}
+
+.account-identity-copy h2 {
+  overflow-wrap: anywhere;
+  font-family: var(--font-serif);
+  font-size: var(--text-xl);
+}
+
+.account-identity-copy p {
+  margin-top: 0.15rem;
+  color: var(--muted);
+}
+
+.account-meta {
+  display: grid;
+  gap: 0.7rem;
+  margin-top: 1.25rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--rule);
+}
+
+.account-meta > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.account-meta dt {
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.account-meta dd {
+  font-weight: 600;
+  text-align: right;
+}
+
+.account-overview {
+  margin-top: 1.4rem;
+}
+
+.account-overview h3 {
+  margin-bottom: 0.65rem;
+  font-family: var(--font-serif);
+  font-size: var(--text-md);
+}
+
+.account-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border-block: 1px solid var(--rule);
+}
+
+.account-metrics > div {
+  min-width: 0;
+  padding: 0.8rem 0.45rem;
+}
+
+.account-metrics > div + div {
+  border-left: 1px solid var(--rule);
+}
+
+.account-metrics dt {
+  color: var(--muted);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+}
+
+.account-metrics dd {
+  margin-top: 0.15rem;
+  overflow: hidden;
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: var(--text-lg);
+  font-weight: 500;
+  text-overflow: ellipsis;
+}
+
+.account-overview-error {
+  padding: 0.75rem;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-md);
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.account-overview-error button {
+  margin-top: 0.35rem;
+  color: var(--accent-strong);
+  font-weight: 700;
+}
+
+.account-sections {
+  overflow: hidden;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-lg);
+  background: var(--surface-solid);
+  box-shadow: var(--shadow-soft);
+}
+
+.account-sections > section {
+  padding: 1.6rem;
+}
+
+.account-sections > section + section {
+  border-top: 1px solid var(--rule);
+}
+
+.account-sections section > header {
+  margin-bottom: 1.2rem;
+}
+
+.account-sections section > header h2 {
+  font-family: var(--font-serif);
+  font-size: var(--text-lg);
+}
+
+.account-sections section > header p {
+  max-width: 58ch;
+  margin-top: 0.25rem;
+  color: var(--muted);
+}
+
+.account-details {
+  display: grid;
+  max-width: 38rem;
+  gap: 0.65rem;
+  padding-top: 0.25rem;
+}
+
+.account-details > div {
+  display: grid;
+  grid-template-columns: minmax(7rem, 0.38fr) minmax(0, 1fr);
+  gap: 1rem;
+  align-items: baseline;
+}
+
+.account-details dt {
+  color: var(--muted);
+}
+
+.account-details dd {
+  overflow-wrap: anywhere;
+  font-weight: 600;
+}
+
+.account-password-form {
+  display: grid;
+  max-width: 33rem;
+  gap: 0.9rem;
+}
+
+.account-form-footer {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  min-height: 2.75rem;
+  margin-top: 0.25rem;
+}
+
+.account-form-footer .btn {
+  flex: 0 0 auto;
+}
+
+.account-form-error,
+.account-form-success {
+  font-size: var(--text-sm);
+}
+
+.account-form-error {
+  color: var(--danger);
+}
+
+.account-form-success {
+  color: var(--success);
+}
+
+.account-action-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.5rem;
+}
+
+.account-action-row strong {
+  display: block;
+  font-size: var(--text-md);
+}
+
+.account-action-row p {
+  margin-top: 0.1rem;
+  color: var(--muted);
+}
+
+.account-export-status {
+  min-height: 1.4em;
+  margin-top: 0.55rem;
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.account-privacy-link {
+  display: inline-block;
+  margin-top: 0.5rem;
+  font-weight: 600;
+}
+
+.account-privacy-link:hover {
+  text-decoration: underline;
+}
+
+.account-danger-section {
+  background: color-mix(in srgb, var(--danger-soft) 44%, var(--surface-solid));
+}
+
+.account-danger-section .btn-danger {
+  border-color: color-mix(in srgb, var(--danger) 42%, var(--rule));
+}
+
+.account-page .btn:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+/* 登录前和加载状态维持与最终布局相同的视觉占位。 */
+.account-gate {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 1.25rem;
+  align-items: center;
+  padding: 2rem;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-lg);
+  background: var(--surface-solid);
+  box-shadow: var(--shadow-soft);
+}
+
+.account-gate-mark {
+  display: grid;
+  width: 4rem;
+  height: 4rem;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-family: var(--font-serif);
+  font-size: 2rem;
+  font-weight: 700;
+}
+
+.account-gate h2 {
+  font-family: var(--font-serif);
+  font-size: var(--text-lg);
+}
+
+.account-gate p:not(.account-gate-mark) {
+  margin-top: 0.2rem;
+  color: var(--muted);
+}
+
+.account-gate-actions {
+  display: flex;
+  gap: 0.65rem;
+}
+
+.account-loading {
+  display: grid;
+  grid-template-columns: minmax(16rem, 0.42fr) minmax(0, 1fr);
+  gap: 2rem;
+}
+
+.account-loading > span,
+.account-loading > div {
+  min-height: 24rem;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-lg);
+  background: var(--surface-solid);
+}
+
+.account-loading > div {
+  display: grid;
+  align-content: start;
+  gap: 1px;
+  overflow: hidden;
+}
+
+.account-loading > div span {
+  display: block;
+  height: 7.5rem;
+  background: var(--hover-bg);
+}
+
+.account-metrics-loading {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1px;
+  overflow: hidden;
+  border-block: 1px solid var(--rule);
+  background: var(--rule);
+}
+
+.account-metrics-loading span {
+  height: 4rem;
+  background: var(--hover-bg);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .account-loading > span,
+  .account-loading > div span,
+  .account-metrics-loading span {
+    animation: account-skeleton 1.4s ease-in-out infinite alternate;
+  }
+}
+
+@keyframes account-skeleton {
+  from { opacity: 0.48; }
+  to { opacity: 0.9; }
+}
+
+/* ── 注销账号对话框 ── */
+.account-modal-backdrop {
+  position: fixed;
+  z-index: 100;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: rgb(10 20 31 / 58%);
+}
+
+.account-delete-dialog {
+  width: min(31rem, 100%);
+  max-height: calc(100dvh - 2rem);
+  overflow: auto;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-lg);
+  background: var(--surface-solid);
+  box-shadow: var(--shadow-modal);
+}
+
+.account-delete-dialog > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1.15rem 1.3rem;
+  border-bottom: 1px solid var(--rule);
+}
+
+.account-delete-dialog > header p {
+  color: var(--danger);
+  font-size: var(--text-sm);
+  font-weight: 700;
+}
+
+.account-delete-dialog > header h2 {
+  margin-top: 0.15rem;
+  font-family: var(--font-serif);
+  font-size: var(--text-lg);
+}
+
+.account-delete-dialog > header button {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 1.55rem;
+  line-height: 1;
+}
+
+.account-delete-dialog > header button:disabled {
+  cursor: wait;
+  opacity: 0.5;
+}
+
+.account-delete-warning {
+  margin: 1.2rem 1.3rem 0;
+  padding: 0.85rem 1rem;
+  border-left: 3px solid var(--danger);
+  background: var(--danger-soft);
+  color: var(--ink);
+}
+
+.account-delete-warning strong {
+  color: var(--danger);
+}
+
+.account-delete-warning p {
+  margin-top: 0.25rem;
+  font-size: var(--text-sm);
+}
+
+.account-delete-dialog form {
+  display: grid;
+  gap: 0.9rem;
+  padding: 1.2rem 1.3rem 1.3rem;
+}
+
+.account-delete-dialog form > footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.65rem;
+  margin-top: 0.35rem;
+}
+
+.account-delete-dialog .btn-danger {
+  border-color: var(--danger);
+  background: var(--danger);
+  color: var(--surface-solid);
+}
+
+.account-delete-dialog .btn-danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger) 88%, var(--ink));
+}
+
+@media (max-width: 760px) {
+  .account-page {
+    gap: 1.4rem;
+    padding-bottom: 3rem;
+  }
+
+  .account-layout,
+  .account-loading {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 1rem;
+  }
+
+  .account-identity {
+    position: static;
+  }
+
+  .account-loading > span {
+    min-height: 14rem;
+  }
+
+  .account-loading > div {
+    min-height: 22rem;
+  }
+
+  .account-gate {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .account-gate-actions {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 520px) {
+  .account-identity,
+  .account-sections > section,
+  .account-gate {
+    padding: 1.1rem;
+  }
+
+  .account-details > div {
+    grid-template-columns: 1fr;
+    gap: 0.1rem;
+  }
+
+  .account-action-row,
+  .account-form-footer {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .account-action-row .btn,
+  .account-form-footer .btn {
+    width: 100%;
+  }
+
+  .account-gate {
+    grid-template-columns: 1fr;
+  }
+
+  .account-gate-actions {
+    grid-column: auto;
+  }
+
+  .account-gate-actions .btn {
+    flex: 1;
+  }
+
+  .account-modal-backdrop {
+    align-items: end;
+    padding: 0;
+  }
+
+  .account-delete-dialog {
+    max-height: 94dvh;
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  }
+}

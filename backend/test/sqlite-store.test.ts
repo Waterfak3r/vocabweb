@@ -130,6 +130,7 @@ test("SQLite exposes constrained, queryable user/session/catalog rows", async (t
   assert.equal(created.kind, "created");
   if (created.kind !== "created") return;
   await store.createSession("token-hash", created.user.id, "2026-08-27T00:00:00.000Z");
+  await store.createSession("other-token-hash", created.user.id, "2026-08-27T00:00:00.000Z");
   const privateBook = await store.createMyWordbook(CLIENT, { title: "Queryable" });
   const catalog = await store.uploadCatalog(CLIENT, {
     sourceWordbookId: privateBook.id,
@@ -146,6 +147,18 @@ test("SQLite exposes constrained, queryable user/session/catalog rows", async (t
   assert.deepEqual(
     inspection.prepare("SELECT user_id, expires_at FROM sessions WHERE token_hash = ?").get("token-hash"),
     { user_id: created.user.id, expires_at: "2026-08-27T00:00:00.000Z" },
+  );
+  assert.equal(
+    (await store.updateUserPassword(created.user.id, "scrypt:updated-hash", "token-hash"))?.passwordHash,
+    "scrypt:updated-hash",
+  );
+  assert.deepEqual(
+    inspection.prepare("SELECT password_hash FROM users WHERE id = ?").get(created.user.id),
+    { password_hash: "scrypt:updated-hash" },
+  );
+  assert.deepEqual(
+    inspection.prepare("SELECT token_hash FROM sessions ORDER BY token_hash").all(),
+    [{ token_hash: "token-hash" }],
   );
   assert.deepEqual(
     inspection.prepare("SELECT owner_client_id, author_user_id, visibility, title FROM catalog").get(),
@@ -168,6 +181,75 @@ test("SQLite exposes constrained, queryable user/session/catalog rows", async (t
   );
   inspection.close();
   store.close();
+});
+
+test("SQLite persists v6 revisions and contributions with indexes and catalog cascades", async (t) => {
+  const files = await fixture(t);
+  const publisherClient = "client-sqlite-publisher";
+  const contributorClient = "client-sqlite-contributor";
+  const store = new SqliteStudyStore(files.databaseFile);
+  const publisherResult = await store.createUser("Publisher", "hash", publisherClient);
+  const contributorResult = await store.createUser("Contributor", "hash", contributorClient);
+  assert.equal(publisherResult.kind, "created");
+  assert.equal(contributorResult.kind, "created");
+  if (publisherResult.kind !== "created" || contributorResult.kind !== "created") return;
+  const publisher = { userId: publisherResult.user.id, username: publisherResult.user.username };
+  const contributor = { userId: contributorResult.user.id, username: contributorResult.user.username };
+  const source = await store.createMyWordbook(publisherClient, {
+    title: "Versioned",
+    words: [{
+      word: "alpha",
+      phonetic: "/alpha/",
+      meanings: [{ pos: "noun", definition: "alpha" }],
+      source: "user",
+      zhMeaning: "甲",
+      zhMeaningSource: "user",
+    }],
+  });
+  const catalog = await store.uploadCatalog(publisherClient, {
+    sourceWordbookId: source.id,
+    visibility: "public",
+    author: publisher,
+  });
+  assert.ok(catalog);
+  const joined = await store.addCatalogToMine(contributorClient, catalog.id);
+  assert.ok(joined);
+  const words = await store.listWords(contributorClient, joined.wordbook.id);
+  await store.updateWord(contributorClient, joined.wordbook.id, words![0]!.id, { zhMeaning: "改进后的甲" });
+  const preview = await store.getContributionPreview(contributorClient, contributor.userId, joined.wordbook.id);
+  assert.ok(preview);
+  const created = await store.createContribution(contributorClient, contributor, catalog.id, {
+    title: "完善释义",
+    expectedSourceUpdatedAt: preview.expectedSourceUpdatedAt,
+    expectedHeadRevisionId: preview.expectedHeadRevisionId,
+  });
+  assert.equal(created.kind, "created");
+  if (created.kind !== "created") return;
+  assert.equal((await store.mergeContribution(publisherClient, publisher, catalog.id, created.contribution.id, {})).kind, "updated");
+  store.close();
+
+  const reopened = new SqliteStudyStore(files.databaseFile);
+  const revisions = await reopened.listCatalogRevisions(publisherClient, publisher.userId, catalog.id, {});
+  const contributions = await reopened.listCatalogContributions(publisherClient, publisher.userId, catalog.id, {});
+  assert.deepEqual(revisions?.items.map((revision) => revision.kind).sort(), ["initial", "merge"]);
+  assert.deepEqual(contributions?.items.map((contribution) => contribution.status), ["merged"]);
+  reopened.close();
+
+  const inspection = new Database(files.databaseFile);
+  const revisionIndexes = (inspection.prepare("PRAGMA index_list(catalog_revisions)").all() as Array<{ name: string }>).map((index) => index.name);
+  const contributionIndexes = (inspection.prepare("PRAGMA index_list(catalog_contributions)").all() as Array<{ name: string }>).map((index) => index.name);
+  assert.ok(revisionIndexes.includes("catalog_revisions_catalog_created_idx"));
+  assert.ok(contributionIndexes.includes("catalog_contributions_catalog_status_idx"));
+  assert.ok(contributionIndexes.includes("catalog_contributions_contributor_status_idx"));
+  inspection.close();
+
+  const deleting = new SqliteStudyStore(files.databaseFile);
+  assert.equal(await deleting.deleteCatalogUpload(publisherClient, catalog.id), true);
+  deleting.close();
+  const afterDelete = new Database(files.databaseFile, { readonly: true });
+  assert.equal((afterDelete.prepare("SELECT COUNT(*) AS count FROM catalog_revisions").get() as { count: number }).count, 0);
+  assert.equal((afterDelete.prepare("SELECT COUNT(*) AS count FROM catalog_contributions").get() as { count: number }).count, 0);
+  afterDelete.close();
 });
 
 test("SQLite reloads cached account state after an external administrator update", async (t) => {

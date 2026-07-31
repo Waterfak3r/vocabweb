@@ -1,7 +1,8 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { isJsonObject } from "./validation.js";
+import { catalogDiffStats, diffCatalogWords } from "./collaboration.js";
 import type {
-  AccountUser, CatalogCard, CatalogWordbook, ImportDraft, LearningEvent, LevelCounts, MyWordbook, MyWordbookCard,
+  AccountUser, CatalogCard, CatalogContribution, CatalogRevision, CatalogRevisionSummary, CatalogWordbook, ImportDraft, LearningEvent, LevelCounts, MyWordbook, MyWordbookCard,
   ReviewSchedule, StudiedWord, StudyMeaning, StudyRound, StudyWordEntry, LearningQueueItem, SyncedStudySettings,
   WordLearningStatus, WordLevel, WordbookProgress, WordbookStudyPreferences, WordbookWord,
 } from "./types.js";
@@ -20,8 +21,16 @@ export interface ClientData {
 /** A persisted session: the sha256 of the cookie token, its owner, and expiry. */
 export interface SessionRecord { tokenHash: string; userId: string; expiresAt: string; createdAt: string; }
 /** The whole persisted world. SQLite splits this across tables; JSON/memory keep it as one document. */
-export interface State { version: 3 | 4 | 5; catalog: CatalogWordbook[]; clients: Record<string, ClientData>; users: AccountUser[]; sessions: SessionRecord[]; }
-export const EMPTY = (): State => ({ version: 5, catalog: [], clients: {}, users: [], sessions: [] });
+export interface State {
+  version: 3 | 4 | 5 | 6;
+  catalog: CatalogWordbook[];
+  revisions: CatalogRevision[];
+  contributions: CatalogContribution[];
+  clients: Record<string, ClientData>;
+  users: AccountUser[];
+  sessions: SessionRecord[];
+}
+export const EMPTY = (): State => ({ version: 6, catalog: [], revisions: [], contributions: [], clients: {}, users: [], sessions: [] });
 export const RETENTION_MS = 90 * 86_400_000;
 export const BATCH_SIZE = 500;
 
@@ -392,7 +401,17 @@ export function visibleTo(book: CatalogWordbook, clientId: string): boolean {
   return book.visibility === "public" || book.ownerClientId === clientId;
 }
 /** Build a catalog card. Private source ids are exposed only on the owner's upload feed/cards. */
-export function catalogCard(book: CatalogWordbook, client: ClientData, clientId: string, favoriteCount = 0): CatalogCard {
+export function catalogCard(
+  book: CatalogWordbook,
+  client: ClientData,
+  clientId: string,
+  favoriteCount = 0,
+  collaboration: {
+    enabled?: boolean;
+    openContributionCount?: number;
+    latestRevision?: CatalogRevisionSummary;
+  } = {},
+): CatalogCard {
   const {
     words: _words, ownerClientId: _owner, sourceWordbookId: _source, authorUserId: _authorUserId,
     seedKey: _seedKey, legacyUses: _legacyUses, adopterClientIds: _adopterClientIds, ...rest
@@ -403,6 +422,9 @@ export function catalogCard(book: CatalogWordbook, client: ClientData, clientId:
     favorited: client.favorites.includes(book.id),
     added: client.wordbooks.some((item) => !item.deletedAt && item.sourceCatalogId === book.id),
     uploaded: book.ownerClientId === clientId,
+    collaborationEnabled: collaboration.enabled ?? false,
+    openContributionCount: collaboration.openContributionCount ?? 0,
+    ...(collaboration.latestRevision ? { latestRevision: clone(collaboration.latestRevision) } : {}),
     ...(book.ownerClientId === clientId && book.sourceWordbookId ? { sourceWordbookId: book.sourceWordbookId } : {}),
   };
 }
@@ -413,19 +435,45 @@ export function foldApostrophes(word: string): string { return word.replace(/[�
 /** Upgrade older JSON without losing wordbooks, events, publishing data, accounts, or visibility. */
 export function migrate(raw: unknown): State {
   if (!isJsonObject(raw) || !Array.isArray(raw.catalog) || !isJsonObject(raw.clients)) throw new Error("Study data file has an unsupported format");
-  if (raw.version !== 2 && raw.version !== 3 && raw.version !== 4 && raw.version !== 5) throw new Error("Study data file has an unsupported format");
+  if (raw.version !== 2 && raw.version !== 3 && raw.version !== 4 && raw.version !== 5 && raw.version !== 6) throw new Error("Study data file has an unsupported format");
   const state = raw as unknown as State;
-  state.version = 5;
+  state.version = 6;
   // Accounts and sessions are newer than the on-disk document; default them so older files load.
   state.users ??= [];
   state.sessions ??= [];
+  state.revisions ??= [];
+  state.contributions ??= [];
   for (const user of state.users) {
     if (user.role !== "admin") user.role = "user";
   }
   for (const book of state.catalog) {
     // Existing/legacy catalog entries predate visibility; the marketplace treats them as public.
     book.visibility ??= "public";
+    book.updatedAt ??= book.createdAt;
     for (const word of book.words ?? []) word.word = foldApostrophes(word.word);
+    let head = book.headRevisionId
+      ? state.revisions.find((revision) => revision.id === book.headRevisionId && revision.catalogId === book.id)
+      : undefined;
+    if (!head) {
+      const id = `revision-${createHash("sha256").update(`initial:${book.id}`).digest("hex").slice(0, 32)}`;
+      head = state.revisions.find((revision) => revision.id === id);
+      if (!head) {
+        const changes = diffCatalogWords([], book.words ?? []);
+        head = {
+          id,
+          catalogId: book.id,
+          kind: "initial",
+          message: "首次发布",
+          ...(book.authorUserId ? { authorUserId: book.authorUserId } : {}),
+          author: book.author || "匿名",
+          createdAt: book.createdAt,
+          changes,
+          stats: catalogDiffStats(changes),
+        };
+        state.revisions.push(head);
+      }
+      book.headRevisionId = head.id;
+    }
   }
   for (const clientValue of Object.values(state.clients)) {
     const client = clientValue as ClientData;

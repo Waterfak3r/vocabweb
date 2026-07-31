@@ -306,14 +306,19 @@
   font-size: var(--text-sm);
 }
 
-.account-popover button {
+.account-popover button,
+.account-popover a {
+  display: block;
+  width: 100%;
   padding: 0.45rem 0.55rem;
   border-radius: var(--radius-sm);
   color: var(--ink);
   text-align: left;
+  text-decoration: none;
 }
 
-.account-popover button:hover { background: var(--accent-soft); }
+.account-popover button:hover,
+.account-popover a:hover { background: var(--accent-soft); }
 
 /* ── Main column ────────────────────────── */
 

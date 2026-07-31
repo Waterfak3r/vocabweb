@@ -23,7 +23,13 @@ describe('WorkspaceApi import drafts', () => {
       .mockResolvedValueOnce(new Response(JSON.stringify(draft('processing'))))
     const api = new WorkspaceApi('https://api.example.test/', { fetch, clientId: () => 'learner' })
 
-    await expect(api.createImportDraft({ title: '导入测试', targetWordbookId: 'my-existing', lines: [{ line: 1, word: 'resilient' }] })).resolves.toMatchObject({ status: 'processing' })
+    const lines = [{
+      line: 1,
+      word: 'resilient',
+      phonetic: '/rɪˈzɪliənt/',
+      meanings: [{ pos: 'adjective', definition: 'Able to recover.' }],
+    }]
+    await expect(api.createImportDraft({ title: '导入测试', targetWordbookId: 'my-existing', lines })).resolves.toMatchObject({ status: 'processing' })
     await expect(api.processImportDraft('draft-1')).resolves.toMatchObject({
       status: 'processing',
       entries: [{ status: 'processing' }],
@@ -36,7 +42,7 @@ describe('WorkspaceApi import drafts', () => {
     expect(fetch.mock.calls[0]?.[1]?.body).toBe(JSON.stringify({
       title: '导入测试',
       targetWordbookId: 'my-existing',
-      lines: [{ line: 1, word: 'resilient' }],
+      lines,
     }))
   })
 
@@ -60,6 +66,141 @@ describe('WorkspaceApi import drafts', () => {
         body: JSON.stringify({ mode: 'overwrite', resolutions: {} }),
       }),
     )
+  })
+})
+
+describe('WorkspaceApi account contracts', () => {
+  it('parses account metadata and posts password changes with credentials', async () => {
+    const account = {
+      username: '墨客',
+      clientId: 'client-account-0001',
+      role: 'user',
+      createdAt: '2026-07-31T00:00:00.000Z',
+      capabilities: [],
+    }
+    const fetch = vi.fn<FetchLike>()
+      .mockResolvedValueOnce(new Response(JSON.stringify(account)))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+    const api = new WorkspaceApi('https://api.example.test/', {
+      fetch,
+      clientId: () => 'client-account-0001',
+    })
+
+    await expect(api.me()).resolves.toEqual(account)
+    await expect(api.changePassword('password-123', 'new-password-456')).resolves.toBeUndefined()
+    expect(fetch.mock.calls.map(([url, init]) => [url.toString(), init?.method, init?.body])).toEqual([
+      ['https://api.example.test/api/auth/me', undefined, undefined],
+      [
+        'https://api.example.test/api/account/password',
+        'POST',
+        JSON.stringify({ currentPassword: 'password-123', newPassword: 'new-password-456' }),
+      ],
+    ])
+    expect(fetch.mock.calls[1]?.[1]).toEqual(expect.objectContaining({ credentials: 'include' }))
+  })
+
+  it('accepts an older account DTO without a join date but rejects a malformed one', async () => {
+    const legacy = {
+      username: 'Learner',
+      clientId: 'client-account-0002',
+      role: 'user',
+      capabilities: [],
+    }
+    const fetch = vi.fn<FetchLike>()
+      .mockResolvedValueOnce(new Response(JSON.stringify(legacy)))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ...legacy, createdAt: 42 })))
+    const api = new WorkspaceApi('https://api.example.test/', {
+      fetch,
+      clientId: () => 'client-account-0002',
+    })
+
+    await expect(api.me()).resolves.toEqual(legacy)
+    await expect(api.me()).rejects.toThrow('Backend response is invalid')
+  })
+})
+
+describe('WorkspaceApi collaboration contracts', () => {
+  const word = {
+    word: 'alpha',
+    phonetic: '/alpha/',
+    meanings: [{ pos: 'noun', definition: 'first' }],
+    source: 'user',
+    zhMeaning: '甲',
+    zhMeaningSource: 'user',
+  }
+  const change = { kind: 'update', key: 'alpha', before: word, after: { ...word, zhMeaning: '阿尔法' } }
+  const stats = { additions: 0, deletions: 0, updates: 1, changedWords: 1 }
+  const contribution = {
+    id: 'contribution-1',
+    catalogId: 'catalog-1',
+    catalogTitle: 'Shared',
+    sourceWordbookId: 'my-1',
+    contributor: '墨客',
+    baseRevisionId: 'revision-1',
+    submittedHeadRevisionId: 'revision-1',
+    title: '完善释义',
+    description: '',
+    status: 'open',
+    changes: [change],
+    stats,
+    createdAt: '2026-07-31T00:00:00.000Z',
+    updatedAt: '2026-07-31T00:00:00.000Z',
+    canMerge: false,
+    canClose: true,
+  }
+
+  it('parses a three-way preview and submits its optimistic version fields', async () => {
+    const preview = {
+      catalogId: 'catalog-1',
+      catalogTitle: 'Shared',
+      sourceWordbookId: 'my-1',
+      baseRevisionId: 'revision-1',
+      headRevisionId: 'revision-2',
+      expectedSourceUpdatedAt: '2026-07-31T00:01:00.000Z',
+      expectedHeadRevisionId: 'revision-2',
+      legacyBaseline: false,
+      changes: [change],
+      stats,
+      overlaps: [],
+    }
+    const fetch = vi.fn<FetchLike>()
+      .mockResolvedValueOnce(new Response(JSON.stringify(preview)))
+      .mockResolvedValueOnce(new Response(JSON.stringify(contribution), { status: 201 }))
+    const api = new WorkspaceApi('https://api.example.test/', { fetch, clientId: () => 'learner' })
+
+    await expect(api.getContributionPreview('my-1')).resolves.toMatchObject({ changes: [{ kind: 'update', key: 'alpha' }] })
+    await api.createContribution('catalog-1', {
+      title: '完善释义',
+      expectedSourceUpdatedAt: preview.expectedSourceUpdatedAt,
+      expectedHeadRevisionId: preview.expectedHeadRevisionId,
+    })
+    expect(fetch.mock.calls[1]?.[0].toString()).toBe('https://api.example.test/api/catalog/wordbooks/catalog-1/contributions')
+    expect(fetch.mock.calls[1]?.[1]?.body).toBe(JSON.stringify({
+      title: '完善释义',
+      expectedSourceUpdatedAt: preview.expectedSourceUpdatedAt,
+      expectedHeadRevisionId: preview.expectedHeadRevisionId,
+    }))
+  })
+
+  it('parses cursor inbox pages and retains structured conflict details', async () => {
+    const fetch = vi.fn<FetchLike>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ items: [contribution], nextCursor: 'opaque', openCount: 1 })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        error: { code: 'CONTRIBUTION_CONFLICT', message: 'conflict' },
+        conflicts: [{ key: 'alpha', reason: 'overlapping-change' }],
+      }), { status: 409 }))
+    const api = new WorkspaceApi('https://api.example.test/', { fetch, clientId: () => 'learner' })
+
+    await expect(api.listAccountContributions('review')).resolves.toMatchObject({
+      items: [{ id: 'contribution-1' }],
+      nextCursor: 'opaque',
+      openCount: 1,
+    })
+    await expect(api.mergeContribution('catalog-1', 'contribution-1')).rejects.toMatchObject({
+      status: 409,
+      code: 'CONTRIBUTION_CONFLICT',
+      details: { conflicts: [{ key: 'alpha', reason: 'overlapping-change' }] },
+    })
   })
 })
 

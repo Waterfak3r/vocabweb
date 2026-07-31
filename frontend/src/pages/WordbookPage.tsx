@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, 
 import { Link } from 'react-router'
 import { Button } from '../components/ui/Button'
 import { EmptyState } from '../components/ui/EmptyState'
+import { ContributionSubmitDialog } from '../components/marketplace/ContributionSubmitDialog'
 import { DictationPrompt } from '../components/word/DictationPrompt'
 import { DictationSummary } from '../components/word/DictationSummary'
 import { ImportWordbookDialog } from '../components/word/ImportWordbookDialog'
@@ -50,6 +51,7 @@ import {
   type EnglishAccent,
   type PronunciationPreferences,
 } from '../data/pronunciationPreferences'
+import { wordbookCsvFilename, wordbookToCsv } from '../data/wordbookExport'
 import {
   DEFAULT_REVIEW_SCHEDULE,
   isDefaultReviewSchedule,
@@ -67,6 +69,7 @@ import type { WordbookItem } from '../domain/types'
 import { useDictationSession } from '../features/dictation/useDictationSession'
 import { SyncedFlashcardRound } from '../features/flashcards/SyncedFlashcardRound'
 import { useDocumentTitle } from '../hooks/useDocumentTitle'
+import { useAuth } from '../hooks/useAuth'
 import { usePronounce } from '../hooks/usePronounce'
 import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts'
 
@@ -79,6 +82,8 @@ type WorkspaceBook = {
   title: string
   description: string
   category?: string
+  sourceCatalogId?: string
+  sourceRevisionId?: string
   wordCount: number
   progress: WordbookProgress
   tone: CoverTone
@@ -220,6 +225,8 @@ function remoteToWorkspaceBook(book: MyWordbook, index: number): WorkspaceBook {
     title: book.title,
     description: book.description,
     category: book.category,
+    sourceCatalogId: book.sourceCatalogId,
+    sourceRevisionId: book.sourceRevisionId,
     wordCount: book.wordCount,
     progress: book.progress,
     tone: tones[index % tones.length],
@@ -234,6 +241,7 @@ function remoteToWorkspaceBook(book: MyWordbook, index: number): WorkspaceBook {
 
 export function WordbookPage() {
   useDocumentTitle('我的单词本')
+  const { user, loading: authLoading } = useAuth()
   const [books, setBooks] = useState<WorkspaceBook[]>([])
   const [favoriteCatalog, setFavoriteCatalog] = useState<CatalogWordbook[]>([])
   const [uploadCatalog, setUploadCatalog] = useState<CatalogWordbook[]>([])
@@ -254,6 +262,7 @@ export function WordbookPage() {
   const [importTargetId, setImportTargetId] = useState<string | undefined>()
   const [recycleCandidate, setRecycleCandidate] = useState<WorkspaceBook | null>(null)
   const [showWordManager, setShowWordManager] = useState(false)
+  const [contributionBookId, setContributionBookId] = useState<string | null>(null)
   const [wordSaving, setWordSaving] = useState(false)
   const [bookQuery, setBookQuery] = useState(() => readWordbookFilters().query)
   const [bookCategory, setBookCategory] = useState(() => readWordbookFilters().category)
@@ -556,10 +565,27 @@ export function WordbookPage() {
     setShowImporter(true)
   }
 
-  function supplementBook() {
+  function importBookFile() {
     if (!selectedBook) return
     setImportTargetId(selectedBook.id)
     setShowImporter(true)
+  }
+
+  function exportBookFile() {
+    if (!selectedBook || remoteEntries === null) return
+    const blob = new Blob([wordbookToCsv(remoteEntries)], { type: 'text/csv;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    try {
+      link.href = url
+      link.download = wordbookCsvFilename(selectedBook.title)
+      document.body.append(link)
+      link.click()
+      setNotice(`已导出「${selectedBook.title}」的 CSV。编辑后可通过“导入文件”的覆盖模式写回。`)
+    } finally {
+      link.remove()
+      URL.revokeObjectURL(url)
+    }
   }
 
   async function finishImport(created: MyWordbook) {
@@ -834,7 +860,7 @@ export function WordbookPage() {
         {notice && <p className="workspace-notice" role="status">{notice}</p>}
         <section className="workspace-overview">
           <WorkspaceCover tone={selectedBook.tone} label={selectedBook.shortLabel} />
-          <div className="workspace-overview-main"><div className="workspace-title-row"><h1 id="workspace-title">{selectedBook.title}</h1></div><p>{wordCount} 个单词　|　创建于 {new Date(selectedBook.createdAt).toLocaleDateString('zh-CN')}　|　最后更新：{new Date(selectedBook.updatedAt).toLocaleString('zh-CN')}</p><div className={`workspace-category-editor ${categoryEditing ? 'is-editing' : ''}`}><label htmlFor="wordbook-category">分类</label><div className="workspace-category-field"><input ref={categoryInputRef} id="wordbook-category" list={categoryEditing ? 'wordbook-categories' : undefined} value={categoryDraft} maxLength={30} readOnly={!categoryEditing} onChange={(event) => setCategoryDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && categoryEditing) { event.preventDefault(); void saveCategory() } else if (event.key === 'Escape' && categoryEditing) { setCategoryDraft(selectedBook.category ?? ''); setCategoryEditing(false) } }} placeholder="未分类" aria-label={categoryEditing ? '编辑单词本分类' : '单词本分类'} /><button type="button" onClick={toggleCategoryEditing} disabled={categorySaving} aria-label={categoryEditing ? '保存分类' : '修改分类'} title={categoryEditing ? '保存分类（Enter）' : '修改分类'}><WorkspaceIcon name="edit" /></button></div><datalist id="wordbook-categories">{categories.map((category) => <option key={category} value={category} />)}</datalist></div><div className="workspace-progress-label"><span>学习进度</span><strong>{progress.percent}%</strong></div><div className="workspace-progress" role="progressbar" aria-label="词本学习进度" aria-valuenow={progress.percent} aria-valuemin={0} aria-valuemax={100}><i style={{ width: `${progress.percent}%` }} /></div><div className="workspace-summary-stats levels-5"><span>未学习<strong>{progress.levels.l0}</strong></span><span>初识<strong className="blue">{progress.levels.l1}</strong></span><span>熟悉<strong className="orange">{progress.levels.l2}</strong></span><span>掌握<strong className="green">{progress.levels.l3}</strong></span><span>精通<strong className="violet">{progress.levels.l4}</strong></span></div></div><div className="overview-actions"><button type="button" className="overview-plan-settings" onClick={() => setSettingsSection('plan')}><WorkspaceIcon name="settings" />学习计划</button><button type="button" disabled={!wordCount || dashboardLoading} onClick={() => setShowWordManager(true)}><WorkspaceIcon name="edit" />浏览词条</button><button type="button" onClick={supplementBook}><WorkspaceIcon name="plus" />补充上传</button></div><button type="button" className="overview-recycle" onClick={() => moveToRecycle(selectedBook.id)}><WorkspaceIcon name="trash" />移入回收站</button>
+          <div className="workspace-overview-main"><div className="workspace-title-row"><h1 id="workspace-title">{selectedBook.title}</h1></div><p>{wordCount} 个单词　|　创建于 {new Date(selectedBook.createdAt).toLocaleDateString('zh-CN')}　|　最后更新：{new Date(selectedBook.updatedAt).toLocaleString('zh-CN')}</p><div className={`workspace-category-editor ${categoryEditing ? 'is-editing' : ''}`}><label htmlFor="wordbook-category">分类</label><div className="workspace-category-field"><input ref={categoryInputRef} id="wordbook-category" list={categoryEditing ? 'wordbook-categories' : undefined} value={categoryDraft} maxLength={30} readOnly={!categoryEditing} onChange={(event) => setCategoryDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && categoryEditing) { event.preventDefault(); void saveCategory() } else if (event.key === 'Escape' && categoryEditing) { setCategoryDraft(selectedBook.category ?? ''); setCategoryEditing(false) } }} placeholder="未分类" aria-label={categoryEditing ? '编辑单词本分类' : '单词本分类'} /><button type="button" onClick={toggleCategoryEditing} disabled={categorySaving} aria-label={categoryEditing ? '保存分类' : '修改分类'} title={categoryEditing ? '保存分类（Enter）' : '修改分类'}><WorkspaceIcon name="edit" /></button></div><datalist id="wordbook-categories">{categories.map((category) => <option key={category} value={category} />)}</datalist></div><div className="workspace-progress-label"><span>学习进度</span><strong>{progress.percent}%</strong></div><div className="workspace-progress" role="progressbar" aria-label="词本学习进度" aria-valuenow={progress.percent} aria-valuemin={0} aria-valuemax={100}><i style={{ width: `${progress.percent}%` }} /></div><div className="workspace-summary-stats levels-5"><span>未学习<strong>{progress.levels.l0}</strong></span><span>初识<strong className="blue">{progress.levels.l1}</strong></span><span>熟悉<strong className="orange">{progress.levels.l2}</strong></span><span>掌握<strong className="green">{progress.levels.l3}</strong></span><span>精通<strong className="violet">{progress.levels.l4}</strong></span></div></div><div className="overview-actions"><button type="button" className="overview-plan-settings" onClick={() => setSettingsSection('plan')}><WorkspaceIcon name="settings" />学习计划</button><button type="button" disabled={!wordCount || dashboardLoading} onClick={() => setShowWordManager(true)}><WorkspaceIcon name="edit" />浏览词条</button>{selectedBook.sourceCatalogId && <button type="button" disabled={authLoading} onClick={() => { if (!user) { setNotice('请先通过页头账号入口登录，再提交改进。'); return } setContributionBookId(selectedBook.id) }}><WorkspaceIcon name="edit" />提交改进</button>}<button type="button" disabled={remoteEntries === null} onClick={exportBookFile}><WorkspaceIcon name="book" />导出 CSV</button><button type="button" onClick={importBookFile}><WorkspaceIcon name="plus" />导入文件</button></div><button type="button" className="overview-recycle" onClick={() => moveToRecycle(selectedBook.id)}><WorkspaceIcon name="trash" />移入回收站</button>
         </section>
 
         <section className="workspace-plan">
@@ -945,6 +971,14 @@ export function WordbookPage() {
           <div><Button variant="secondary" autoFocus onClick={() => setRecycleCandidate(null)}>取消</Button><Button onClick={() => void confirmMoveToRecycle()}>确认移入</Button></div>
         </section>
       </div>}
+      {contributionBookId && <ContributionSubmitDialog
+        wordbookId={contributionBookId}
+        onClose={() => setContributionBookId(null)}
+        onSubmitted={(contribution) => {
+          setContributionBookId(null)
+          setNotice(`改进建议「${contribution.title}」已提交，发布者可在协作收件箱审核。`)
+        }}
+      />}
       {showWordManager && <WordManagerDialog
         title={selectedBook.title}
         entries={activeBook.entries}

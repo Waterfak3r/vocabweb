@@ -11,7 +11,8 @@
     "build": "npm run dictionaries:build --prefix backend && npm run build --prefix frontend && npm run build --prefix backend",
     "test": "npm test --prefix backend && npm test --prefix frontend",
     "start": "node scripts/start-prod.mjs",
-    "test:e2e:community-account": "node scripts/e2e-community-account.mjs"
+    "test:e2e:community-account": "node scripts/e2e-community-account.mjs",
+    "test:e2e:collaboration": "node scripts/e2e-collaboration.mjs"
   },
   "devDependencies": {
     "playwright-core": "1.62.0"

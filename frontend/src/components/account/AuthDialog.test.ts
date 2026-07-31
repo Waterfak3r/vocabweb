@@ -7,6 +7,7 @@ describe('mapAuthError', () => {
     expect(mapAuthError(new Error('Backend request failed (401).'))).toBe('用户名或密码不正确')
     expect(mapAuthError(new WorkspaceApiError(409, 'USERNAME_TAKEN'))).toBe('用户名已被占用')
     expect(mapAuthError(new WorkspaceApiError(409, 'ACTIVE_SESSION_ACCOUNT_CONFLICT'))).toBe('请先退出当前账号，再登录其他账号')
+    expect(mapAuthError(new WorkspaceApiError(403, 'REGISTRATION_DISABLED'))).toBe('当前站点未开放注册')
     expect(mapAuthError(new WorkspaceApiError(429, 'LOGIN_RATE_LIMITED'))).toBe('尝试次数过多，请稍后再试')
   })
 

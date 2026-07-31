@@ -8,10 +8,12 @@ export type ParsedImportEntry = {
   line: number
   raw: string
   word: string
+  phonetic?: string
   pos?: string
   enDefinition?: string
   zhMeaning?: string
   example?: string
+  meanings?: Array<{ pos: string; definition: string; example?: string }>
   status: ImportEntryStatus
   reason?: string
 }
@@ -26,6 +28,10 @@ export type ImportTextFile = Pick<File, 'name' | 'size' | 'arrayBuffer' | 'text'
 
 const SUPPORTED_FILE = /\.(?:csv|txt|md|markdown|docx)$/i
 const DOCX_FILE = /\.docx$/i
+const STRUCTURED_CSV_HEADERS = [
+  ['单词', '音标', '词性', '英文释义', '中文释义', '例句'],
+  ['word', 'phonetic', 'pos', 'endefinition', 'zhmeaning', 'example'],
+] as const
 
 function markdownLine(line: string) {
   return line
@@ -103,12 +109,122 @@ function parseCsvRow(value: string): string[] | string {
   return fields
 }
 
+function isStructuredCsvHeader(fields: readonly string[]) {
+  const normalized = fields.map((field) => field.trim().toLowerCase())
+  return STRUCTURED_CSV_HEADERS.some((header) => header.every((field, index) => normalized[index] === field))
+}
+
+/**
+ * Parses the six-column CSV emitted by wordbookExport. Blank headword cells are
+ * continuation meanings for the preceding word, which keeps spreadsheet edits
+ * compact while preserving every public meaning on a round trip.
+ */
+function parseStructuredCsv(content: string): ParsedImport | null {
+  const lines = content.split(/\r?\n/)
+  const headerIndex = lines.findIndex((line) => line.trim())
+  if (headerIndex < 0) return null
+  const header = parseCsvRow(lines[headerIndex]!)
+  if (typeof header === 'string' || !isStructuredCsvHeader(header)) return null
+
+  const grouped: ParsedImportEntry[] = []
+  let current: ParsedImportEntry | null = null
+  const flush = () => {
+    if (!current) return
+    if (!current.meanings?.length) delete current.meanings
+    grouped.push(current)
+    current = null
+  }
+
+  for (let index = headerIndex + 1; index < lines.length; index += 1) {
+    const raw = lines[index]!
+    if (!raw.trim()) continue
+    const parsed = parseCsvRow(raw)
+    if (typeof parsed === 'string' || parsed.length > 6) {
+      flush()
+      grouped.push({ line: index + 1, raw, word: '', status: 'invalid', reason: typeof parsed === 'string' ? parsed : '结构化 CSV 每行最多包含六列。' })
+      continue
+    }
+
+    const [rawWord = '', rawPhonetic = '', rawPos = '', rawDefinition = '', rawZhMeaning = '', rawExample = ''] = parsed
+    const normalizedWord = normalizeWord(rawWord)
+    const continuation = !rawWord.trim()
+    if (!continuation) {
+      flush()
+      current = {
+        line: index + 1,
+        raw,
+        word: normalizedWord,
+        ...(rawPhonetic.trim() ? { phonetic: rawPhonetic.trim() } : {}),
+        ...(rawZhMeaning.trim() ? { zhMeaning: rawZhMeaning.trim() } : {}),
+        meanings: [],
+        status: isValidWordQuery(normalizedWord) ? 'ready' : 'invalid',
+        ...(!isValidWordQuery(normalizedWord) ? { reason: '首列必须是合法的英文单词或词组。' } : {}),
+      }
+    } else if (!current) {
+      grouped.push({ line: index + 1, raw, word: '', status: 'invalid', reason: '释义续行前必须先填写单词。' })
+      continue
+    } else {
+      current.raw += `\n${raw}`
+      if (!current.phonetic && rawPhonetic.trim()) current.phonetic = rawPhonetic.trim()
+      if (!current.zhMeaning && rawZhMeaning.trim()) current.zhMeaning = rawZhMeaning.trim()
+    }
+
+    if (!current) continue
+    const pos = rawPos.trim()
+    const definition = rawDefinition.trim()
+    const example = rawExample.trim()
+    if (pos || definition || example) {
+      current.meanings!.push({
+        pos: pos || 'unknown',
+        definition,
+        ...(example ? { example } : {}),
+      })
+    }
+    if (
+      (current.phonetic?.length ?? 0) > 120
+      || (current.zhMeaning?.length ?? 0) > 1000
+      || pos.length > 80
+      || definition.length > 1500
+      || example.length > 1500
+    ) {
+      current.status = 'invalid'
+      current.reason = '字段内容过长，请缩短后重试。'
+    }
+  }
+  flush()
+
+  const entries: ParsedImportEntry[] = []
+  const byWord = new Map<string, ParsedImportEntry>()
+  for (const entry of grouped) {
+    if (entry.status !== 'ready') {
+      entries.push(entry)
+      continue
+    }
+    const existing = byWord.get(entry.word)
+    if (!existing) {
+      byWord.set(entry.word, entry)
+      entries.push(entry)
+      continue
+    }
+    existing.raw += `\n${entry.raw}`
+    existing.phonetic ||= entry.phonetic
+    existing.zhMeaning ||= entry.zhMeaning
+    if (entry.meanings?.length) existing.meanings = [...(existing.meanings ?? []), ...entry.meanings]
+  }
+
+  const acceptedCount = byWord.size
+  return { entries, acceptedCount, batchCount: Math.ceil(acceptedCount / MAX_IMPORT_ENTRIES) }
+}
+
 export function parseWordbookText(content: string): ParsedImport {
+  const normalizedContent = content.replace(/^\uFEFF/, '')
+  const structured = parseStructuredCsv(normalizedContent)
+  if (structured) return structured
   const seen = new Set<string>()
   const entries: ParsedImportEntry[] = []
   let acceptedCount = 0
 
-  content.replace(/^\uFEFF/, '').split(/\r?\n/).forEach((raw, index) => {
+  normalizedContent.split(/\r?\n/).forEach((raw, index) => {
     const entry = parseLine(raw, index + 1)
     if (!entry) return
     if (entry.status === 'ready') {

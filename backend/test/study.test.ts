@@ -455,7 +455,7 @@ test("JSON store persists mutations with a complete atomic document", async () =
     await Promise.all([first.createMyWordbook(CLIENT, { title: "A" }), first.createMyWordbook(CLIENT, { title: "B" })]);
     assert.ok(created.id);
     const raw = await readFile(file, "utf8");
-    assert.match(raw, /"version": 5/);
+    assert.match(raw, /"version": 6/);
     const reloaded = new JsonFileStudyStore(file);
     assert.equal((await reloaded.listMyWordbooks(CLIENT, false)).length, 3);
   } finally { await rm(directory, { recursive: true, force: true }); }
@@ -473,7 +473,7 @@ test("JSON store preserves a deliberately empty persisted state without restorin
     assert.deepEqual(JSON.parse(await readFile(file, "utf8")), { version: 2, catalog: [], clients: {} });
     await store.createMyWordbook(CLIENT, { title: "First", words: [] });
     const persisted = JSON.parse(await readFile(file, "utf8")) as { version: number; catalog: unknown[]; clients: Record<string, { wordbooks: unknown[] }> };
-    assert.equal(persisted.version, 5);
+    assert.equal(persisted.version, 6);
     assert.deepEqual(persisted.catalog, []);
     assert.equal(persisted.clients[CLIENT]?.wordbooks.length, 1);
   } finally { await rm(directory, { recursive: true, force: true }); }
@@ -582,6 +582,51 @@ test("import drafts preserve Chinese input, enforce the 500-line boundary, and a
     assert.equal(complete.wordCount, 503);
     const linked = await (await fetch(`${app.baseUrl}/api/my/import-drafts/${next.id}`, { headers })).json() as { targetWordbookId: string };
     assert.equal(linked.targetWordbookId, firstBook.id);
+  } finally { await app.close(); }
+});
+
+test("structured CSV imports preserve supplied phonetics and multiple meanings", async () => {
+  const app = await server({ wordLookup: { async lookup(word) { return dictionaryEntry(word); } } });
+  try {
+    const response = await fetch(`${app.baseUrl}/api/my/import-drafts`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        title: "表格往返",
+        lines: [{
+          line: 2,
+          word: "alpha",
+          phonetic: "/custom-alpha/",
+          zhMeaning: "阿尔法",
+          meanings: [
+            { pos: "noun", definition: "The first item.", example: "Alpha comes first." },
+            { pos: "adjective", definition: "Dominant in rank." },
+          ],
+        }],
+      }),
+    });
+    assert.equal(response.status, 201);
+    const draft = await response.json() as { id: string };
+    await eventually(
+      async () => await (await fetch(`${app.baseUrl}/api/my/import-drafts/${draft.id}`, { headers })).json() as { status: string },
+      (current) => current.status === "pending",
+    );
+
+    const committed = await fetch(`${app.baseUrl}/api/my/import-drafts/${draft.id}/commit`, {
+      method: "POST", headers, body: "{}",
+    });
+    assert.equal(committed.status, 200);
+    const book = await committed.json() as { id: string };
+    const words = await (await fetch(`${app.baseUrl}/api/my/wordbooks/${book.id}/words`, { headers })).json() as Array<{
+      word: string; phonetic: string; zhMeaning?: string; meanings: Array<{ pos: string; definition: string; example?: string }>;
+    }>;
+    assert.equal(words[0]?.word, "alpha");
+    assert.equal(words[0]?.phonetic, "/custom-alpha/");
+    assert.equal(words[0]?.zhMeaning, "阿尔法");
+    assert.deepEqual(words[0]?.meanings, [
+      { pos: "noun", definition: "The first item.", example: "Alpha comes first." },
+      { pos: "adjective", definition: "Dominant in rank." },
+    ]);
   } finally { await app.close(); }
 });
 
@@ -918,7 +963,7 @@ test("v2 state migrates word IDs and old learning events without dropping progre
     // Reads keep the migrated state in memory only; the first mutation persists it.
     await store.createMyWordbook(CLIENT, { title: "Trigger", words: [] });
     const persisted = JSON.parse(await readFile(file, "utf8")) as { version: number; clients: Record<string, { wordbooks: Array<{ words: Array<{ id?: string }> }>; events: Array<{ wordId?: string }> }> };
-    assert.equal(persisted.version, 5);
+    assert.equal(persisted.version, 6);
     assert.ok(persisted.clients[CLIENT]!.wordbooks[0]!.words[0]!.id);
     assert.equal(persisted.clients[CLIENT]!.events[0]!.wordId, persisted.clients[CLIENT]!.wordbooks[0]!.words[0]!.id);
   } finally { await rm(directory, { recursive: true, force: true }); }

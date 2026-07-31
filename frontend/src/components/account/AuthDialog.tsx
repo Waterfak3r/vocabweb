@@ -21,6 +21,7 @@ const PASSWORD_MAX = 72
 export function mapAuthError(error: unknown): string {
   if (error instanceof WorkspaceApiError) {
     if (error.code === 'USERNAME_TAKEN') return '用户名已被占用'
+    if (error.code === 'REGISTRATION_DISABLED') return '当前站点未开放注册'
     if (error.code === 'ACTIVE_SESSION_ACCOUNT_CONFLICT') return '请先退出当前账号，再登录其他账号'
     if (error.code === 'CLIENT_ID_ACCOUNT_CONFLICT' || error.code === 'CLIENT_ID_ALREADY_REGISTERED') return '当前浏览器数据已绑定其他账号，请刷新后重试'
     if (error.status === 429) return '尝试次数过多，请稍后再试'

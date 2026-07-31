@@ -3,7 +3,7 @@ import { dirname, resolve } from "node:path";
 import Database from "better-sqlite3";
 import { BaseStore, type StudyResourceLimits } from "./store.js";
 import { EMPTY, migrate, type ClientData, type State } from "./ladder.js";
-import type { AccountUser, CatalogWordbook } from "./types.js";
+import type { AccountUser, CatalogContribution, CatalogRevision, CatalogWordbook } from "./types.js";
 
 type SqliteStoreOptions = {
   now?: () => Date;
@@ -108,8 +108,12 @@ export class SqliteStudyStore extends BaseStore {
       }));
     const catalog = (db.prepare("SELECT data_json FROM catalog").all() as JsonRow[])
       .map((row) => JSON.parse(row.data_json) as CatalogWordbook);
+    const revisions = (db.prepare("SELECT data_json FROM catalog_revisions").all() as JsonRow[])
+      .map((row) => JSON.parse(row.data_json) as CatalogRevision);
+    const contributions = (db.prepare("SELECT data_json FROM catalog_contributions").all() as JsonRow[])
+      .map((row) => JSON.parse(row.data_json) as CatalogContribution);
 
-    return migrate({ version: 3, catalog, clients, users, sessions });
+    return migrate({ version: 6, catalog, revisions, contributions, clients, users, sessions });
   }
 
   protected async save(state: State, previous?: State): Promise<void> {
@@ -119,6 +123,8 @@ export class SqliteStudyStore extends BaseStore {
       this.syncClients(db, before, state);
       this.syncUsers(db, before, state);
       this.syncCatalog(db, before, state);
+      this.syncRevisions(db, before, state);
+      this.syncContributions(db, before, state);
       this.syncSessions(db, before, state);
     });
     write();
@@ -180,11 +186,44 @@ export class SqliteStudyStore extends BaseStore {
       CREATE INDEX IF NOT EXISTS catalog_author_user_idx ON catalog(author_user_id);
       CREATE INDEX IF NOT EXISTS catalog_uses_idx ON catalog(uses DESC);
       CREATE INDEX IF NOT EXISTS catalog_rating_idx ON catalog(rating DESC);
+      CREATE TABLE IF NOT EXISTS catalog_revisions (
+        id TEXT PRIMARY KEY,
+        catalog_id TEXT NOT NULL REFERENCES catalog(id) ON DELETE CASCADE,
+        parent_revision_id TEXT,
+        kind TEXT NOT NULL CHECK (kind IN ('initial', 'update', 'merge', 'revert')),
+        author_user_id TEXT,
+        committer_user_id TEXT,
+        created_at TEXT NOT NULL,
+        data_json TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS catalog_revisions_catalog_created_idx ON catalog_revisions(catalog_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS catalog_revisions_parent_idx ON catalog_revisions(parent_revision_id);
+      CREATE INDEX IF NOT EXISTS catalog_revisions_author_idx ON catalog_revisions(author_user_id);
+      CREATE TABLE IF NOT EXISTS catalog_contributions (
+        id TEXT PRIMARY KEY,
+        catalog_id TEXT NOT NULL REFERENCES catalog(id) ON DELETE CASCADE,
+        contributor_user_id TEXT,
+        source_wordbook_id TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('open', 'merged', 'closed')),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        data_json TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS catalog_contributions_catalog_status_idx ON catalog_contributions(catalog_id, status, created_at DESC);
+      CREATE INDEX IF NOT EXISTS catalog_contributions_contributor_status_idx ON catalog_contributions(contributor_user_id, status, created_at DESC);
     `);
     const userColumns = db.prepare("PRAGMA table_info(users)").all() as Array<{ name: string }>;
     if (!userColumns.some((column) => column.name === "role")) {
       db.exec("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('user', 'admin'))");
     }
+    const catalogColumns = db.prepare("PRAGMA table_info(catalog)").all() as Array<{ name: string }>;
+    if (!catalogColumns.some((column) => column.name === "updated_at")) {
+      db.exec("ALTER TABLE catalog ADD COLUMN updated_at TEXT");
+    }
+    if (!catalogColumns.some((column) => column.name === "head_revision_id")) {
+      db.exec("ALTER TABLE catalog ADD COLUMN head_revision_id TEXT");
+    }
+    db.exec("CREATE INDEX IF NOT EXISTS catalog_visibility_updated_idx ON catalog(visibility, updated_at DESC)");
   }
 
   private async importLegacyJsonIfNeeded(db: Database.Database): Promise<void> {
@@ -212,13 +251,15 @@ export class SqliteStudyStore extends BaseStore {
         this.syncClients(db, empty, legacy);
         this.syncUsers(db, empty, legacy);
         this.syncCatalog(db, empty, legacy);
+        this.syncRevisions(db, empty, legacy);
+        this.syncContributions(db, empty, legacy);
         this.syncSessions(db, empty, legacy);
       }
       db.prepare("INSERT INTO metadata(key, value) VALUES (?, ?)").run(
         LEGACY_IMPORT_KEY,
         legacy ? "imported" : counts.count === 0 ? "no-source" : "skipped-nonempty",
       );
-      db.prepare("INSERT INTO metadata(key, value) VALUES ('state_version', '5') ON CONFLICT(key) DO UPDATE SET value = excluded.value").run();
+      db.prepare("INSERT INTO metadata(key, value) VALUES ('state_version', '6') ON CONFLICT(key) DO UPDATE SET value = excluded.value").run();
     });
     importOnce();
   }
@@ -272,10 +313,10 @@ export class SqliteStudyStore extends BaseStore {
     const upsert = db.prepare(`
       INSERT INTO catalog(
         id, owner_client_id, author_user_id, title, author, visibility,
-        created_at, uses, rating, share_code, data_json
+        created_at, updated_at, head_revision_id, uses, rating, share_code, data_json
       ) VALUES (
         @id, @ownerClientId, @authorUserId, @title, @author, @visibility,
-        @createdAt, @uses, @rating, @shareCode, @dataJson
+        @createdAt, @updatedAt, @headRevisionId, @uses, @rating, @shareCode, @dataJson
       )
       ON CONFLICT(id) DO UPDATE SET
         owner_client_id = excluded.owner_client_id,
@@ -284,6 +325,8 @@ export class SqliteStudyStore extends BaseStore {
         author = excluded.author,
         visibility = excluded.visibility,
         created_at = excluded.created_at,
+        updated_at = excluded.updated_at,
+        head_revision_id = excluded.head_revision_id,
         uses = excluded.uses,
         rating = excluded.rating,
         share_code = excluded.share_code,
@@ -300,10 +343,86 @@ export class SqliteStudyStore extends BaseStore {
         author: book.author,
         visibility: book.visibility,
         createdAt: book.createdAt,
+        updatedAt: book.updatedAt,
+        headRevisionId: book.headRevisionId,
         uses: book.uses,
         rating: book.rating,
         shareCode: book.shareCode,
         dataJson: JSON.stringify(book),
+      });
+    }
+    for (const id of old.keys()) if (!current.has(id)) remove.run(id);
+  }
+
+  private syncRevisions(db: Database.Database, before: State, after: State): void {
+    const old = keyed(before.revisions, (revision) => revision.id);
+    const current = keyed(after.revisions, (revision) => revision.id);
+    const upsert = db.prepare(`
+      INSERT INTO catalog_revisions(
+        id, catalog_id, parent_revision_id, kind, author_user_id,
+        committer_user_id, created_at, data_json
+      ) VALUES (
+        @id, @catalogId, @parentRevisionId, @kind, @authorUserId,
+        @committerUserId, @createdAt, @dataJson
+      )
+      ON CONFLICT(id) DO UPDATE SET
+        catalog_id = excluded.catalog_id,
+        parent_revision_id = excluded.parent_revision_id,
+        kind = excluded.kind,
+        author_user_id = excluded.author_user_id,
+        committer_user_id = excluded.committer_user_id,
+        created_at = excluded.created_at,
+        data_json = excluded.data_json
+    `);
+    const remove = db.prepare("DELETE FROM catalog_revisions WHERE id = ?");
+    for (const revision of after.revisions) {
+      if (same(old.get(revision.id), revision)) continue;
+      upsert.run({
+        id: revision.id,
+        catalogId: revision.catalogId,
+        parentRevisionId: revision.parentRevisionId ?? null,
+        kind: revision.kind,
+        authorUserId: revision.authorUserId ?? null,
+        committerUserId: revision.committerUserId ?? null,
+        createdAt: revision.createdAt,
+        dataJson: JSON.stringify(revision),
+      });
+    }
+    for (const id of old.keys()) if (!current.has(id)) remove.run(id);
+  }
+
+  private syncContributions(db: Database.Database, before: State, after: State): void {
+    const old = keyed(before.contributions, (contribution) => contribution.id);
+    const current = keyed(after.contributions, (contribution) => contribution.id);
+    const upsert = db.prepare(`
+      INSERT INTO catalog_contributions(
+        id, catalog_id, contributor_user_id, source_wordbook_id,
+        status, created_at, updated_at, data_json
+      ) VALUES (
+        @id, @catalogId, @contributorUserId, @sourceWordbookId,
+        @status, @createdAt, @updatedAt, @dataJson
+      )
+      ON CONFLICT(id) DO UPDATE SET
+        catalog_id = excluded.catalog_id,
+        contributor_user_id = excluded.contributor_user_id,
+        source_wordbook_id = excluded.source_wordbook_id,
+        status = excluded.status,
+        created_at = excluded.created_at,
+        updated_at = excluded.updated_at,
+        data_json = excluded.data_json
+    `);
+    const remove = db.prepare("DELETE FROM catalog_contributions WHERE id = ?");
+    for (const contribution of after.contributions) {
+      if (same(old.get(contribution.id), contribution)) continue;
+      upsert.run({
+        id: contribution.id,
+        catalogId: contribution.catalogId,
+        contributorUserId: contribution.contributorUserId ?? null,
+        sourceWordbookId: contribution.sourceWordbookId,
+        status: contribution.status,
+        createdAt: contribution.createdAt,
+        updatedAt: contribution.updatedAt,
+        dataJson: JSON.stringify(contribution),
       });
     }
     for (const id of old.keys()) if (!current.has(id)) remove.run(id);

@@ -4,7 +4,7 @@ import express, { type ErrorRequestHandler, type RequestHandler } from "express"
 import helmet from "helmet";
 import { MemoryEngagementStore, type EngagementStore, type FeedbackInput, type FeedbackType, type MessageActor } from "./engagement/store.js";
 import {
-  clearSessionCookie, createSessionToken, hashPassword, hashSessionToken, parseAuthCredentials,
+  clearSessionCookie, createSessionToken, hashPassword, hashSessionToken, parseAuthCredentials, parsePasswordChange,
   readSessionToken, sessionCookie, sessionExpiresAt, verifyPassword,
 } from "./auth.js";
 import { FixedWindowRateLimiter, type RateLimiter } from "./http/rate-limit.js";
@@ -13,12 +13,22 @@ import { WiktApiProvider } from "./providers/wiktapi.js";
 import { CsvLocalChineseDictionary, type LocalChineseLookup } from "./study/local-dictionary.js";
 import { JsonFileStudyStore, StudyResourceLimitError } from "./study/store.js";
 import {
-  parseAddWord, parseBatchWords, parseCatalogQuery, parseClientId, parseCommitImportDraft, parseCreateImportDraft,
+  parseAddWord, parseBatchWords, parseCatalogQuery, parseClientId, parseCommitImportDraft, parseCreateCatalogContribution, parseCreateImportDraft,
+  parseCursorQuery,
   parseCreateMyWordbook, parseLearningEvent, parseResourceId, parseShareCode, parseStartStudyRound, parseStatus,
-  parseStudyRoundAnswer, parseStudyRoundRevision, parseUpdateCatalog, parseUpdateMyWordbook, parseUpdateStudySettings,
+  parseResolveCatalogContribution, parseRevertRevision, parseStudyRoundAnswer, parseStudyRoundRevision, parseUpdateCatalog, parseUpdateMyWordbook, parseUpdateStudySettings,
   parseUpdateWord, parseUploadCatalog, parseWordId,
 } from "./study/validation.js";
-import type { AccountUser, ImportLineInput, PreparedImportLine, ResolvedImportDraftEntry, StudyStore, StudyWordEntry } from "./study/types.js";
+import type {
+  AccountUser,
+  ContributionMutationResult,
+  ImportLineInput,
+  PreparedImportLine,
+  ResolvedImportDraftEntry,
+  RevisionMutationResult,
+  StudyStore,
+  StudyWordEntry,
+} from "./study/types.js";
 import { isValidWordQuery, normalizeWord } from "./words/normalize.js";
 import { WordService, type WordLookup } from "./words/word-service.js";
 import { WordProviderError } from "./words/types.js";
@@ -78,6 +88,67 @@ class LookupCapacityError extends Error {
 
 function apiError(code: string, message: string): ApiErrorBody {
   return { error: { code, message } };
+}
+
+function sendContributionMutation(response: express.Response, result: ContributionMutationResult): void {
+  if (result.kind === "created") {
+    response.status(201).json(result.contribution);
+  } else if (result.kind === "updated") {
+    response.status(200).json(result.contribution);
+  } else if (result.kind === "not-found") {
+    response.status(404).json(apiError("CONTRIBUTION_NOT_FOUND", "Contribution or wordbook was not found"));
+  } else if (result.kind === "forbidden") {
+    response.status(403).json(apiError("CONTRIBUTION_FORBIDDEN", "You cannot manage this contribution"));
+  } else if (result.kind === "disabled") {
+    response.status(409).json(apiError("COLLABORATION_DISABLED", "Collaboration is not available for this wordbook"));
+  } else if (result.kind === "stale") {
+    response.status(409).json({
+      ...apiError("CONTRIBUTION_STALE", "The source or public version changed; preview the contribution again"),
+      headRevisionId: result.headRevisionId,
+      ...(result.sourceUpdatedAt ? { sourceUpdatedAt: result.sourceUpdatedAt } : {}),
+    });
+  } else if (result.kind === "duplicate-open") {
+    response.status(409).json({
+      ...apiError("CONTRIBUTION_ALREADY_OPEN", "You already have an open contribution for this wordbook"),
+      contributionId: result.contributionId,
+    });
+  } else if (result.kind === "empty") {
+    response.status(409).json(apiError("CONTRIBUTION_EMPTY", "There are no public word changes to submit"));
+  } else if (result.kind === "too-large") {
+    response.status(422).json({
+      ...apiError("CONTRIBUTION_TOO_LARGE", "A contribution can change at most 500 words"),
+      changeCount: result.count,
+    });
+  } else {
+    response.status(409).json({
+      ...apiError("CONTRIBUTION_CONFLICT", "The public or publisher source wordbook has overlapping changes"),
+      conflicts: result.conflicts,
+    });
+  }
+}
+
+function sendRevisionMutation(response: express.Response, result: RevisionMutationResult): void {
+  if (result.kind === "updated") {
+    response.status(201).json(result.revision);
+  } else if (result.kind === "not-found") {
+    response.status(404).json(apiError("REVISION_NOT_FOUND", "Revision or wordbook was not found"));
+  } else if (result.kind === "forbidden") {
+    response.status(403).json(apiError("REVISION_FORBIDDEN", "Only the publisher can revert this revision"));
+  } else if (result.kind === "disabled") {
+    response.status(409).json(apiError("COLLABORATION_DISABLED", "Collaboration is not available for this wordbook"));
+  } else if (result.kind === "stale") {
+    response.status(409).json({
+      ...apiError("REVISION_HEAD_STALE", "The public wordbook changed; preview the revert again"),
+      headRevisionId: result.headRevisionId,
+    });
+  } else if (result.kind === "already-reverted") {
+    response.status(409).json(apiError("REVISION_ALREADY_REVERTED", "Every change in this revision is already reverted"));
+  } else {
+    response.status(409).json({
+      ...apiError("REVISION_REVERT_CONFLICT", "Later revisions changed one or more of the same words"),
+      conflicts: result.conflicts,
+    });
+  }
 }
 
 const POS_ALIASES: Record<string, string> = {
@@ -314,19 +385,19 @@ export function createApp(options: CreateAppOptions = {}) {
     if (!zhMeaning) {
       try { zhMeaning = await localChineseLookup.lookup(lookupWord); } catch { /* Local dictionaries are optional. */ }
     }
-    let meanings = matched?.meanings ?? [];
+    let meanings = line.meanings !== undefined ? structuredClone(line.meanings) : matched?.meanings ?? [];
     const matchedMeaningIndex = line.pos
       ? meanings.findIndex((meaning) => comparablePos(meaning.pos) === comparablePos(line.pos!))
       : -1;
     const preferredMeaningIndex = matchedMeaningIndex >= 0 ? matchedMeaningIndex : 0;
-    if (line.enDefinition) {
+    if (line.meanings === undefined && line.enDefinition) {
       const fallback = meanings[preferredMeaningIndex];
       meanings = [{
         pos: line.pos || fallback?.pos || "unknown",
         definition: line.enDefinition,
         ...((line.example || fallback?.example) ? { example: line.example || fallback?.example } : {}),
       }];
-    } else if (line.pos || line.example) {
+    } else if (line.meanings === undefined && (line.pos || line.example)) {
       if (!meanings.length || (line.pos && matchedMeaningIndex < 0)) {
         meanings = [...meanings, {
           pos: line.pos || "unknown",
@@ -343,10 +414,10 @@ export function createApp(options: CreateAppOptions = {}) {
     }
     const entry: StudyWordEntry = {
       ...(matched ?? { word: normalized, phonetic: "", source: "user" as const }),
-      ...(composedPhonetic ? { phonetic: composedPhonetic } : {}),
+      ...(line.phonetic ? { phonetic: line.phonetic } : composedPhonetic ? { phonetic: composedPhonetic } : {}),
       word: normalized,
       meanings,
-      ...(line.enDefinition || line.pos || line.example ? { source: "user" as const } : {}),
+      ...(line.meanings !== undefined || line.phonetic || line.enDefinition || line.pos || line.example ? { source: "user" as const } : {}),
       ...(line.zhMeaning ? { zhMeaning: line.zhMeaning, zhMeaningSource: "user" as const } : zhMeaning ? { zhMeaning, zhMeaningSource: "dictionary" as const } : {}),
     };
     return {
@@ -374,8 +445,9 @@ export function createApp(options: CreateAppOptions = {}) {
         const resolved: ResolvedImportDraftEntry[] = await Promise.all(batch.map(async (entry): Promise<ResolvedImportDraftEntry> => {
           const result = await resolveOneImportLine({
             line: entry.line, word: entry.word!,
-            ...(entry.pos ? { pos: entry.pos } : {}), ...(entry.enDefinition ? { enDefinition: entry.enDefinition } : {}),
+            ...(entry.phonetic ? { phonetic: entry.phonetic } : {}), ...(entry.pos ? { pos: entry.pos } : {}), ...(entry.enDefinition ? { enDefinition: entry.enDefinition } : {}),
             ...(entry.zhMeaning ? { zhMeaning: entry.zhMeaning } : {}), ...(entry.example ? { example: entry.example } : {}),
+            ...(entry.meanings !== undefined ? { meanings: entry.meanings } : {}),
           });
           const status: ResolvedImportDraftEntry["status"] =
             result.status === "ready" || result.status === "unmatched" || result.status === "invalid"
@@ -480,6 +552,7 @@ export function createApp(options: CreateAppOptions = {}) {
     username: user.username,
     clientId: user.clientId,
     role: user.role,
+    createdAt: user.createdAt,
     capabilities: capabilitiesFor(user),
   });
   const beginSession = async (response: express.Response, user: AccountUser) => {
@@ -599,6 +672,37 @@ export function createApp(options: CreateAppOptions = {}) {
       const engagement = await engagementStore.exportUserData(user.id);
       response.setHeader("Content-Disposition", `attachment; filename="vacabweb-${new Date().toISOString().slice(0, 10)}.json"`);
       response.status(200).json({ exportedAt: new Date().toISOString(), study, engagement });
+    } catch (error) { next(error); }
+  });
+
+  app.post("/api/account/password", enforceLoginRateLimit, async (request, response, next) => {
+    const identity = identityOf(response);
+    const user = identity.user;
+    const input = parsePasswordChange(request.body);
+    if (!user || !identity.sessionTokenHash) {
+      response.status(401).json(apiError("AUTH_REQUIRED", "No active account session"));
+      return;
+    }
+    if (!input) {
+      response.status(400).json(apiError("INVALID_PASSWORD_CHANGE", "Current and new passwords must meet the account requirements"));
+      return;
+    }
+    if (input.currentPassword === input.newPassword) {
+      response.status(409).json(apiError("PASSWORD_UNCHANGED", "The new password must be different"));
+      return;
+    }
+    try {
+      const passwordMatches = await runAuthCrypto(() => verifyPassword(input.currentPassword, user.passwordHash));
+      if (!passwordMatches) {
+        response.status(403).json(apiError("INVALID_PASSWORD", "Password is incorrect"));
+        return;
+      }
+      const passwordHash = await runAuthCrypto(() => hashPassword(input.newPassword));
+      if (!await studyStore.updateUserPassword(user.id, passwordHash, identity.sessionTokenHash)) {
+        response.status(404).json(apiError("ACCOUNT_NOT_FOUND", "Account no longer exists"));
+        return;
+      }
+      response.status(204).end();
     } catch (error) { next(error); }
   });
 
@@ -1058,6 +1162,243 @@ export function createApp(options: CreateAppOptions = {}) {
     if (!clientId) return;
     if (!id) { response.status(400).json(apiError("INVALID_RESOURCE_ID", "Resource id is invalid")); return; }
     try { if (!await studyStore.deleteCatalogUpload(clientId, id)) response.status(404).json(apiError("CATALOG_NOT_FOUND", "Catalog wordbook was not found")); else response.status(204).end(); } catch (error) { next(error); }
+  });
+  app.get("/api/my/wordbooks/:id/contribution-preview", async (request, response, next) => {
+    const clientId = readClientId(request, response);
+    const wordbookId = parseResourceId(request.params.id);
+    if (!clientId) return;
+    if (!wordbookId) {
+      response.status(400).json(apiError("INVALID_RESOURCE_ID", "Resource id is invalid"));
+      return;
+    }
+    const user = identityOf(response).user;
+    if (!user) {
+      response.status(401).json(apiError("AUTH_REQUIRED", "Sign in before submitting an improvement"));
+      return;
+    }
+    try {
+      const preview = await studyStore.getContributionPreview(clientId, user.id, wordbookId);
+      if (!preview) response.status(404).json(apiError("CONTRIBUTION_PREVIEW_UNAVAILABLE", "This wordbook cannot submit improvements"));
+      else response.status(200).json(preview);
+    } catch (error) { next(error); }
+  });
+  app.post("/api/catalog/wordbooks/:id/contributions", async (request, response, next) => {
+    const clientId = readClientId(request, response);
+    const catalogId = parseResourceId(request.params.id);
+    const input = parseCreateCatalogContribution(request.body);
+    if (!clientId) return;
+    if (!catalogId || !input) {
+      response.status(400).json(apiError("INVALID_CONTRIBUTION", "Contribution title, description, or expected version is invalid"));
+      return;
+    }
+    const user = identityOf(response).user;
+    if (!user) {
+      response.status(401).json(apiError("AUTH_REQUIRED", "Sign in before submitting an improvement"));
+      return;
+    }
+    try {
+      sendContributionMutation(response, await studyStore.createContribution(
+        clientId,
+        { userId: user.id, username: user.username },
+        catalogId,
+        input,
+      ));
+    } catch (error) { next(error); }
+  });
+  app.get("/api/catalog/wordbooks/:id/contributions", async (request, response, next) => {
+    const clientId = readClientId(request, response);
+    const catalogId = parseResourceId(request.params.id);
+    const query = parseCursorQuery(request.query);
+    if (!clientId) return;
+    if (!catalogId || !query) {
+      response.status(400).json(apiError("INVALID_CONTRIBUTION_QUERY", "Contribution query is invalid"));
+      return;
+    }
+    try {
+      const page = await studyStore.listCatalogContributions(
+        clientId,
+        identityOf(response).user?.id,
+        catalogId,
+        query,
+      );
+      if (!page) response.status(404).json(apiError("CATALOG_NOT_FOUND", "Catalog wordbook was not found"));
+      else response.status(200).json(page);
+    } catch (error) { next(error); }
+  });
+  app.get("/api/catalog/wordbooks/:id/contributions/:contributionId", async (request, response, next) => {
+    const clientId = readClientId(request, response);
+    const catalogId = parseResourceId(request.params.id);
+    const contributionId = parseResourceId(request.params.contributionId);
+    if (!clientId) return;
+    if (!catalogId || !contributionId) {
+      response.status(400).json(apiError("INVALID_RESOURCE_ID", "Resource id is invalid"));
+      return;
+    }
+    try {
+      const contribution = await studyStore.getCatalogContribution(
+        clientId,
+        identityOf(response).user?.id,
+        catalogId,
+        contributionId,
+      );
+      if (!contribution) response.status(404).json(apiError("CONTRIBUTION_NOT_FOUND", "Contribution was not found"));
+      else response.status(200).json(contribution);
+    } catch (error) { next(error); }
+  });
+  app.post("/api/catalog/wordbooks/:id/contributions/:contributionId/merge", async (request, response, next) => {
+    const clientId = readClientId(request, response);
+    const catalogId = parseResourceId(request.params.id);
+    const contributionId = parseResourceId(request.params.contributionId);
+    const input = parseResolveCatalogContribution(request.body);
+    if (!clientId) return;
+    if (!catalogId || !contributionId || !input) {
+      response.status(400).json(apiError("INVALID_CONTRIBUTION_RESOLUTION", "Contribution resolution is invalid"));
+      return;
+    }
+    const user = identityOf(response).user;
+    if (!user) {
+      response.status(401).json(apiError("AUTH_REQUIRED", "Sign in to merge a contribution"));
+      return;
+    }
+    try {
+      sendContributionMutation(response, await studyStore.mergeContribution(
+        clientId,
+        { userId: user.id, username: user.username },
+        catalogId,
+        contributionId,
+        input,
+      ));
+    } catch (error) { next(error); }
+  });
+  app.post("/api/catalog/wordbooks/:id/contributions/:contributionId/close", async (request, response, next) => {
+    const clientId = readClientId(request, response);
+    const catalogId = parseResourceId(request.params.id);
+    const contributionId = parseResourceId(request.params.contributionId);
+    const input = parseResolveCatalogContribution(request.body);
+    if (!clientId) return;
+    if (!catalogId || !contributionId || !input) {
+      response.status(400).json(apiError("INVALID_CONTRIBUTION_RESOLUTION", "Contribution resolution is invalid"));
+      return;
+    }
+    const user = identityOf(response).user;
+    if (!user) {
+      response.status(401).json(apiError("AUTH_REQUIRED", "Sign in to close a contribution"));
+      return;
+    }
+    try {
+      sendContributionMutation(response, await studyStore.closeContribution(
+        clientId,
+        { userId: user.id, username: user.username },
+        catalogId,
+        contributionId,
+        input,
+      ));
+    } catch (error) { next(error); }
+  });
+  app.get("/api/catalog/wordbooks/:id/revisions", async (request, response, next) => {
+    const clientId = readClientId(request, response);
+    const catalogId = parseResourceId(request.params.id);
+    const query = parseCursorQuery(request.query);
+    if (!clientId) return;
+    if (!catalogId || !query) {
+      response.status(400).json(apiError("INVALID_REVISION_QUERY", "Revision query is invalid"));
+      return;
+    }
+    try {
+      const page = await studyStore.listCatalogRevisions(
+        clientId,
+        identityOf(response).user?.id,
+        catalogId,
+        query,
+      );
+      if (!page) response.status(404).json(apiError("CATALOG_NOT_FOUND", "Catalog wordbook was not found"));
+      else response.status(200).json(page);
+    } catch (error) { next(error); }
+  });
+  app.get("/api/catalog/wordbooks/:id/revisions/:revisionId", async (request, response, next) => {
+    const clientId = readClientId(request, response);
+    const catalogId = parseResourceId(request.params.id);
+    const revisionId = parseResourceId(request.params.revisionId);
+    if (!clientId) return;
+    if (!catalogId || !revisionId) {
+      response.status(400).json(apiError("INVALID_RESOURCE_ID", "Resource id is invalid"));
+      return;
+    }
+    try {
+      const revision = await studyStore.getCatalogRevision(
+        clientId,
+        identityOf(response).user?.id,
+        catalogId,
+        revisionId,
+      );
+      if (!revision) response.status(404).json(apiError("REVISION_NOT_FOUND", "Revision was not found"));
+      else response.status(200).json(revision);
+    } catch (error) { next(error); }
+  });
+  app.get("/api/catalog/wordbooks/:id/revisions/:revisionId/revert-preview", async (request, response, next) => {
+    const clientId = readClientId(request, response);
+    const catalogId = parseResourceId(request.params.id);
+    const revisionId = parseResourceId(request.params.revisionId);
+    if (!clientId) return;
+    if (!catalogId || !revisionId) {
+      response.status(400).json(apiError("INVALID_RESOURCE_ID", "Resource id is invalid"));
+      return;
+    }
+    const user = identityOf(response).user;
+    if (!user) {
+      response.status(401).json(apiError("AUTH_REQUIRED", "Sign in to preview a revert"));
+      return;
+    }
+    try {
+      const preview = await studyStore.getRevertPreview(clientId, user.id, catalogId, revisionId);
+      if (!preview) response.status(404).json(apiError("REVISION_NOT_FOUND", "Revision was not found or cannot be reverted"));
+      else response.status(200).json(preview);
+    } catch (error) { next(error); }
+  });
+  app.post("/api/catalog/wordbooks/:id/revisions/:revisionId/revert", async (request, response, next) => {
+    const clientId = readClientId(request, response);
+    const catalogId = parseResourceId(request.params.id);
+    const revisionId = parseResourceId(request.params.revisionId);
+    const input = parseRevertRevision(request.body);
+    if (!clientId) return;
+    if (!catalogId || !revisionId || !input) {
+      response.status(400).json(apiError("INVALID_REVISION_REVERT", "Revert request is invalid"));
+      return;
+    }
+    const user = identityOf(response).user;
+    if (!user) {
+      response.status(401).json(apiError("AUTH_REQUIRED", "Sign in to revert a revision"));
+      return;
+    }
+    try {
+      sendRevisionMutation(response, await studyStore.revertRevision(
+        clientId,
+        { userId: user.id, username: user.username },
+        catalogId,
+        revisionId,
+        input,
+      ));
+    } catch (error) { next(error); }
+  });
+  app.get("/api/account/contributions", async (request, response, next) => {
+    const clientId = readClientId(request, response);
+    const scope = request.query.scope === "review" || request.query.scope === "authored"
+      ? request.query.scope
+      : null;
+    const query = parseCursorQuery(request.query);
+    if (!clientId) return;
+    if (!scope || !query) {
+      response.status(400).json(apiError("INVALID_CONTRIBUTION_QUERY", "Contribution inbox query is invalid"));
+      return;
+    }
+    const user = identityOf(response).user;
+    if (!user) {
+      response.status(401).json(apiError("AUTH_REQUIRED", "Sign in to view contribution inbox"));
+      return;
+    }
+    try {
+      response.status(200).json(await studyStore.listAccountContributions(clientId, user.id, scope, query));
+    } catch (error) { next(error); }
   });
   app.post("/api/catalog/imports", async (request, response, next) => {
     const clientId = readClientId(request, response); const shareCode = parseShareCode(request.body && typeof request.body === "object" ? (request.body as { shareCode?: unknown }).shareCode : undefined);

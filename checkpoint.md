@@ -41,12 +41,15 @@ backend/
 - 已归属账号的 `clientId` 在没有会话时返回 `401 AUTH_REQUIRED`，避免退出后或泄漏 ID 时继续访问账号数据。
 - `POST /api/auth/register`
   - 用户名 2–20 位字母、数字、下划线、连字符或中文；密码 8–72 位。
-  - `201 { username, clientId }`；用户名或匿名空间冲突为 `409`。
+  - `201 { username, clientId, role, createdAt, capabilities }`；用户名或匿名空间冲突为 `409`。
 - `POST /api/auth/login`
-  - `200 { username, clientId }`；错误凭据为 `401`；跨账号数据空间或活跃会话切号为 `409`。
+  - `200 { username, clientId, role, createdAt, capabilities }`；错误凭据为 `401`；跨账号数据空间或活跃会话切号为 `409`。
   - 仅未归属账号的匿名空间可合并；重复登录不重复导入。
 - `POST /api/auth/logout`：幂等返回 `204`，撤销当前会话并清 Cookie。
 - `GET /api/auth/me`：有效会话返回账号 DTO，否则 `401`。
+- `POST /api/account/password`：验证当前密码并更新密码哈希，保留当前会话、撤销同账号其他会话。
+- `GET /api/account/export`：导出账号、学习、发布和留言数据。
+- `DELETE /api/account`：再次验证密码后删除私人数据、发布内容和会话，同时匿名化留言。
 
 ## 社区可见性
 
@@ -103,5 +106,5 @@ npm test --prefix frontend
 
 - 登录、查词和变更限流是单进程内存状态，多实例部署应换成共享限流。
 - SQLite 适合单机或单写进程；不要让多个容器并发挂载同一个普通文件卷写入。
-- 当前账号是用户名 + 密码 MVP，尚无邮箱验证、找回密码、改密、注销账号与后台审核。
+- 当前账号是用户名 + 密码 MVP，尚无邮箱验证、找回密码、双因素认证与后台审核。
 - 用户上传社区内容尚无举报/审核系统；公开部署前应补运营规则与内容治理。

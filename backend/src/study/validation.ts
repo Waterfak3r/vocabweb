@@ -1,9 +1,10 @@
 import { isValidWordQuery, normalizeWord } from "../words/normalize.js";
 import {
-  WORD_SOURCES, type CatalogExam, type CatalogQuery, type CatalogSort, type CommitImportDraftInput, type CreateImportDraftInput,
+  WORD_SOURCES, type CatalogExam, type CatalogQuery, type CatalogSort, type CommitImportDraftInput, type CreateCatalogContributionInput, type CreateImportDraftInput,
+  type CursorQuery,
   type CreateMyWordbookInput, type ImportLineInput, type ImportResolution, type LearningEventInput, type LearningGoal,
   type BatchWordAction, type DictationDisplayPreferences, type FlashcardDisplayPreferences, type PronunciationPreferences, type ReviewSchedule, type StartStudyRoundInput, type StudyDisplayPreferences, type StudyExerciseType, type StudyMeaning, type StudyRoundAnswerInput, type StudyShortcutPreferences, type StudyWordEntry,
-  type UpdateCatalogWordbookInput, type UpdateMyWordbookInput, type UpdateStudySettingsInput, type UpdateWordInput, type UploadCatalogWordbookInput, type WordbookStudyPreferences,
+  type ResolveCatalogContributionInput, type RevertRevisionInput, type UpdateCatalogWordbookInput, type UpdateMyWordbookInput, type UpdateStudySettingsInput, type UpdateWordInput, type UploadCatalogWordbookInput, type WordbookStudyPreferences,
   type WordLearningStatus, type WordLevel, type WordSource, type ZhMeaningSource,
 } from "./types.js";
 
@@ -47,6 +48,10 @@ export function parseShareCode(value: unknown): string | null {
 function text(value: unknown, max: number, allowEmpty = false): string | null {
   if (typeof value !== "string") return null;
   const result = value.trim(); return (allowEmpty || result) && result.length <= max ? result : null;
+}
+function timestamp(value: unknown): string | null {
+  if (typeof value !== "string" || value.length > 40 || !value.trim()) return null;
+  return Number.isFinite(Date.parse(value)) ? value : null;
 }
 function word(value: unknown): string | null {
   const result = typeof value === "string" ? normalizeWord(value) : "";
@@ -240,13 +245,14 @@ export function parseUploadCatalog(value: unknown): UploadCatalogWordbookInput |
   if (sourceWordbookId === null) return null;
   const exams = choices(value.exams, EXAMS); const goals = choices(value.goals, GOALS); if (!exams || !goals) return null;
   const visibility = value.visibility === undefined ? undefined : VISIBILITIES.includes(value.visibility as typeof VISIBILITIES[number]) ? value.visibility as typeof VISIBILITIES[number] : null;
-  if (visibility === null) return null;
+  const message = value.message === undefined ? undefined : text(value.message, 80);
+  if (visibility === null || message === null) return null;
   if (sourceWordbookId) {
     const title = value.title === undefined ? undefined : text(value.title, 100);
     const description = value.description === undefined ? undefined : text(value.description, 500, true);
-    return title !== null && description !== null ? { sourceWordbookId, ...(title ? { title } : {}), ...(description !== undefined ? { description } : {}), exams, goals, ...(visibility ? { visibility } : {}) } : null;
+    return title !== null && description !== null ? { sourceWordbookId, ...(title ? { title } : {}), ...(description !== undefined ? { description } : {}), exams, goals, ...(visibility ? { visibility } : {}), ...(message ? { message } : {}) } : null;
   }
-  const base = parseWordbookInput(value); return base ? { ...base, exams, goals, ...(visibility ? { visibility } : {}) } : null;
+  const base = parseWordbookInput(value); return base ? { ...base, exams, goals, ...(visibility ? { visibility } : {}), ...(message ? { message } : {}) } : null;
 }
 export function parseUpdateCatalog(value: unknown): UpdateCatalogWordbookInput | null {
   if (!isJsonObject(value)) return null;
@@ -254,8 +260,60 @@ export function parseUpdateCatalog(value: unknown): UpdateCatalogWordbookInput |
   const title = value.title === undefined ? undefined : text(value.title, 100); const description = value.description === undefined ? undefined : text(value.description, 500, true);
   const exams = value.exams === undefined ? undefined : choices(value.exams, EXAMS); const goals = value.goals === undefined ? undefined : choices(value.goals, GOALS);
   const visibility = value.visibility === undefined ? undefined : VISIBILITIES.includes(value.visibility as typeof VISIBILITIES[number]) ? value.visibility as typeof VISIBILITIES[number] : null;
-  if (sourceWordbookId === null || title === null || description === null || exams === null || goals === null || visibility === null || (sourceWordbookId === undefined && title === undefined && description === undefined && exams === undefined && goals === undefined && visibility === undefined)) return null;
-  return { ...(sourceWordbookId ? { sourceWordbookId } : {}), ...(title !== undefined ? { title } : {}), ...(description !== undefined ? { description } : {}), ...(exams ? { exams } : {}), ...(goals ? { goals } : {}), ...(visibility ? { visibility } : {}) };
+  const message = value.message === undefined ? undefined : text(value.message, 80);
+  if (sourceWordbookId === null || title === null || description === null || exams === null || goals === null || visibility === null || message === null || (sourceWordbookId === undefined && title === undefined && description === undefined && exams === undefined && goals === undefined && visibility === undefined)) return null;
+  return { ...(sourceWordbookId ? { sourceWordbookId } : {}), ...(title !== undefined ? { title } : {}), ...(description !== undefined ? { description } : {}), ...(exams ? { exams } : {}), ...(goals ? { goals } : {}), ...(visibility ? { visibility } : {}), ...(message ? { message } : {}) };
+}
+
+export function parseCursorQuery(value: unknown): CursorQuery | null {
+  if (!isJsonObject(value)) return null;
+  const cursor = value.cursor === undefined
+    ? undefined
+    : typeof value.cursor === "string" && /^[A-Za-z0-9_-]{1,500}$/.test(value.cursor)
+      ? value.cursor
+      : null;
+  const rawLimit = value.limit === undefined ? 20 : typeof value.limit === "string" ? Number(value.limit) : value.limit;
+  const limit = typeof rawLimit === "number" && Number.isInteger(rawLimit) && rawLimit >= 1 && rawLimit <= 50
+    ? rawLimit
+    : null;
+  if (cursor === null || limit === null) return null;
+  return { ...(cursor ? { cursor } : {}), limit };
+}
+
+export function parseCreateCatalogContribution(value: unknown): CreateCatalogContributionInput | null {
+  if (!isJsonObject(value)) return null;
+  const title = text(value.title, 80);
+  const description = value.description === undefined ? undefined : text(value.description, 1000, true);
+  const expectedSourceUpdatedAt = timestamp(value.expectedSourceUpdatedAt);
+  const expectedHeadRevisionId = parseResourceId(value.expectedHeadRevisionId);
+  if (!title || title.length < 2 || description === null || !expectedSourceUpdatedAt || !expectedHeadRevisionId) return null;
+  return {
+    title,
+    ...(description !== undefined ? { description } : {}),
+    expectedSourceUpdatedAt,
+    expectedHeadRevisionId,
+  };
+}
+
+export function parseResolveCatalogContribution(value: unknown): ResolveCatalogContributionInput | null {
+  if (!isJsonObject(value)) return null;
+  const expectedHeadRevisionId = value.expectedHeadRevisionId === undefined
+    ? undefined
+    : parseResourceId(value.expectedHeadRevisionId);
+  const resolutionNote = value.resolutionNote === undefined ? undefined : text(value.resolutionNote, 500, true);
+  if (expectedHeadRevisionId === null || resolutionNote === null) return null;
+  return {
+    ...(expectedHeadRevisionId ? { expectedHeadRevisionId } : {}),
+    ...(resolutionNote !== undefined ? { resolutionNote } : {}),
+  };
+}
+
+export function parseRevertRevision(value: unknown): RevertRevisionInput | null {
+  if (!isJsonObject(value)) return null;
+  const expectedHeadRevisionId = parseResourceId(value.expectedHeadRevisionId);
+  const message = value.message === undefined ? undefined : text(value.message, 80);
+  if (!expectedHeadRevisionId || message === null) return null;
+  return { expectedHeadRevisionId, ...(message ? { message } : {}) };
 }
 export function parseLearningEvent(value: unknown): LearningEventInput | null {
   if (!isJsonObject(value)) return null;
@@ -327,16 +385,20 @@ export function parseCreateImportDraft(value: unknown): CreateImportDraftInput |
     const parsed = value.lines.map((item): ImportLineInput | null => {
       if (!isJsonObject(item) || !Number.isInteger(item.line) || typeof item.line !== "number" || item.line < 1 || item.line > 1_000_000) return null;
       const rawWord = text(item.word, 160, true);
+      const phonetic = item.phonetic === undefined ? undefined : text(item.phonetic, 120, true);
       const pos = item.pos === undefined ? undefined : text(item.pos, 80, true);
       const enDefinition = item.enDefinition === undefined ? undefined : text(item.enDefinition, 1500, true);
       const zhMeaning = item.zhMeaning === undefined ? undefined : text(item.zhMeaning, 1000, true);
       const example = item.example === undefined ? undefined : text(item.example, 1500, true);
-      if (rawWord === null || pos === null || enDefinition === null || zhMeaning === null || example === null) return null;
-      total += rawWord.length + (pos?.length ?? 0) + (enDefinition?.length ?? 0) + (zhMeaning?.length ?? 0) + (example?.length ?? 0);
+      const parsedMeanings = item.meanings === undefined ? undefined : meanings(item.meanings);
+      if (rawWord === null || phonetic === null || pos === null || enDefinition === null || zhMeaning === null || example === null || parsedMeanings === null) return null;
+      total += rawWord.length + (phonetic?.length ?? 0) + (pos?.length ?? 0) + (enDefinition?.length ?? 0) + (zhMeaning?.length ?? 0) + (example?.length ?? 0)
+        + (parsedMeanings?.reduce((sum, meaning) => sum + meaning.pos.length + meaning.definition.length + (meaning.example?.length ?? 0), 0) ?? 0);
       return {
         line: item.line, word: rawWord,
-        ...(pos ? { pos } : {}), ...(enDefinition ? { enDefinition } : {}),
+        ...(phonetic ? { phonetic } : {}), ...(pos ? { pos } : {}), ...(enDefinition ? { enDefinition } : {}),
         ...(zhMeaning ? { zhMeaning } : {}), ...(example ? { example } : {}),
+        ...(parsedMeanings !== undefined ? { meanings: parsedMeanings } : {}),
       };
     });
     if (parsed.some((item) => item === null) || total > 1_000_000) return null; lines = parsed as ImportLineInput[];
