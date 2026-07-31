@@ -2,7 +2,7 @@ import { isValidWordQuery, normalizeWord } from "../words/normalize.js";
 import {
   WORD_SOURCES, type CatalogExam, type CatalogQuery, type CatalogSort, type CommitImportDraftInput, type CreateImportDraftInput,
   type CreateMyWordbookInput, type ImportLineInput, type ImportResolution, type LearningEventInput, type LearningGoal,
-  type BatchWordAction, type DictationDisplayPreferences, type PronunciationPreferences, type ReviewSchedule, type StudyDisplayPreferences, type StudyMeaning, type StudyShortcutPreferences, type StudyWordEntry,
+  type BatchWordAction, type DictationDisplayPreferences, type FlashcardDisplayPreferences, type PronunciationPreferences, type ReviewSchedule, type StartStudyRoundInput, type StudyDisplayPreferences, type StudyExerciseType, type StudyMeaning, type StudyRoundAnswerInput, type StudyShortcutPreferences, type StudyWordEntry,
   type UpdateCatalogWordbookInput, type UpdateMyWordbookInput, type UpdateStudySettingsInput, type UpdateWordInput, type UploadCatalogWordbookInput, type WordbookStudyPreferences,
   type WordLearningStatus, type WordLevel, type WordSource, type ZhMeaningSource,
 } from "./types.js";
@@ -123,18 +123,30 @@ function parseDisplayPreferences(value: unknown): StudyDisplayPreferences | null
     autoPlayAudio: value.autoPlayAudio,
   };
 }
+const DEFAULT_EXERCISES: StudyExerciseType[] = ["self-rating", "meaning-choice"];
+function parseFlashcardPreferences(value: unknown): FlashcardDisplayPreferences | null {
+  const display = parseDisplayPreferences(value);
+  if (!display || !isJsonObject(value)) return null;
+  const source = value.exerciseTypes === undefined ? DEFAULT_EXERCISES : value.exerciseTypes;
+  if (!Array.isArray(source) || source.length < 1 || source.length > DEFAULT_EXERCISES.length) return null;
+  const exerciseTypes = source.filter((item): item is StudyExerciseType => DEFAULT_EXERCISES.includes(item as StudyExerciseType));
+  if (exerciseTypes.length !== source.length || new Set(exerciseTypes).size !== exerciseTypes.length) return null;
+  return { ...display, exerciseTypes };
+}
 export function parseWordbookStudyPreferences(value: unknown): WordbookStudyPreferences | null {
   if (!isJsonObject(value) || !isJsonObject(value.plan) || !isJsonObject(value.modes)) return null;
   const count = (item: unknown) => typeof item === "number" && Number.isInteger(item) && item >= 0 && item <= 999 ? item : null;
   const newWords = count(value.plan.newWords);
   const dictationCount = count(value.plan.dictation);
-  const newMode = parseDisplayPreferences(value.modes.new);
-  const review = parseDisplayPreferences(value.modes.review);
+  const backlogReviews = value.plan.backlogReviews === undefined ? 50 : count(value.plan.backlogReviews);
+  const newMode = parseFlashcardPreferences(value.modes.new);
+  const review = parseFlashcardPreferences(value.modes.review);
   const dictationBase = parseDisplayPreferences(value.modes.dictation);
   const dictationSource = value.modes.dictation;
   if (
     newWords === null
     || dictationCount === null
+    || backlogReviews === null
     || !newMode
     || !review
     || !dictationBase
@@ -150,7 +162,7 @@ export function parseWordbookStudyPreferences(value: unknown): WordbookStudyPref
     showCharacterMask: dictationSource.showCharacterMask,
   };
   return {
-    plan: { newWords, dictation: dictationCount },
+    plan: { newWords, dictation: dictationCount, backlogReviews },
     modes: { new: newMode, review, dictation },
   };
 }
@@ -158,16 +170,24 @@ function parseStudyShortcuts(value: unknown): StudyShortcutPreferences | null {
   if (!isJsonObject(value)) return null;
   const actions = ["unknown", "pronounce", "known", "flip", "dictationPronounce"] as const;
   const special = new Set(["enter", " ", "tab", "arrowup", "arrowdown", "arrowleft", "arrowright"]);
-  const parsed = {} as StudyShortcutPreferences;
+  const parsed = {} as Omit<StudyShortcutPreferences, "vague"> & { vague?: string };
   for (const action of actions) {
     if (typeof value[action] !== "string") return null;
     const key = value[action].toLocaleLowerCase();
     if (!special.has(key) && !/^[a-z0-9]$/.test(key)) return null;
     parsed[action] = key;
   }
-  const flashcard = [parsed.unknown, parsed.pronounce, parsed.known, parsed.flip];
+  if (value.vague !== undefined) {
+    if (typeof value.vague !== "string") return null;
+    const key = value.vague.toLocaleLowerCase();
+    if (!special.has(key) && !/^[a-z0-9]$/.test(key)) return null;
+    parsed.vague = key;
+  } else {
+    parsed.vague = ["w", "v", "r", "f"].find((key) => ![parsed.unknown, parsed.pronounce, parsed.known, parsed.flip].includes(key)) ?? "w";
+  }
+  const flashcard = [parsed.unknown, parsed.vague, parsed.pronounce, parsed.known, parsed.flip];
   if (new Set(flashcard).size !== flashcard.length || parsed.dictationPronounce === "enter") return null;
-  return parsed;
+  return parsed as StudyShortcutPreferences;
 }
 export function parseUpdateStudySettings(value: unknown): UpdateStudySettingsInput | null {
   if (!isJsonObject(value)) return null;
@@ -243,14 +263,45 @@ export function parseLearningEvent(value: unknown): LearningEventInput | null {
   if (!wordbookId || parsedWord === null || wordId === null || (!parsedWord && !wordId) || typeof value.kind !== "string") return null;
   const target = { wordbookId, ...(parsedWord ? { word: parsedWord } : {}), ...(wordId ? { wordId } : {}) };
   if (value.kind === "new") {
-    if (value.verdict !== undefined && value.verdict !== "know" && value.verdict !== "unknown") return null;
+    if (value.verdict !== undefined && value.verdict !== "know" && value.verdict !== "vague" && value.verdict !== "unknown") return null;
     return { kind: "new", ...target, ...(value.verdict ? { verdict: value.verdict } : {}) };
   }
-  if (value.kind === "flashcard" && (value.verdict === "know" || value.verdict === "unknown")) return { kind: "flashcard", ...target, verdict: value.verdict };
+  if (value.kind === "flashcard" && (value.verdict === "know" || value.verdict === "vague" || value.verdict === "unknown")) return { kind: "flashcard", ...target, verdict: value.verdict };
   if (value.kind === "dictation" && typeof value.correct === "boolean") return { kind: "dictation", ...target, correct: value.correct };
   // "mark" is a manual proficiency override; the payload level must be an integer 0-4.
   if (value.kind === "mark" && typeof value.level === "number" && Number.isInteger(value.level) && value.level >= 0 && value.level <= 4) return { kind: "mark", ...target, level: value.level as WordLevel };
   return null;
+}
+export function parseStartStudyRound(value: unknown): StartStudyRoundInput | null {
+  if (!isJsonObject(value)) return null;
+  const wordbookId = parseResourceId(value.wordbookId);
+  const mode = value.mode === "new" || value.mode === "review" ? value.mode : null;
+  const scope = value.scope === undefined
+    ? "standard"
+    : value.scope === "standard" || value.scope === "backlog" || value.scope === "ahead"
+      ? value.scope
+      : null;
+  if (!wordbookId || !mode || !scope || (mode === "new" && scope !== "standard")) return null;
+  return { wordbookId, mode, scope };
+}
+export function parseStudyRoundAnswer(value: unknown): StudyRoundAnswerInput | null {
+  if (!isJsonObject(value)) return null;
+  const taskId = parseWordId(value.taskId);
+  const operationId = parseWordId(value.operationId);
+  const response = value.response === "know" || value.response === "vague" || value.response === "unknown"
+    || value.response === "correct" || value.response === "incorrect"
+    ? value.response
+    : null;
+  const revision = typeof value.revision === "number" && Number.isInteger(value.revision) && value.revision >= 0
+    ? value.revision
+    : null;
+  return taskId && operationId && response && revision !== null ? { taskId, operationId, response, revision } : null;
+}
+export function parseStudyRoundRevision(value: unknown): number | null {
+  if (!isJsonObject(value)) return null;
+  return typeof value.revision === "number" && Number.isInteger(value.revision) && value.revision >= 0
+    ? value.revision
+    : null;
 }
 export function parseAddWord(value: unknown): { word: string; zhMeaning?: string } | null {
   if (!isJsonObject(value)) return null;

@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import { isJsonObject } from "./validation.js";
 import type {
   AccountUser, CatalogCard, CatalogWordbook, ImportDraft, LearningEvent, LevelCounts, MyWordbook, MyWordbookCard,
-  ReviewSchedule, StudiedWord, StudyMeaning, StudyWordEntry, LearningQueueItem, SyncedStudySettings, WordLearningStatus, WordLevel, WordbookProgress, WordbookWord,
+  ReviewSchedule, StudiedWord, StudyMeaning, StudyRound, StudyWordEntry, LearningQueueItem, SyncedStudySettings,
+  WordLearningStatus, WordLevel, WordbookProgress, WordbookStudyPreferences, WordbookWord,
 } from "./types.js";
 
 /** Per-anonymous-client data home: favorites, private wordbooks, learning events, and import drafts. */
@@ -13,6 +14,8 @@ export interface ClientData {
   drafts: ImportDraft[];
   /** Global learning experience settings; absent before the first server sync. */
   studySettings?: SyncedStudySettings;
+  /** In-progress flashcard rounds. Account clients share this queue across devices. */
+  studyRounds: StudyRound[];
 }
 /** A persisted session: the sha256 of the cookie token, its owner, and expiry. */
 export interface SessionRecord { tokenHash: string; userId: string; expiresAt: string; createdAt: string; }
@@ -29,7 +32,7 @@ export function shiftDay(now: Date, offset: number): Date { const result = new D
 export function dayDiff(from: Date, to: Date): number { return Math.round((new Date(to.getFullYear(), to.getMonth(), to.getDate()).getTime() - new Date(from.getFullYear(), from.getMonth(), from.getDate()).getTime()) / 86_400_000); }
 export function toWordbookWords(words: StudyWordEntry[], at: string): WordbookWord[] { return words.map((word) => ({ ...clone(word), id: randomUUID(), addedAt: at })); }
 export function toCatalogWords(words: WordbookWord[]): StudyWordEntry[] { return words.map(({ id: _id, addedAt: _addedAt, ...word }) => clone(word)); }
-export function defaultClient(): ClientData { return { favorites: [], wordbooks: [], events: [], drafts: [] }; }
+export function defaultClient(): ClientData { return { favorites: [], wordbooks: [], events: [], drafts: [], studyRounds: [] }; }
 
 export interface WordLadderState {
   level: WordLevel;
@@ -55,6 +58,34 @@ export const DEFAULT_REVIEW_SCHEDULE: ReviewSchedule = {
   expertDays: 21,
   lapseDays: 1,
   maxDays: 60,
+};
+export const DEFAULT_WORDBOOK_STUDY_PREFERENCES: WordbookStudyPreferences = {
+  plan: { newWords: 20, dictation: 15, backlogReviews: 50 },
+  modes: {
+    new: {
+      meaningPreference: "zh",
+      showExamples: true,
+      showPhonetic: true,
+      autoPlayAudio: false,
+      exerciseTypes: ["self-rating", "meaning-choice"],
+    },
+    review: {
+      meaningPreference: "zh",
+      showExamples: true,
+      showPhonetic: true,
+      autoPlayAudio: false,
+      exerciseTypes: ["self-rating", "meaning-choice"],
+    },
+    dictation: {
+      meaningPreference: "zh",
+      showExamples: true,
+      showPhonetic: true,
+      autoPlayAudio: false,
+      underlineMistakes: true,
+      showMeaning: true,
+      showCharacterMask: false,
+    },
+  },
 };
 
 export function reviewScheduleOf(book: Pick<MyWordbook, "reviewSchedule">): ReviewSchedule {
@@ -121,7 +152,7 @@ export function replayLadder(
         // learning interval provides the meaningful follow-up instead. Legacy verdict-less
         // events still count as "know", preserving forward progress.
         if (level === 0) {
-          if (event.verdict === "unknown") recognitionStreak = 0;
+          if (event.verdict === "unknown" || event.verdict === "vague") recognitionStreak = 0;
           else {
             level = 1;
             recognitionStreak = 0;
@@ -129,10 +160,14 @@ export function replayLadder(
           }
         }
         break;
-      case "flashcard": // 认识 climbs one rung but flashcards can never pass L2; 不认识 demotes to a floor of L1.
+      case "flashcard": // 认识 climbs; 模糊 keeps the rung but contracts the checkpoint; 不认识 demotes.
         if (event.verdict === "know") {
           level = level < 2 ? (level + 1) as WordLevel : level;
           successfulRecall = true;
+        } else if (event.verdict === "vague") {
+          // A fuzzy recall is not a proficiency failure, but it is weak enough to schedule a
+          // short follow-up and to make the successful retry a same-cycle recovery.
+          failedRecall = true;
         } else {
           level = Math.max(1, level - 1) as WordLevel;
           failedRecall = true;
@@ -180,7 +215,8 @@ export function replayLadder(
       scheduledReviewAt = undefined;
       relearning = false;
     } else if (failedRecall) {
-      easeFactor = Math.max(MIN_EASE, Number((easeFactor - 0.2).toFixed(2)));
+      const fuzzy = event.kind === "flashcard" && event.verdict === "vague";
+      easeFactor = Math.max(MIN_EASE, Number((easeFactor - (fuzzy ? 0.1 : 0.2)).toFixed(2)));
       reviewIntervalDays = schedule.lapseDays;
       scheduledReviewAt = nextReviewAt(event.occurredAt, reviewIntervalDays);
       relearning = true;
@@ -311,6 +347,27 @@ export function reviewDue(state: WordLadderState, now: Date, schedule: ReviewSch
   const interval = state.reviewIntervalDays || intervalForLevel(schedule, state.level);
   return dayDiff(new Date(state.lastStudiedAt), now) >= interval;
 }
+export type ReviewLane = "protected" | "regular" | "backlog";
+/**
+ * Split due work by urgency. A short-interval word is protected only while its checkpoint is
+ * still timely; once it has been ignored for long enough it becomes historical backlog. This
+ * prevents months-old debt from displacing the first reviews of words learned this week.
+ */
+export function reviewLane(
+  state: WordLadderState,
+  now: Date,
+  schedule: ReviewSchedule = DEFAULT_REVIEW_SCHEDULE,
+): ReviewLane | null {
+  if (!reviewDue(state, now, schedule)) return null;
+  const interval = state.reviewIntervalDays || intervalForLevel(schedule, state.level);
+  const due = state.nextReviewAt ? new Date(state.nextReviewAt) : state.lastStudiedAt
+    ? shiftDay(new Date(state.lastStudiedAt), interval)
+    : new Date(0);
+  const overdueDays = Number.isFinite(due.getTime()) ? Math.max(0, dayDiff(due, now)) : Number.POSITIVE_INFINITY;
+  if (overdueDays > Math.max(7, interval * 2)) return "backlog";
+  if (state.relearning || interval <= Math.max(3, schedule.familiarDays)) return "protected";
+  return "regular";
+}
 export function progress(book: MyWordbook, events: LearningEvent[]): WordbookProgress {
   const states = ladderStates(events, reviewScheduleOf(book));
   const levels: LevelCounts = { l0: 0, l1: 0, l2: 0, l3: 0, l4: 0 };
@@ -376,8 +433,22 @@ export function migrate(raw: unknown): State {
     client.wordbooks ??= [];
     client.events ??= [];
     client.drafts ??= [];
+    client.studyRounds ??= [];
+    if (client.studySettings) {
+      const shortcuts = client.studySettings.shortcuts as SyncedStudySettings["shortcuts"] & { vague?: string };
+      shortcuts.vague ??= ["w", "v", "r", "f"].find(
+        (key) => ![shortcuts.unknown, shortcuts.pronounce, shortcuts.known, shortcuts.flip].includes(key),
+      ) ?? "w";
+    }
     for (const book of client.wordbooks) {
       book.words ??= [];
+      if (book.studyPreferences) {
+        book.studyPreferences.plan.backlogReviews ??= DEFAULT_WORDBOOK_STUDY_PREFERENCES.plan.backlogReviews;
+        const newMode = book.studyPreferences.modes.new as typeof book.studyPreferences.modes.new & { exerciseTypes?: typeof DEFAULT_WORDBOOK_STUDY_PREFERENCES.modes.new.exerciseTypes };
+        const reviewMode = book.studyPreferences.modes.review as typeof book.studyPreferences.modes.review & { exerciseTypes?: typeof DEFAULT_WORDBOOK_STUDY_PREFERENCES.modes.review.exerciseTypes };
+        newMode.exerciseTypes ??= clone(DEFAULT_WORDBOOK_STUDY_PREFERENCES.modes.new.exerciseTypes);
+        reviewMode.exerciseTypes ??= clone(DEFAULT_WORDBOOK_STUDY_PREFERENCES.modes.review.exerciseTypes);
+      }
       for (const word of book.words) {
         word.word = foldApostrophes(word.word);
         if (!word.id || typeof word.id !== "string") word.id = randomUUID();

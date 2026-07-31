@@ -11,10 +11,12 @@ export type DictationPromptProps = {
   answer: string
   onAnswerChange: (value: string) => void
   onSubmit: () => void
+  onSkip: () => void
   onNext: () => void
   onPlay: () => void
   phase: 'prompt' | 'feedback'
   grade: DictationGrade | null
+  skipped?: boolean
   error?: string
   isLast: boolean
   currentStreak?: number
@@ -92,10 +94,12 @@ export function DictationPrompt({
   answer,
   onAnswerChange,
   onSubmit,
+  onSkip,
   onNext,
   onPlay,
   phase,
   grade,
+  skipped = false,
   error,
   isLast,
   currentStreak = 0,
@@ -169,6 +173,7 @@ export function DictationPrompt({
 
       {phase === 'prompt' ? (
         <div className="dictation-actions">
+          <Button variant="secondary" onClick={onSkip}>跳过</Button>
           <Button type="submit">提交</Button>
         </div>
       ) : (
@@ -177,20 +182,20 @@ export function DictationPrompt({
             <p className="dictation-verdict dictation-verdict-correct">{currentStreak >= requiredStreak ? '拼写正确，该词已过关' : `拼写正确，连续 ${currentStreak} / ${requiredStreak}`}</p>
           ) : (
             <>
-              <p className="dictation-verdict">拼写不对</p>
+              <p className="dictation-verdict">{skipped ? '已跳过本题' : '拼写不对'}</p>
               <p className="dictation-streak-reset">连续正确次数已归零</p>
-              <p className="dictation-given">
-                你写了{' '}
-                <span className={`dictation-given-word${preferences.underlineMistakes ? ' show-mistakes' : ''}`}>
-                  {preferences.underlineMistakes
-                    ? spellingCharacters(answer, item.word).map(({ character, incorrect }, index) => (
-                        <span className={incorrect ? 'incorrect-letter' : ''} key={`${character}-${index}`}>
-                          {character}
-                        </span>
-                      ))
-                    : answer}
-                </span>
-              </p>
+              {!skipped && <p className="dictation-given">
+                  你写了{' '}
+                  <span className={`dictation-given-word${preferences.underlineMistakes ? ' show-mistakes' : ''}`}>
+                    {preferences.underlineMistakes
+                      ? spellingCharacters(answer, item.word).map(({ character, incorrect }, index) => (
+                          <span className={incorrect ? 'incorrect-letter' : ''} key={`${character}-${index}`}>
+                            {character}
+                          </span>
+                        ))
+                      : answer}
+                  </span>
+                </p>}
               <p className="dictation-correct">
                 正确拼写 <span className="dictation-correct-word">{item.word}</span>
               </p>

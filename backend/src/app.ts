@@ -12,7 +12,12 @@ import { isChineseSuggestionQuery, type WordSuggestionLookup } from "./providers
 import { WiktApiProvider } from "./providers/wiktapi.js";
 import { CsvLocalChineseDictionary, type LocalChineseLookup } from "./study/local-dictionary.js";
 import { JsonFileStudyStore, StudyResourceLimitError } from "./study/store.js";
-import { parseAddWord, parseBatchWords, parseCatalogQuery, parseClientId, parseCommitImportDraft, parseCreateImportDraft, parseCreateMyWordbook, parseLearningEvent, parseResourceId, parseShareCode, parseStatus, parseUpdateCatalog, parseUpdateMyWordbook, parseUpdateStudySettings, parseUpdateWord, parseUploadCatalog, parseWordId } from "./study/validation.js";
+import {
+  parseAddWord, parseBatchWords, parseCatalogQuery, parseClientId, parseCommitImportDraft, parseCreateImportDraft,
+  parseCreateMyWordbook, parseLearningEvent, parseResourceId, parseShareCode, parseStartStudyRound, parseStatus,
+  parseStudyRoundAnswer, parseStudyRoundRevision, parseUpdateCatalog, parseUpdateMyWordbook, parseUpdateStudySettings,
+  parseUpdateWord, parseUploadCatalog, parseWordId,
+} from "./study/validation.js";
 import type { AccountUser, ImportLineInput, PreparedImportLine, ResolvedImportDraftEntry, StudyStore, StudyWordEntry } from "./study/types.js";
 import { isValidWordQuery, normalizeWord } from "./words/normalize.js";
 import { WordService, type WordLookup } from "./words/word-service.js";
@@ -97,6 +102,25 @@ function comparablePos(value: string): string {
 
 function dictionaryHeadword(value: string): string {
   return value.replace(/ \((?:[a-z0-9]{2,12}|[a-z0-9]{1,8}(?:[&/-][a-z0-9]{1,8}){1,3})\)$/i, "");
+}
+
+function phrasePronunciationTokens(value: string): string[] {
+  return value
+    .replace(/\.\.\./g, " ")
+    .split(/\s+/)
+    .filter((token) => token && !/^(?:sb|sth|smb|smth)\.$/.test(token))
+    .filter(isValidWordQuery);
+}
+
+function phoneticBody(value: string): string {
+  const phonetic = value.trim();
+  if (
+    (phonetic.startsWith("/") && phonetic.endsWith("/"))
+    || (phonetic.startsWith("[") && phonetic.endsWith("]"))
+  ) {
+    return phonetic.slice(1, -1).trim();
+  }
+  return phonetic;
 }
 
 const DONATION_IMAGE_SETTING = "donation_image_url";
@@ -187,7 +211,20 @@ export function createApp(options: CreateAppOptions = {}) {
   const drainLookupQueue = () => {
     while (activeLookups < 6 && lookupJobs.length) {
       const job = lookupJobs.shift()!; activeLookups += 1;
-      void wordLookup.lookup(job.word).then(job.resolve, job.reject).finally(() => { activeLookups -= 1; drainLookupQueue(); });
+      void Promise.resolve()
+        .then(() => wordLookup.lookup(job.word))
+        .then(
+          (value) => {
+            activeLookups -= 1;
+            drainLookupQueue();
+            job.resolve(value);
+          },
+          (error) => {
+            activeLookups -= 1;
+            drainLookupQueue();
+            job.reject(error);
+          },
+        );
     }
   };
   const limitedLookup = (word: string) => new Promise<Awaited<ReturnType<WordLookup["lookup"]>>>((resolveLookup, rejectLookup) => {
@@ -251,6 +288,28 @@ export function createApp(options: CreateAppOptions = {}) {
     let matched: Awaited<ReturnType<WordLookup["lookup"]>> | null = null;
     let lookupFailed = false;
     try { matched = await limitedLookup(lookupWord); } catch { lookupFailed = true; }
+    let composedPhonetic = "";
+    const isPhrase = lookupWord.includes(" ") || lookupWord.includes("...");
+    if (isPhrase && !matched?.phonetic.trim() && !lookupFailed) {
+      const tokens = phrasePronunciationTokens(lookupWord);
+      const parts: string[] = [];
+      for (const token of tokens) {
+        try {
+          const component = await limitedLookup(token);
+          const phonetic = component?.phonetic ? phoneticBody(component.phonetic) : "";
+          if (!phonetic) {
+            parts.length = 0;
+            break;
+          }
+          parts.push(phonetic);
+        } catch {
+          lookupFailed = true;
+          parts.length = 0;
+          break;
+        }
+      }
+      if (parts.length && parts.length === tokens.length) composedPhonetic = `/${parts.join(" ")}/`;
+    }
     let zhMeaning = line.zhMeaning;
     if (!zhMeaning) {
       try { zhMeaning = await localChineseLookup.lookup(lookupWord); } catch { /* Local dictionaries are optional. */ }
@@ -284,6 +343,7 @@ export function createApp(options: CreateAppOptions = {}) {
     }
     const entry: StudyWordEntry = {
       ...(matched ?? { word: normalized, phonetic: "", source: "user" as const }),
+      ...(composedPhonetic ? { phonetic: composedPhonetic } : {}),
       word: normalized,
       meanings,
       ...(line.enDefinition || line.pos || line.example ? { source: "user" as const } : {}),
@@ -292,7 +352,13 @@ export function createApp(options: CreateAppOptions = {}) {
     return {
       ...line, word: normalized,
       status: matched ? "ready" : lookupFailed ? "processing" : "unmatched",
-      ...(matched ? {} : { reason: lookupFailed ? "词典服务暂不可用，可稍后继续匹配" : "未找到词典释义" }),
+      ...(matched ? {} : {
+        reason: lookupFailed
+          ? "词典服务暂不可用，可稍后继续匹配"
+          : composedPhonetic
+            ? "未找到整词组释义，已按组成单词补全音标"
+            : "未找到词典释义",
+      }),
       entry,
     };
   };
@@ -1185,6 +1251,77 @@ export function createApp(options: CreateAppOptions = {}) {
       }
       void processImportDraft(clientId, id);
       response.status(202).json(draft);
+    } catch (error) { next(error); }
+  });
+  app.post("/api/study/rounds", async (request, response, next) => {
+    const clientId = readClientId(request, response); const input = parseStartStudyRound(request.body);
+    if (!clientId) return;
+    if (!input) { response.status(400).json(apiError("INVALID_STUDY_ROUND", "Study round request is invalid")); return; }
+    try {
+      const result = await studyStore.startStudyRound(clientId, input);
+      if (!result) response.status(404).json(apiError("WORDBOOK_NOT_FOUND", "Wordbook was not found"));
+      else response.status(result.resumed ? 200 : 201).json(result);
+    } catch (error) { next(error); }
+  });
+  app.get("/api/study/rounds/:id", async (request, response, next) => {
+    const clientId = readClientId(request, response); const id = parseWordId(request.params.id);
+    if (!clientId) return;
+    if (!id) { response.status(400).json(apiError("INVALID_STUDY_ROUND", "Study round id is invalid")); return; }
+    try {
+      const round = await studyStore.getStudyRound(clientId, id);
+      if (!round) response.status(404).json(apiError("STUDY_ROUND_NOT_FOUND", "Study round was not found or has expired"));
+      else response.status(200).json(round);
+    } catch (error) { next(error); }
+  });
+  app.get("/api/study/rounds/:id/tasks/:taskId/options", async (request, response, next) => {
+    const clientId = readClientId(request, response);
+    const id = parseWordId(request.params.id);
+    const taskId = parseWordId(request.params.taskId);
+    const rawMeaningPreference = request.query.meaningPreference;
+    if (!clientId) return;
+    if (
+      !id
+      || !taskId
+      || (rawMeaningPreference !== undefined && rawMeaningPreference !== "zh" && rawMeaningPreference !== "en")
+    ) {
+      response.status(400).json(apiError("INVALID_STUDY_TASK", "Study task id or meaning preference is invalid"));
+      return;
+    }
+    try {
+      const options = await studyStore.getStudyRoundTaskOptions(
+        clientId,
+        id,
+        taskId,
+        rawMeaningPreference,
+      );
+      if (!options) response.status(404).json(apiError("STUDY_TASK_NOT_FOUND", "The active meaning-choice task was not found"));
+      else response.status(200).json(options);
+    } catch (error) { next(error); }
+  });
+  app.post("/api/study/rounds/:id/rotate", async (request, response, next) => {
+    const clientId = readClientId(request, response);
+    const id = parseWordId(request.params.id);
+    const revision = parseStudyRoundRevision(request.body);
+    if (!clientId) return;
+    if (!id || revision === null) { response.status(400).json(apiError("INVALID_STUDY_ROUND", "Study round revision is invalid")); return; }
+    try {
+      const result = await studyStore.rotateStudyRound(clientId, id, revision);
+      if (result.kind === "not-found") response.status(404).json(apiError("STUDY_ROUND_NOT_FOUND", "Study round was not found or has expired"));
+      else if (result.kind === "conflict") response.status(409).json({ ...apiError("STUDY_ROUND_CONFLICT", "The study round changed on another device"), round: result.round });
+      else response.status(200).json(result.round);
+    } catch (error) { next(error); }
+  });
+  app.post("/api/study/rounds/:id/answers", async (request, response, next) => {
+    const clientId = readClientId(request, response);
+    const id = parseWordId(request.params.id);
+    const input = parseStudyRoundAnswer(request.body);
+    if (!clientId) return;
+    if (!id || !input) { response.status(400).json(apiError("INVALID_STUDY_ANSWER", "Study answer is invalid")); return; }
+    try {
+      const result = await studyStore.answerStudyRound(clientId, id, input);
+      if (result.kind === "not-found") response.status(404).json(apiError("STUDY_ROUND_NOT_FOUND", "Study round was not found or has expired"));
+      else if (result.kind === "conflict") response.status(409).json({ ...apiError("STUDY_ROUND_CONFLICT", "The study round changed on another device"), round: result.round });
+      else response.status(200).json(result.round);
     } catch (error) { next(error); }
   });
   app.post("/api/study/events", async (request, response, next) => {

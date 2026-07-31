@@ -4,8 +4,6 @@ import { Button } from '../components/ui/Button'
 import { EmptyState } from '../components/ui/EmptyState'
 import { DictationPrompt } from '../components/word/DictationPrompt'
 import { DictationSummary } from '../components/word/DictationSummary'
-import { Flashcard } from '../components/word/Flashcard'
-import { FlashcardControls } from '../components/word/FlashcardControls'
 import { ImportWordbookDialog } from '../components/word/ImportWordbookDialog'
 import { ShortcutHint } from '../components/word/ShortcutHint'
 import {
@@ -19,6 +17,7 @@ import {
   type CatalogWordbook,
   type MyWordbook,
   type StudyDashboard,
+  type StudyRoundScope,
   type WordbookProgress,
 } from '../data/workspaceApi'
 import {
@@ -26,7 +25,8 @@ import {
   readStudyPreferences,
   writeStudyPreferences,
   type DictationDisplayPreferences,
-  type StudyDisplayPreferences,
+  type FlashcardDisplayPreferences,
+  type StudyExerciseType,
   type StudyModeKey,
   type WordbookStudyPreferences,
 } from '../data/studyPreferences'
@@ -61,11 +61,11 @@ import {
   type ReviewSchedule,
   type ReviewScheduleEntry,
 } from '../data/reviewSchedule'
-import { dailyNewPlan, remainingPlanWords } from '../data/studyPlan'
+import { dailyNewPlan, isDailyPlanComplete, remainingPlanWords, studyPlanActionLabel } from '../data/studyPlan'
 import { firstAvailableMeaning } from '../domain/meaningSelection'
 import type { WordbookItem } from '../domain/types'
 import { useDictationSession } from '../features/dictation/useDictationSession'
-import { useFlashcardSession } from '../features/flashcards/useFlashcardSession'
+import { SyncedFlashcardRound } from '../features/flashcards/SyncedFlashcardRound'
 import { useDocumentTitle } from '../hooks/useDocumentTitle'
 import { usePronounce } from '../hooks/usePronounce'
 import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts'
@@ -132,6 +132,7 @@ function activityResult(activity: StudyDashboard['recentActivity'][number]) {
   if (failed) return activity.kind === 'dictation'
     ? { result: '听写错误', resultTone: 'pending' as const }
     : { result: '不熟', resultTone: 'pending' as const }
+  if (activity.verdict === 'vague') return { result: '模糊', resultTone: 'pending' as const }
   const after = activity.levelAfter !== undefined ? LEVEL_RESULT[activity.levelAfter] : undefined
   if (after) return after
   // Payloads predating levelAfter fall back to an action echo.
@@ -246,9 +247,8 @@ export function WordbookPage() {
   const [remoteEntries, setRemoteEntries] = useState<WorkspaceBook['entries'] | null>(null)
   const [dashboardLoading, setDashboardLoading] = useState(false)
   const [studyMode, setStudyMode] = useState<StudyMode | null>(null)
-  // 复习巩固 runs in one of two scopes: the default adaptive due deck or the voluntary
-  // ahead deck for learned words whose next checkpoint has not arrived yet.
-  const [reviewScope, setReviewScope] = useState<'due' | 'ahead'>('due')
+  // New learning and review can both switch from the daily deck to a voluntary ahead deck.
+  const [studyScope, setStudyScope] = useState<StudyRoundScope>('standard')
   const [settingsSection, setSettingsSection] = useState<SettingsSection | null>(null)
   const [showImporter, setShowImporter] = useState(false)
   const [importTargetId, setImportTargetId] = useState<string | undefined>()
@@ -468,7 +468,7 @@ export function WordbookPage() {
       syncBookPreferences(selectedBook.id, resolvedPreferences, false)
     }
     setStudyMode(null)
-    setReviewScope('due')
+    setStudyScope('standard')
     setSettingsSection(null)
   }, [selectedBook?.id, syncBookPreferences])
 
@@ -738,32 +738,46 @@ export function WordbookPage() {
   const reviewAheadEntries = activeBook.entries.filter((entry) => isReviewLevel(entry) && !isReviewDue(entry, reviewNow, reviewSchedule)).sort(byReviewPriority)
   const reviewDueCount = reviewDueEntries.length
   const reviewAheadCount = reviewAheadEntries.length
+  const unstudiedEntries = activeBook.entries.filter((entry) => levelOf(entry) === 0)
   const newPlan = dailyNewPlan(preferences.plan.newWords, completedNew, progress.unstudied)
+  const reviewBreakdown = dashboard?.reviewBreakdown
+  const scheduledReviewCount = reviewBreakdown?.scheduled ?? reviewDueCount
+  const backlogCount = reviewBreakdown?.backlog ?? 0
+  const activeRound = (mode: 'new' | 'review', scope: StudyRoundScope = 'standard') =>
+    dashboard?.activeRounds?.find((round) => round.mode === mode && round.scope === scope)
+  const activeNewRound = activeRound('new')
+  const activeAheadNew = activeRound('new', 'ahead')
+  const activeStandardReview = activeRound('review')
+  const activeBacklogReview = activeRound('review', 'backlog')
+  const activeAheadReview = activeRound('review', 'ahead')
   const planCounts = {
-    new: newPlan.target,
-    // Keep today's due-review target stable while due words leave the deck.
-    review: reviewDueCount + completedReview,
-    dictation: Math.min(preferences.plan.dictation, Math.max(completedDictation, dictationEligibleCount)),
+    new: dashboard?.todayPlan.new.target ?? newPlan.target,
+    review: dashboard?.todayPlan.review.target ?? scheduledReviewCount + completedReview,
+    dictation: dashboard?.todayPlan.dictation.target
+      ?? Math.min(preferences.plan.dictation, Math.max(completedDictation, dictationEligibleCount)),
   }
+  const newPlanComplete = isDailyPlanComplete(planCounts.new, completedNew)
+  const reviewPlanComplete = isDailyPlanComplete(planCounts.review, completedReview)
   // Due L3 words are prioritized by the dictation deck; a mature successful check promotes them.
   const finalCheckDue = dashboard?.finalCheckDue ?? 0
   const dictationDetail = finalCheckDue > 0
     ? `听音拼写，检测掌握 · ${finalCheckDue} 词到期可冲刺精通`
     : '听音拼写，检测掌握'
-  const reviewDetail = [isDefaultReviewSchedule(reviewSchedule) ? '默认遗忘曲线' : '自定义遗忘曲线']
-    .concat(reviewDueCount > 0 ? [`今日到期 ${reviewDueCount}`] : [])
-    .concat(reviewAheadCount > 0 ? [`可提前复习 ${reviewAheadCount}`] : [])
+  const timelyReviewCount = reviewBreakdown
+    ? reviewBreakdown.protected + reviewBreakdown.regular
+    : reviewDueCount
+  const reviewDetail = [isDefaultReviewSchedule(reviewSchedule) ? '分层遗忘曲线' : '自定义分层曲线']
+    .concat(timelyReviewCount > 0 ? [`优先到期 ${timelyReviewCount}`] : [])
+    .concat(backlogCount > 0 ? [`历史积压 ${backlogCount}`] : [])
     .join(' · ')
+  const newDetail = preferences.plan.newWords >= 200
+    ? `高强度计划：短间隔复习会优先保护，避免被旧积压稀释`
+    : '学习新词，建立印象'
   const entriesForMode = (nextMode: StudyMode) => {
     if (nextMode === 'new') {
-      return activeBook.entries
-        .filter((entry) => levelOf(entry) === 0)
-        .slice(0, newPlan.remaining)
+      return unstudiedEntries.slice(0, newPlan.remaining)
     }
-    // 复习巩固's default deck is the due words only; the ahead deck is served separately.
-    if (nextMode === 'review') {
-      return reviewDueEntries
-    }
+    if (nextMode === 'review') return reviewDueEntries
     return activeBook.entries
       .filter((entry) => levelOf(entry) >= 2)
       .sort((left, right) => {
@@ -772,34 +786,43 @@ export function WordbookPage() {
       })
       .slice(0, preferences.plan.dictation)
   }
-  // The review session runs on whichever deck the current scope selects.
-  const reviewSessionEntries = reviewScope === 'ahead' ? reviewAheadEntries : reviewDueEntries
-  // Every study-mode opener funnels through here so an enabled control can never
-  // mount the session dialog with an empty deck (the session hooks seed their
-  // queue once on mount and would lock in a fake "done" state).
   const entriesLoading = remoteEntries === null
-  const openStudy = (nextMode: StudyMode) => {
-    // 复习巩固 opens the due deck; opening normally always resets the scope to 'due'. When
-    // nothing is due but words remain to review ahead, fall through to the 提前复习 deck so
-    // every entry point (plan card, quick action, 继续学习) behaves the same.
+  const openStudy = (nextMode: StudyMode, scope: StudyRoundScope = 'standard') => {
+    if (entriesLoading) {
+      setNotice('词条正在加载，请稍候再开始学习。')
+      return
+    }
     if (nextMode === 'review') {
-      if (reviewDueCount > 0) {
-        setReviewScope('due')
-        setStudyMode('review')
+      const available = scope === 'backlog'
+        ? backlogCount
+        : scope === 'ahead'
+          ? reviewAheadCount
+          : scheduledReviewCount
+      const resumable = activeRound('review', scope)
+      if (!available && !resumable) {
+        setNotice(scope === 'backlog' ? '当前没有历史积压。' : scope === 'ahead' ? '当前没有未到期的可复习单词。' : '今日安排的复习已完成。')
         return
       }
-      if (reviewAheadCount > 0) {
-        setReviewScope('ahead')
-        setStudyMode('review')
+      setStudyScope(scope)
+      setStudyMode('review')
+      return
+    }
+    if (nextMode === 'new') {
+      const available = scope === 'ahead' ? unstudiedEntries.length : entriesForMode('new').length
+      const resumable = activeRound('new', scope)
+      if (!available && !resumable) {
+        setNotice(scope === 'ahead' ? '当前词本没有可提前学习的未学习单词。' : '今日新词计划已完成，或当前词本没有未学习单词。')
         return
       }
-      setNotice(entriesLoading ? '词条正在加载，请稍候再开始学习。' : '当前模式暂无可学的单词。')
+      setStudyScope(scope)
+      setStudyMode('new')
       return
     }
-    if (entriesForMode(nextMode).length === 0) {
-      setNotice(entriesLoading ? '词条正在加载，请稍候再开始学习。' : '当前模式暂无可学的单词。')
+    if (nextMode === 'dictation' && entriesForMode('dictation').length === 0) {
+      setNotice('当前模式暂无可学的单词。')
       return
     }
+    setStudyScope('standard')
     setStudyMode(nextMode)
   }
 
@@ -814,7 +837,55 @@ export function WordbookPage() {
           <div className="workspace-overview-main"><div className="workspace-title-row"><h1 id="workspace-title">{selectedBook.title}</h1></div><p>{wordCount} 个单词　|　创建于 {new Date(selectedBook.createdAt).toLocaleDateString('zh-CN')}　|　最后更新：{new Date(selectedBook.updatedAt).toLocaleString('zh-CN')}</p><div className={`workspace-category-editor ${categoryEditing ? 'is-editing' : ''}`}><label htmlFor="wordbook-category">分类</label><div className="workspace-category-field"><input ref={categoryInputRef} id="wordbook-category" list={categoryEditing ? 'wordbook-categories' : undefined} value={categoryDraft} maxLength={30} readOnly={!categoryEditing} onChange={(event) => setCategoryDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && categoryEditing) { event.preventDefault(); void saveCategory() } else if (event.key === 'Escape' && categoryEditing) { setCategoryDraft(selectedBook.category ?? ''); setCategoryEditing(false) } }} placeholder="未分类" aria-label={categoryEditing ? '编辑单词本分类' : '单词本分类'} /><button type="button" onClick={toggleCategoryEditing} disabled={categorySaving} aria-label={categoryEditing ? '保存分类' : '修改分类'} title={categoryEditing ? '保存分类（Enter）' : '修改分类'}><WorkspaceIcon name="edit" /></button></div><datalist id="wordbook-categories">{categories.map((category) => <option key={category} value={category} />)}</datalist></div><div className="workspace-progress-label"><span>学习进度</span><strong>{progress.percent}%</strong></div><div className="workspace-progress" role="progressbar" aria-label="词本学习进度" aria-valuenow={progress.percent} aria-valuemin={0} aria-valuemax={100}><i style={{ width: `${progress.percent}%` }} /></div><div className="workspace-summary-stats levels-5"><span>未学习<strong>{progress.levels.l0}</strong></span><span>初识<strong className="blue">{progress.levels.l1}</strong></span><span>熟悉<strong className="orange">{progress.levels.l2}</strong></span><span>掌握<strong className="green">{progress.levels.l3}</strong></span><span>精通<strong className="violet">{progress.levels.l4}</strong></span></div></div><div className="overview-actions"><button type="button" className="overview-plan-settings" onClick={() => setSettingsSection('plan')}><WorkspaceIcon name="settings" />学习计划</button><button type="button" disabled={!wordCount || dashboardLoading} onClick={() => setShowWordManager(true)}><WorkspaceIcon name="edit" />浏览词条</button><button type="button" onClick={supplementBook}><WorkspaceIcon name="plus" />补充上传</button></div><button type="button" className="overview-recycle" onClick={() => moveToRecycle(selectedBook.id)}><WorkspaceIcon name="trash" />移入回收站</button>
         </section>
 
-        <section className="workspace-plan"><header><h2>今日学习计划</h2><span><button type="button" onClick={() => setSettingsSection('pronunciation')}><WorkspaceIcon name="headphones" />发音</button><button type="button" onClick={() => setSettingsSection('shortcuts')}><WorkspaceIcon name="settings" />快捷键</button><button type="button" onClick={() => setSettingsSection('plan')}><WorkspaceIcon name="settings" />调整计划</button></span></header><div className="plan-cards"><PlanCard icon="book" title="新词学习" count={planCounts.new} available={entriesForMode('new').length} loading={entriesLoading} completed={completedNew} detail="学习新词，建立印象" button="开始学习" onClick={() => openStudy('new')} onSettings={() => setSettingsSection('new')} /><PlanCard icon="repeat" title="复习巩固" count={planCounts.review} available={reviewDueCount} aheadAvailable={reviewAheadCount} aheadButton="提前复习" loading={entriesLoading} completed={completedReview} detail={reviewDetail} button="开始复习" onClick={() => openStudy('review')} onSettings={() => setSettingsSection('review')} /><PlanCard icon="headphones" title="听写训练" count={planCounts.dictation} available={entriesForMode('dictation').length} loading={entriesLoading} completed={completedDictation} detail={dictationDetail} button="开始听写" onClick={() => openStudy('dictation')} onSettings={() => setSettingsSection('dictation')} /></div></section>
+        <section className="workspace-plan">
+          <header><h2>今日学习计划</h2><span><button type="button" onClick={() => setSettingsSection('pronunciation')}><WorkspaceIcon name="headphones" />发音</button><button type="button" onClick={() => setSettingsSection('shortcuts')}><WorkspaceIcon name="settings" />快捷键</button><button type="button" onClick={() => setSettingsSection('plan')}><WorkspaceIcon name="settings" />调整计划</button></span></header>
+          <div className="plan-cards">
+            <PlanCard
+              icon="book"
+              title="新词学习"
+              count={planCounts.new}
+              available={newPlanComplete
+                ? Math.max(unstudiedEntries.length, activeAheadNew?.remainingWords ?? 0)
+                : Math.max(entriesForMode('new').length, activeNewRound?.remainingWords ?? 0)}
+              resume={newPlanComplete ? Boolean(activeAheadNew) : Boolean(activeNewRound)}
+              loading={entriesLoading}
+              completed={completedNew}
+              detail={newDetail}
+              button="开始学习"
+              completedActionLabel="提前学习"
+              onClick={() => openStudy('new', newPlanComplete ? 'ahead' : 'standard')}
+              onSettings={() => setSettingsSection('new')}
+              extraActions={!newPlanComplete && activeAheadNew
+                ? [{ label: `继续提前学习（${activeAheadNew.remainingWords}）`, onClick: () => openStudy('new', 'ahead') }]
+                : []}
+            />
+            <PlanCard
+              icon="repeat"
+              title="复习巩固"
+              count={planCounts.review}
+              available={reviewPlanComplete
+                ? Math.max(reviewAheadCount, activeAheadReview?.remainingWords ?? 0)
+                : Math.max(scheduledReviewCount, activeStandardReview?.remainingWords ?? 0)}
+              resume={reviewPlanComplete ? Boolean(activeAheadReview) : Boolean(activeStandardReview)}
+              loading={entriesLoading}
+              completed={completedReview}
+              detail={reviewDetail}
+              button="开始复习"
+              completedActionLabel="提前复习"
+              onClick={() => openStudy('review', reviewPlanComplete ? 'ahead' : 'standard')}
+              onSettings={() => setSettingsSection('review')}
+              extraActions={[
+                ...(backlogCount > 0 || activeBacklogReview
+                  ? [{ label: activeBacklogReview ? `继续清理积压（${activeBacklogReview.remainingWords}）` : `清理积压（${backlogCount}）`, onClick: () => openStudy('review', 'backlog') }]
+                  : []),
+                ...(!reviewPlanComplete && (reviewAheadCount > 0 || activeAheadReview)
+                  ? [{ label: activeAheadReview ? `继续提前复习（${activeAheadReview.remainingWords}）` : `提前复习（${reviewAheadCount}）`, onClick: () => openStudy('review', 'ahead') }]
+                  : []),
+              ]}
+            />
+            <PlanCard icon="headphones" title="听写训练" count={planCounts.dictation} available={entriesForMode('dictation').length} loading={entriesLoading} completed={completedDictation} detail={dictationDetail} button="开始听写" onClick={() => openStudy('dictation')} onSettings={() => setSettingsSection('dictation')} />
+          </div>
+        </section>
 
         <div className="workspace-lower">
           <RecentStudy
@@ -846,14 +917,13 @@ export function WordbookPage() {
         onClose={() => setSettingsSection(null)}
       />}
       {studyMode && <StudySessionDialog
-        key={`${studyMode}-${reviewScope}`}
-        book={{ ...activeBook, entries: studyMode === 'review' ? reviewSessionEntries : entriesForMode(studyMode) }}
+        key={`${studyMode}-${studyScope}`}
+        book={{ ...activeBook, entries: studyMode === 'dictation' ? entriesForMode(studyMode) : activeBook.entries }}
         mode={studyMode}
+        scope={studyMode === 'dictation' ? 'standard' : studyScope}
         preferences={preferences.modes[studyMode]}
         shortcuts={shortcuts}
         accent={pronunciationPreferences.accent}
-        reviewAheadCount={studyMode === 'review' && reviewScope === 'due' ? reviewAheadCount : 0}
-        onContinueAhead={() => setReviewScope('ahead')}
         onProgressCommitted={scheduleStudyProgressRefresh}
         onClose={() => void exitStudy()}
       />}
@@ -888,15 +958,57 @@ export function WordbookPage() {
   )
 }
 
-function PlanCard({ icon, title, count, available, aheadAvailable = 0, aheadButton, loading, completed, detail, button, onClick, onSettings }: { icon: 'book' | 'repeat' | 'headphones'; title: string; count: number; available: number; aheadAvailable?: number; aheadButton?: string; loading: boolean; completed: number; detail: string; button: string; onClick: () => void; onSettings: () => void }) {
+function PlanCard({
+  icon,
+  title,
+  count,
+  available,
+  resume = false,
+  loading,
+  completed,
+  detail,
+  button,
+  completedActionLabel,
+  onClick,
+  onSettings,
+  extraActions = [],
+}: {
+  icon: 'book' | 'repeat' | 'headphones'
+  title: string
+  count: number
+  available: number
+  resume?: boolean
+  loading: boolean
+  completed: number
+  detail: string
+  button: string
+  completedActionLabel?: string
+  onClick: () => void
+  onSettings: () => void
+  extraActions?: Array<{ label: string; onClick: () => void }>
+}) {
   const progress = count ? Math.min(100, completed / count * 100) : 0
   const remaining = remainingPlanWords(count, completed)
-  // The start button follows the actual studyable deck (`available`), not the day-plan tally
-  // — the tally keeps counting words finished earlier today. When the primary deck is empty
-  // but an ahead deck (e.g. 复习巩固's 提前复习) has words, stay enabled with its label.
-  const startable = available > 0 || aheadAvailable > 0
-  const label = loading ? '加载中…' : count > 0 && remaining === 0 && available > 0 ? '继续加练' : available > 0 ? button : aheadAvailable > 0 ? (aheadButton ?? button) : count > 0 && remaining === 0 ? '今日计划已完成' : '暂无可学单词'
-  return <article className="plan-card"><WorkspaceIcon name={icon} /><h3>{title}</h3><button type="button" className="plan-card-settings" aria-label={`设置${title}`} title={`设置${title}`} onClick={onSettings}><WorkspaceIcon name="settings" /></button><p>{detail}</p><strong>{remaining}<small>词待完成</small></strong><div className="plan-card-progress"><span className="plan-card-progress-track"><i style={{ width: `${progress}%` }} /></span><span className="plan-card-progress-count">{Math.min(completed, count)}/{count}</span></div><button type="button" disabled={!startable} onClick={onClick}>{label}</button></article>
+  const startable = available > 0
+  const label = studyPlanActionLabel({
+    target: count,
+    completed,
+    available,
+    loading,
+    resume,
+    startLabel: button,
+    completedActionLabel,
+  })
+  return <article className="plan-card">
+    <WorkspaceIcon name={icon} />
+    <h3>{title}</h3>
+    <button type="button" className="plan-card-settings" aria-label={`设置${title}`} title={`设置${title}`} onClick={onSettings}><WorkspaceIcon name="settings" /></button>
+    <p>{detail}</p>
+    <strong>{remaining}<small>词待完成</small></strong>
+    <div className="plan-card-progress"><span className="plan-card-progress-track"><i style={{ width: `${progress}%` }} /></span><span className="plan-card-progress-count">{Math.min(completed, count)}/{count}</span></div>
+    <button type="button" disabled={!startable} onClick={onClick}>{label}</button>
+    {extraActions.length > 0 && <div className="plan-card-extra-actions">{extraActions.map((action) => <button type="button" key={action.label} onClick={action.onClick}>{action.label}</button>)}</div>}
+  </article>
 }
 
 function QuickAction({ icon, title, detail, onClick }: { icon: 'book' | 'repeat' | 'headphones' | 'card'; title: string; detail: string; onClick: () => void }) {
@@ -1014,7 +1126,7 @@ function StudySettingsDialog({
     review: '复习巩固设置',
     dictation: '听写训练设置',
   }
-  const updatePlan = (key: 'newWords' | 'dictation', value: number) => onChange({
+  const updatePlan = (key: 'newWords' | 'dictation' | 'backlogReviews', value: number) => onChange({
     ...preferences,
     plan: { ...preferences.plan, [key]: Math.max(0, Math.min(999, Math.round(value || 0))) },
   })
@@ -1050,6 +1162,24 @@ function StudySettingsDialog({
       },
     })
   }
+  const toggleExercise = (exercise: StudyExerciseType) => {
+    if (section !== 'new' && section !== 'review') return
+    const current = preferences.modes[section].exerciseTypes
+    const selected = current.includes(exercise)
+    if (selected && current.length === 1) return
+    onChange({
+      ...preferences,
+      modes: {
+        ...preferences.modes,
+        [section]: {
+          ...preferences.modes[section],
+          exerciseTypes: selected
+            ? current.filter((item) => item !== exercise)
+            : [...current, exercise],
+        },
+      },
+    })
+  }
   const modePreferences = section === 'plan' || section === 'pronunciation' || section === 'shortcuts' ? null : preferences.modes[section]
 
   return <div className="workspace-modal-backdrop" role="presentation" onMouseDown={onClose}>
@@ -1058,6 +1188,8 @@ function StudySettingsDialog({
       {section === 'plan' ? <div className="study-plan-settings">
         <label><span><strong>每日新词</strong><small>计划学习的未学习单词数</small></span><input type="number" min="0" max="999" inputMode="numeric" value={preferences.plan.newWords} onChange={(event) => updatePlan('newWords', Number(event.target.value))} /><em>词</em></label>
         <label><span><strong>每日听写</strong><small>每轮听写抽取的单词数</small></span><input type="number" min="0" max="999" inputMode="numeric" value={preferences.plan.dictation} onChange={(event) => updatePlan('dictation', Number(event.target.value))} /><em>词</em></label>
+        <label><span><strong>每日积压上限</strong><small>标准复习中最多混入的历史过期单词；设为 0 可完全隔离</small></span><input type="number" min="0" max="999" inputMode="numeric" value={preferences.plan.backlogReviews} onChange={(event) => updatePlan('backlogReviews', Number(event.target.value))} /><em>词</em></label>
+        {preferences.plan.newWords >= 200 && <p className="study-load-warning">当前新词量较高。系统会优先安排新词的短间隔复习，并把超期旧词限制在上面的积压额度内；仍建议根据后续可持续的复习量调整计划。</p>}
         <section className="review-schedule-settings" aria-labelledby="review-schedule-title">
           <header>
             <span><strong id="review-schedule-title">遗忘曲线复习方案</strong><small>{isDefaultReviewSchedule(scheduleDraft) ? '当前为默认方案' : '当前为自定义方案'}</small></span>
@@ -1072,13 +1204,17 @@ function StudySettingsDialog({
           </div>
           {scheduleError && <p className="review-schedule-error" role="alert">{scheduleError}</p>}
         </section>
-        <p className="study-settings-note">默认采用 1 / 3 / 7 / 21 天的渐进间隔。页面会根据答题结果自适应延长或缩短，并按未学习、待复习和可用词数调整任务。当前词本共 {wordCount} 词。</p>
+        <p className="study-settings-note">默认采用 1 / 3 / 7 / 21 天的渐进间隔。短间隔和重学任务优先，正常到期任务其次，历史积压最后且受每日上限控制；额外积压可从复习卡片单独清理。当前词本共 {wordCount} 词。</p>
       </div> : section === 'pronunciation' ? <div className="study-mode-settings">
         <fieldset><legend>默认英语口音</legend><div className="meaning-preference">
           <button type="button" className={pronunciationPreferences.accent === 'gb' ? 'selected' : ''} onClick={() => onPronunciationChange({ accent: 'gb' })}>英式发音</button>
           <button type="button" className={pronunciationPreferences.accent === 'us' ? 'selected' : ''} onClick={() => onPronunciationChange({ accent: 'us' })}>美式发音</button>
         </div><small>查词、单词卡和听写会优先播放所选口音；录音不可用时，浏览器朗读也使用同一口音。</small></fieldset>
       </div> : section === 'shortcuts' ? <ShortcutSettings value={shortcuts} onChange={onShortcutsChange} /> : modePreferences && <div className="study-mode-settings">
+        {(section === 'new' || section === 'review') && <fieldset><legend>练习方式（至少选择一项）</legend><div className="exercise-preference">
+          <button type="button" className={preferences.modes[section].exerciseTypes.includes('self-rating') ? 'selected' : ''} aria-pressed={preferences.modes[section].exerciseTypes.includes('self-rating')} onClick={() => toggleExercise('self-rating')}><strong>回忆判断</strong><small>认识 / 模糊 / 不认识</small></button>
+          <button type="button" className={preferences.modes[section].exerciseTypes.includes('meaning-choice') ? 'selected' : ''} aria-pressed={preferences.modes[section].exerciseTypes.includes('meaning-choice')} onClick={() => toggleExercise('meaning-choice')}><strong>看词选义</strong><small>混入词干、前后缀或拼写相近词</small></button>
+        </div><small>两项都选择时，每个单词必须分别完成两种练习；取消最后一项会被阻止。</small></fieldset>}
         <fieldset><legend>默认释义</legend><div className="meaning-preference">
           <button type="button" className={modePreferences.meaningPreference === 'zh' ? 'selected' : ''} onClick={() => updateMode('meaningPreference', 'zh')}>中文释义优先</button>
           <button type="button" className={modePreferences.meaningPreference === 'en' ? 'selected' : ''} onClick={() => updateMode('meaningPreference', 'en')}>英英释义优先</button>
@@ -1106,6 +1242,7 @@ function SettingToggle({ label, detail, checked, onChange }: { label: string; de
 
 const SHORTCUT_ROWS: Array<{ action: StudyShortcutAction; label: string; group: 'card' | 'dictation' }> = [
   { action: 'unknown', label: '不认识', group: 'card' },
+  { action: 'vague', label: '模糊', group: 'card' },
   { action: 'pronounce', label: '播放发音', group: 'card' },
   { action: 'known', label: '认识', group: 'card' },
   { action: 'flip', label: '翻面', group: 'card' },
@@ -1133,9 +1270,25 @@ function ShortcutSettings({ value, onChange }: { value: StudyShortcutPreferences
   </div>
 }
 
-function StudySessionDialog({ book, mode, preferences, shortcuts, accent, reviewAheadCount = 0, onContinueAhead, onProgressCommitted, onClose }: { book: WorkspaceBook; mode: StudyMode; preferences: StudyDisplayPreferences & Partial<DictationDisplayPreferences>; shortcuts: StudyShortcutPreferences; accent: EnglishAccent; reviewAheadCount?: number; onContinueAhead?: () => void; onProgressCommitted?: () => void; onClose: () => void }) {
-  // The open session owns a fixed deck. Background progress refreshes must not replace or empty it
-  // while the learner is midway through the round.
+function StudySessionDialog({
+  book,
+  mode,
+  scope,
+  preferences,
+  shortcuts,
+  accent,
+  onProgressCommitted,
+  onClose,
+}: {
+  book: WorkspaceBook
+  mode: StudyMode
+  scope: StudyRoundScope
+  preferences: FlashcardDisplayPreferences | DictationDisplayPreferences
+  shortcuts: StudyShortcutPreferences
+  accent: EnglishAccent
+  onProgressCommitted?: () => void
+  onClose: () => void
+}) {
   const [sessionBook] = useState(book)
   const guardedCloseRef = useRef<() => void>(onClose)
   const requestClose = useCallback(() => guardedCloseRef.current(), [])
@@ -1156,12 +1309,77 @@ function StudySessionDialog({ book, mode, preferences, shortcuts, accent, review
   return <div className="workspace-modal-backdrop study-session-backdrop" role="presentation">
     <section className="workspace-study-modal" role="dialog" aria-modal="true" aria-label={`${mode === 'new' ? '新词学习' : mode === 'review' ? '复习巩固' : '听写训练'}悬浮窗口`}>
       <button type="button" className="workspace-modal-close session-close" aria-label="关闭学习窗口" onClick={requestClose}>×</button>
-      <WordbookStudyMode book={sessionBook} mode={mode} preferences={preferences} shortcuts={shortcuts} accent={accent} reportEnabled reviewAheadCount={reviewAheadCount} onContinueAhead={onContinueAhead} onProgressCommitted={onProgressCommitted} onExit={onClose} registerCloseGuard={registerCloseGuard} />
+      <WordbookStudyMode book={sessionBook} mode={mode} scope={scope} preferences={preferences} shortcuts={shortcuts} accent={accent} onProgressCommitted={onProgressCommitted} onExit={onClose} registerCloseGuard={registerCloseGuard} />
     </section>
   </div>
 }
 
-function WordbookStudyMode({ book, mode, preferences, shortcuts, accent, reportEnabled, reviewAheadCount = 0, onContinueAhead, onProgressCommitted, onExit, registerCloseGuard }: { book: WorkspaceBook; mode: StudyMode; preferences: StudyDisplayPreferences & Partial<DictationDisplayPreferences>; shortcuts: StudyShortcutPreferences; accent: EnglishAccent; reportEnabled: boolean; reviewAheadCount?: number; onContinueAhead?: () => void; onProgressCommitted?: () => void; onExit: () => void; registerCloseGuard?: (handler: () => void) => void }) {
+function WordbookStudyMode({
+  book,
+  mode,
+  scope,
+  preferences,
+  shortcuts,
+  accent,
+  onProgressCommitted,
+  onExit,
+  registerCloseGuard,
+}: {
+  book: WorkspaceBook
+  mode: StudyMode
+  scope: StudyRoundScope
+  preferences: FlashcardDisplayPreferences | DictationDisplayPreferences
+  shortcuts: StudyShortcutPreferences
+  accent: EnglishAccent
+  onProgressCommitted?: () => void
+  onExit: () => void
+  registerCloseGuard?: (handler: () => void) => void
+}) {
+  if (mode !== 'dictation') {
+    return <section className="workspace-study">
+      <StudyHeader book={book} mode={mode} onExit={onExit} />
+      <SyncedFlashcardRound
+        wordbookId={book.id}
+        entries={book.entries}
+        mode={mode}
+        scope={scope}
+        preferences={preferences as FlashcardDisplayPreferences}
+        shortcuts={shortcuts}
+        accent={accent}
+        nextReviewDays={mode === 'new' ? book.reviewSchedule.learningDays : undefined}
+        onProgressCommitted={onProgressCommitted}
+        onClose={onExit}
+      />
+    </section>
+  }
+  return <DictationStudyMode
+    book={book}
+    preferences={preferences as DictationDisplayPreferences}
+    shortcuts={shortcuts}
+    accent={accent}
+    onProgressCommitted={onProgressCommitted}
+    onExit={onExit}
+    registerCloseGuard={registerCloseGuard}
+  />
+}
+
+function DictationStudyMode({
+  book,
+  preferences,
+  shortcuts,
+  accent,
+  onProgressCommitted,
+  onExit,
+  registerCloseGuard,
+}: {
+  book: WorkspaceBook
+  preferences: DictationDisplayPreferences
+  shortcuts: StudyShortcutPreferences
+  accent: EnglishAccent
+  onProgressCommitted?: () => void
+  onExit: () => void
+  registerCloseGuard?: (handler: () => void) => void
+}) {
   const api = getWorkspaceApi()
   const pendingReports = useRef<Set<Promise<unknown>>>(new Set())
   const reportChain = useRef<Promise<unknown>>(Promise.resolve())
@@ -1175,21 +1393,10 @@ function WordbookStudyMode({ book, mode, preferences, shortcuts, accent, reportE
     pendingReports.current.add(promise)
     void promise.finally(() => pendingReports.current.delete(promise))
   }, [onProgressCommitted])
-  const reportVerdict = useCallback((word: string, verdict: 'know' | 'unknown') => {
-    if (!reportEnabled || !api) return
-    const event = mode === 'new'
-      ? { kind: 'new' as const, word, wordbookId: book.id, verdict }
-      : { kind: 'flashcard' as const, word, verdict, wordbookId: book.id }
-    enqueueReport(() => api.recordStudyEvent(event))
-  }, [api, book.id, mode, reportEnabled, enqueueReport])
   const reportGrade = useCallback((word: string, correct: boolean) => {
-    if (!reportEnabled || !api) return
+    if (!api) return
     enqueueReport(() => api.recordStudyEvent({ kind: 'dictation', word, correct, wordbookId: book.id }))
-  }, [api, book.id, reportEnabled, enqueueReport])
-  const reportMastered = useCallback((word: string) => {
-    if (!reportEnabled || !api) return
-    enqueueReport(() => api.recordStudyEvent({ kind: 'mark', word, wordbookId: book.id, level: 4 }))
-  }, [api, book.id, reportEnabled, enqueueReport])
+  }, [api, book.id, enqueueReport])
   const exitAfterReports = useCallback(async () => {
     await Promise.allSettled([...pendingReports.current])
     onExit()
@@ -1197,43 +1404,27 @@ function WordbookStudyMode({ book, mode, preferences, shortcuts, accent, reportE
   useEffect(() => {
     registerCloseGuard?.(() => { void exitAfterReports() })
   }, [exitAfterReports, registerCloseGuard])
-  const flashcards = useFlashcardSession(book.entries, reportVerdict, reportMastered)
   const dictation = useDictationSession(book.entries, reportGrade)
-  const spokenItem = mode === 'dictation' ? dictation.current : flashcards.current
-  const { pronounce, stop } = usePronounce(spokenItem?.word ?? '', mode === 'dictation' ? .78 : .85, accent)
-  const shortcutBindings = useMemo(() => mode === 'dictation'
-    ? [{ key: shortcuts.dictationPronounce, action: pronounce, allowInInput: true }]
-    : [
-        { key: shortcuts.unknown, action: flashcards.markUnknown },
-        { key: shortcuts.pronounce, action: pronounce },
-        { key: shortcuts.known, action: flashcards.markKnown },
-        { key: shortcuts.flip, action: flashcards.flip },
-      ], [flashcards.flip, flashcards.markKnown, flashcards.markUnknown, mode, pronounce, shortcuts])
-  useKeyboardShortcuts(shortcutBindings, mode === 'dictation' ? dictation.phase !== 'summary' : !flashcards.done)
+  const { pronounce, stop } = usePronounce(dictation.current?.word ?? '', .78, accent)
+  const shortcutBindings = useMemo(
+    () => [{ key: shortcuts.dictationPronounce, action: pronounce, allowInInput: true }],
+    [pronounce, shortcuts.dictationPronounce],
+  )
+  useKeyboardShortcuts(shortcutBindings, dictation.phase !== 'summary')
   useEffect(() => {
-    const ready = mode === 'dictation' ? dictation.phase === 'prompt' && Boolean(dictation.current) : Boolean(flashcards.current)
+    const ready = dictation.phase === 'prompt' && Boolean(dictation.current)
     if (!preferences.autoPlayAudio || !ready) return
     const timer = window.setTimeout(pronounce, 0)
     return () => {
       window.clearTimeout(timer)
       stop()
     }
-  }, [dictation.current, dictation.phase, flashcards.appearanceIndex, flashcards.current, mode, preferences.autoPlayAudio, pronounce, stop])
+  }, [dictation.current, dictation.phase, preferences.autoPlayAudio, pronounce, stop])
 
-  const modeTitle = mode === 'new' ? '新词学习' : mode === 'review' ? '复习巩固' : '听写训练'
-  const emptyBody = mode === 'review'
-    ? '完成新词学习或把不熟悉的单词标为待复习后，它们会出现在这里。'
-    : mode === 'dictation'
-      ? '先学习一些单词，学过的单词才会进入听写训练。'
-      : '先向词本添加单词，或在学习计划中提高本模式的单词数。'
-  if (book.entries.length === 0) return <section className="workspace-study"><StudyHeader book={book} mode={mode} onExit={() => void exitAfterReports()} /><EmptyState title={`暂无可用于${modeTitle}的单词`} body={emptyBody} action={<Button onClick={() => void exitAfterReports()}>关闭窗口</Button>} /></section>
-
-  if (mode !== 'dictation') {
-    return <section className="workspace-study"><StudyHeader book={book} mode={mode} onExit={() => void exitAfterReports()} />{flashcards.done ? <div className="workspace-session-summary"><p>本轮{modeTitle}完成</p><h2>认识 <strong>{flashcards.knownCount}</strong> 词，共 {flashcards.totalCount} 词</h2><p>{flashcards.unknownCount ? `${flashcards.unknownCount} 个词本轮曾标为不认识，后续会按计划继续复习。` : '这一轮表现很好，继续保持。'}</p><div><Button onClick={flashcards.restart}>再来一轮</Button>{mode === 'review' && onContinueAhead && reviewAheadCount > 0 && <Button onClick={onContinueAhead}>继续复习未到期的 {reviewAheadCount} 词</Button>}<Button variant="secondary" onClick={() => void exitAfterReports()}>关闭窗口</Button></div></div> :<><div className="workspace-study-progress"><span>{modeTitle}</span><strong>已完成 {flashcards.reviewedCount} / {flashcards.totalCount}</strong></div>{flashcards.current && <Flashcard item={flashcards.current} flipped={flashcards.flipped} onFlip={flashcards.flip} onMastered={flashcards.markMastered} preferences={preferences} />}<FlashcardControls flipped={flashcards.flipped} onFlip={flashcards.flip} onKnow={flashcards.markKnown} onUnknown={flashcards.markUnknown} nextReviewDays={mode === 'new' ? book.reviewSchedule.learningDays : undefined} /><ShortcutHint shortcuts={[{ keys: shortcutLabel(shortcuts.unknown), action: '不认识' }, { keys: shortcutLabel(shortcuts.pronounce), action: '发音' }, { keys: shortcutLabel(shortcuts.known), action: '认识' }, { keys: shortcutLabel(shortcuts.flip), action: '翻面' }]} /></>}</section>
-  }
+  if (book.entries.length === 0) return <section className="workspace-study"><StudyHeader book={book} mode="dictation" onExit={() => void exitAfterReports()} /><EmptyState title="暂无可用于听写训练的单词" body="先学习一些单词，学过的单词才会进入听写训练。" action={<Button onClick={() => void exitAfterReports()}>关闭窗口</Button>} /></section>
 
   const lastAnswer = dictation.answers[dictation.answers.length - 1]
-  return <section className="workspace-study"><StudyHeader book={book} mode={mode} onExit={() => void exitAfterReports()} />{dictation.phase === 'summary' ? <div className="workspace-session-summary"><DictationSummary total={dictation.deck.length} correct={dictation.correctCount} wrong={dictation.wrongDeck} attempts={dictation.attemptCount} incorrect={dictation.incorrectCount} meaningPreference={preferences.meaningPreference} onRetryAll={dictation.retryAll} onRetryWrong={dictation.retryWrong} /><Button variant="secondary" onClick={() => void exitAfterReports()}>关闭窗口</Button></div> : <><div className="workspace-study-progress"><span>听写训练</span><strong>已过关 {dictation.passedCount} / {dictation.deck.length}</strong></div>{dictation.current && <DictationPrompt item={dictation.current} answer={dictation.answer} onAnswerChange={dictation.setAnswer} onSubmit={dictation.submit} onNext={dictation.next} onPlay={pronounce} phase={dictation.phase} grade={dictation.phase === 'feedback' ? lastAnswer?.grade ?? null : null} error={dictation.inputError} isLast={dictation.isLast} currentStreak={dictation.currentStreak} requiredStreak={dictation.requiredStreak} preferences={preferences as DictationDisplayPreferences} />}<ShortcutHint shortcuts={[{ keys: shortcutLabel(shortcuts.dictationPronounce), action: '播放发音' }, { keys: 'Enter', action: dictation.phase === 'prompt' ? '提交' : '继续' }]} /></>}</section>
+  return <section className="workspace-study"><StudyHeader book={book} mode="dictation" onExit={() => void exitAfterReports()} />{dictation.phase === 'summary' ? <div className="workspace-session-summary"><DictationSummary total={dictation.deck.length} correct={dictation.correctCount} wrong={dictation.wrongDeck} attempts={dictation.attemptCount} incorrect={dictation.incorrectCount} meaningPreference={preferences.meaningPreference} onRetryAll={dictation.retryAll} onRetryWrong={dictation.retryWrong} /><Button variant="secondary" onClick={() => void exitAfterReports()}>关闭窗口</Button></div> : <><div className="workspace-study-progress"><span>听写训练</span><strong>已过关 {dictation.passedCount} / {dictation.deck.length}</strong></div>{dictation.current && <DictationPrompt item={dictation.current} answer={dictation.answer} onAnswerChange={dictation.setAnswer} onSubmit={dictation.submit} onSkip={dictation.skip} onNext={dictation.next} onPlay={pronounce} phase={dictation.phase} grade={dictation.phase === 'feedback' ? lastAnswer?.grade ?? null : null} skipped={dictation.phase === 'feedback' && Boolean(lastAnswer?.skipped)} error={dictation.inputError} isLast={dictation.isLast} currentStreak={dictation.currentStreak} requiredStreak={dictation.requiredStreak} preferences={preferences} />}<ShortcutHint shortcuts={[{ keys: shortcutLabel(shortcuts.dictationPronounce), action: '播放发音' }, { keys: 'Enter', action: dictation.phase === 'prompt' ? '提交' : '继续' }]} /></>}</section>
 }
 
 function StudyHeader({ book, mode, onExit }: { book: WorkspaceBook; mode: StudyMode; onExit: () => void }) {

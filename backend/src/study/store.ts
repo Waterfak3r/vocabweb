@@ -4,16 +4,18 @@ import { dirname, resolve } from "node:path";
 import { isValidWordQuery, normalizeWord } from "../words/normalize.js";
 import { isJsonObject } from "./validation.js";
 import {
-  BATCH_SIZE, RETENTION_MS, card, catalogCard, clone, compactLearningEvents, day, defaultClient, EMPTY, ladderEventLevels, ladderOf,
-  ladderStates, migrate, progress, queueItem, replayLadder, reviewDue, reviewScheduleOf, sameMeanings, shiftDay, studiedWord, toCatalogWords,
-  toWordbookWords, visibleTo,
+  BATCH_SIZE, DEFAULT_WORDBOOK_STUDY_PREFERENCES, RETENTION_MS, card, catalogCard, clone, compactLearningEvents, day, defaultClient,
+  EMPTY, ladderEventLevels, ladderOf, ladderStates, migrate, progress, queueItem, replayLadder, reviewDue, reviewLane, reviewScheduleOf,
+  sameMeanings, shiftDay, studiedWord, toCatalogWords, toWordbookWords, visibleTo,
 } from "./ladder.js";
 import type { ClientData, State } from "./ladder.js";
 import type {
   AccountUser, BatchWordInput, BatchWordResult, CatalogCard, CatalogQuery, CatalogWordbook, CommitImportDraftInput, CreateImportDraftInput, CreateMyWordbookInput,
   ImportDraft, ImportDraftEntry, LearningEvent, LearningEventInput, LearningQueueItem, MyWordbook, MyWordbookCard,
-  ResolvedImportDraftEntry, StudyDashboard, StudyStore, StudyWordEntry, SyncedStudySettings, UpdateCatalogWordbookInput, UpdateMyWordbookInput, UpdateStudySettingsInput, UpdateWordInput,
-  UpdateWordResult, UploadCatalogWordbookInput, WordbookWord, WordLearningStatus, WordLevel,
+  MeaningPreference, ResolvedImportDraftEntry, ReviewSchedule, StartStudyRoundInput, StudyChoiceOption, StudyDashboard, StudyRound, StudyRoundAnswerInput, StudyRoundMutationResult,
+  StudyRoundTask, StudyRoundTaskOptions, StudyStore, StudyWordEntry, SyncedStudySettings, UpdateCatalogWordbookInput, UpdateMyWordbookInput,
+  UpdateStudySettingsInput, UpdateWordInput, UpdateWordResult, UploadCatalogWordbookInput, WordbookStudyPreferences, WordbookWord,
+  WordLearningStatus, WordLevel,
 } from "./types.js";
 
 export { EMPTY, migrate };
@@ -30,6 +32,130 @@ export const DEFAULT_STUDY_RESOURCE_LIMITS: StudyResourceLimits = {
   maxWordsPerClient: 50_000,
   maxDraftsPerClient: 20,
 };
+
+const STUDY_ROUND_TTL_MS = 24 * 60 * 60 * 1000;
+const MAX_STUDY_ROUNDS_PER_CLIENT = 20;
+const MAX_PROCESSED_ROUND_OPERATIONS = 2_000;
+const COMMON_PREFIXES = [
+  "anti", "auto", "counter", "inter", "micro", "mis", "multi", "non", "over", "post", "pre", "re", "semi", "sub", "super", "trans", "un", "under",
+] as const;
+const COMMON_SUFFIXES = [
+  "ability", "ation", "ible", "able", "ality", "ingly", "ment", "ness", "less", "ful", "tion", "sion", "ance", "ence", "ative", "itive", "ous", "ive", "ize", "ise", "ify", "ing", "ed", "er", "est", "ly",
+] as const;
+
+function preferencesOf(book: MyWordbook): WordbookStudyPreferences {
+  return clone(book.studyPreferences ?? DEFAULT_WORDBOOK_STUDY_PREFERENCES);
+}
+
+function roundTaskKey(task: Pick<StudyRoundTask, "wordId" | "exercise">): string {
+  return `${task.wordId}:${task.exercise}`;
+}
+
+function dueTimestamp(state: ReturnType<typeof ladderOf>): number {
+  const value = state.nextReviewAt ?? state.lastStudiedAt;
+  const parsed = value ? Date.parse(value) : 0;
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function buildRoundTasks(wordIds: string[], exercises: StudyRound["exerciseTypes"]): StudyRoundTask[] {
+  const tasks: StudyRoundTask[] = [];
+  exercises.forEach((exercise, exerciseIndex) => {
+    // A second pass starts halfway around the list, so the answer just seen for one word is not
+    // immediately reused in its other exercise.
+    const offset = exerciseIndex === 0 || wordIds.length < 2 ? 0 : Math.ceil(wordIds.length / 2);
+    const ordered = offset ? [...wordIds.slice(offset), ...wordIds.slice(0, offset)] : wordIds;
+    for (const wordId of ordered) tasks.push({ id: randomUUID(), wordId, exercise });
+  });
+  return tasks;
+}
+
+function stripAffixes(word: string): Set<string> {
+  const roots = new Set<string>([word]);
+  for (const prefix of COMMON_PREFIXES) {
+    if (word.startsWith(prefix) && word.length - prefix.length >= 4) roots.add(word.slice(prefix.length));
+  }
+  for (const suffix of COMMON_SUFFIXES) {
+    if (word.endsWith(suffix) && word.length - suffix.length >= 4) roots.add(word.slice(0, -suffix.length));
+  }
+  for (const root of [...roots]) {
+    for (const suffix of COMMON_SUFFIXES) {
+      if (root.endsWith(suffix) && root.length - suffix.length >= 4) roots.add(root.slice(0, -suffix.length));
+    }
+  }
+  return roots;
+}
+
+function sharedEdge(left: string, right: string, fromEnd = false): number {
+  const a = fromEnd ? [...left].reverse().join("") : left;
+  const b = fromEnd ? [...right].reverse().join("") : right;
+  let length = 0;
+  while (length < a.length && length < b.length && a[length] === b[length]) length += 1;
+  return length;
+}
+
+function bigrams(word: string): Set<string> {
+  const result = new Set<string>();
+  for (let index = 0; index < word.length - 1; index += 1) result.add(word.slice(index, index + 2));
+  return result;
+}
+
+function spellingSimilarity(left: string, right: string): number {
+  const a = bigrams(left);
+  const b = bigrams(right);
+  let shared = 0;
+  for (const pair of a) if (b.has(pair)) shared += 1;
+  return shared / Math.max(1, a.size + b.size - shared);
+}
+
+function lexicalSimilarity(target: string, candidate: string): number {
+  const targetRoots = stripAffixes(target);
+  const candidateRoots = stripAffixes(candidate);
+  let score = 0;
+  if ([...targetRoots].some((root) => candidateRoots.has(root) && root.length >= 4)) score += 120;
+  if ([...targetRoots].some((root) => root.length >= 4 && (candidate.includes(root) || [...candidateRoots].some((other) => other.includes(root))))) score += 70;
+  if (COMMON_PREFIXES.some((prefix) => target.startsWith(prefix) && candidate.startsWith(prefix))) score += 30;
+  if (COMMON_SUFFIXES.some((suffix) => target.endsWith(suffix) && candidate.endsWith(suffix))) score += 30;
+  score += Math.min(4, sharedEdge(target, candidate)) * 5;
+  score += Math.min(4, sharedEdge(target, candidate, true)) * 5;
+  score += spellingSimilarity(target, candidate) * 40;
+  score -= Math.abs(target.length - candidate.length) * 1.5;
+  return score;
+}
+
+function stableHash(value: string): number {
+  let result = 2_166_136_261;
+  for (let index = 0; index < value.length; index += 1) {
+    result ^= value.charCodeAt(index);
+    result = Math.imul(result, 16_777_619);
+  }
+  return result >>> 0;
+}
+
+function completedReviewLanes(
+  events: LearningEvent[],
+  schedule: ReviewSchedule,
+  today: string,
+): { protected: Set<string>; regular: Set<string>; backlog: Set<string> } {
+  const result = { protected: new Set<string>(), regular: new Set<string>(), backlog: new Set<string>() };
+  const history = new Map<string, LearningEvent[]>();
+  const startingLane = new Map<string, keyof typeof result | null>();
+  for (const event of events) {
+    const bucket = history.get(event.wordId) ?? [];
+    const eventDay = day(new Date(event.occurredAt));
+    if (event.kind === "flashcard" && eventDay === today) {
+      if (!startingLane.has(event.wordId)) {
+        startingLane.set(event.wordId, reviewLane(replayLadder(bucket, undefined, schedule), new Date(event.occurredAt), schedule));
+      }
+      if (event.verdict === "know") {
+        const lane = startingLane.get(event.wordId);
+        if (lane) result[lane].add(event.wordId);
+      }
+    }
+    bucket.push(event);
+    history.set(event.wordId, bucket);
+  }
+  return result;
+}
 
 export class StudyResourceLimitError extends Error {
   constructor(public readonly resource: "wordbooks" | "words" | "drafts") {
@@ -121,7 +247,7 @@ export abstract class BaseStore implements StudyStore {
   async mergeClients(fromClientId: string, intoClientId: string): Promise<void> { await this.mutate((state) => {
     if (fromClientId === intoClientId) return;
     const source = state.clients[fromClientId];
-    if (!source || (!source.wordbooks.length && !source.events.length && !source.drafts.length && !source.favorites.length && !source.studySettings)) return;
+    if (!source || (!source.wordbooks.length && !source.events.length && !source.drafts.length && !source.favorites.length && !source.studySettings && !source.studyRounds.length)) return;
     const target = this.client(state, intoClientId);
     const incoming = clone(source);
     // A migrated/crafted data file can contain ids that already exist in the account
@@ -131,6 +257,8 @@ export abstract class BaseStore implements StudyStore {
     const usedEventIds = new Set(target.events.map((event) => event.id));
     const usedDraftIds = new Set(target.drafts.map((draft) => draft.id));
     const usedDraftEntryIds = new Set(target.drafts.flatMap((draft) => draft.entries.map((entry) => entry.id)));
+    const usedRoundIds = new Set(target.studyRounds.map((round) => round.id));
+    const usedRoundTaskIds = new Set(target.studyRounds.flatMap((round) => round.queue.map((task) => task.id)));
     const bookIds = new Map<string, string>();
     const wordIds = new Map<string, string>();
     for (const book of incoming.wordbooks) {
@@ -161,9 +289,41 @@ export abstract class BaseStore implements StudyStore {
         usedDraftEntryIds.add(entry.id);
       }
     }
+    for (const round of incoming.studyRounds) {
+      const oldBookId = round.wordbookId;
+      round.wordbookId = bookIds.get(oldBookId) ?? oldBookId;
+      round.wordIds = round.wordIds.map((wordId) => wordIds.get(`${oldBookId}:${wordId}`) ?? wordId);
+      round.queue = round.queue.map((task) => {
+        const id = usedRoundTaskIds.has(task.id) ? randomUUID() : task.id;
+        usedRoundTaskIds.add(id);
+        return { ...task, id, wordId: wordIds.get(`${oldBookId}:${task.wordId}`) ?? task.wordId };
+      });
+      round.completedWordIds = round.completedWordIds.map((wordId) => wordIds.get(`${oldBookId}:${wordId}`) ?? wordId);
+      round.vagueWordIds = round.vagueWordIds.map((wordId) => wordIds.get(`${oldBookId}:${wordId}`) ?? wordId);
+      round.unknownWordIds = round.unknownWordIds.map((wordId) => wordIds.get(`${oldBookId}:${wordId}`) ?? wordId);
+      round.passedTaskKeys = round.passedTaskKeys.map((key) => {
+        const separator = key.lastIndexOf(":");
+        if (separator < 0) return key;
+        const oldWordId = key.slice(0, separator);
+        return `${wordIds.get(`${oldBookId}:${oldWordId}`) ?? oldWordId}:${key.slice(separator + 1)}`;
+      });
+      if (usedRoundIds.has(round.id)) round.id = randomUUID();
+      usedRoundIds.add(round.id);
+    }
     target.wordbooks.push(...incoming.wordbooks);
     target.events.push(...incoming.events);
     target.drafts.push(...incoming.drafts);
+    const activeKeys = new Set(
+      target.studyRounds
+        .filter((round) => !round.completedAt && Date.parse(round.expiresAt) > this.now().getTime())
+        .map((round) => `${round.wordbookId}:${round.mode}:${round.scope}`),
+    );
+    target.studyRounds.push(...incoming.studyRounds.filter((round) => {
+      const key = `${round.wordbookId}:${round.mode}:${round.scope}`;
+      if (!round.completedAt && Date.parse(round.expiresAt) > this.now().getTime() && activeKeys.has(key)) return false;
+      activeKeys.add(key);
+      return true;
+    }));
     target.favorites = [...new Set([...target.favorites, ...source.favorites])];
     // Existing account settings win when a new browser signs in. A legacy account
     // with no cloud settings adopts the anonymous browser's first synced values.
@@ -330,6 +490,7 @@ export abstract class BaseStore implements StudyStore {
       const current = client.studySettings ?? {
         shortcuts: {
           unknown: "q",
+          vague: "w",
           pronounce: "enter",
           known: "e",
           flip: " ",
@@ -365,7 +526,7 @@ export abstract class BaseStore implements StudyStore {
     return card(book, client.events);
   }); }
   async getMyWordbook(clientId: string, id: string): Promise<MyWordbookCard | null> { return await this.read((state) => { const client = this.clientView(state, clientId); const book = client.wordbooks.find((item) => item.id === id && !item.deletedAt); return book ? card(book, client.events) : null; }); }
-  async deleteMyWordbook(clientId: string, id: string): Promise<boolean> { return await this.mutate((state) => { const client = this.client(state, clientId); const book = client.wordbooks.find((item) => item.id === id && !item.deletedAt); if (!book) return false; const at = this.now().toISOString(); book.deletedAt = at; book.updatedAt = at; return true; }); }
+  async deleteMyWordbook(clientId: string, id: string): Promise<boolean> { return await this.mutate((state) => { const client = this.client(state, clientId); const book = client.wordbooks.find((item) => item.id === id && !item.deletedAt); if (!book) return false; const at = this.now().toISOString(); book.deletedAt = at; book.updatedAt = at; client.studyRounds = client.studyRounds.filter((round) => round.wordbookId !== id); return true; }); }
   async restoreMyWordbook(clientId: string, id: string): Promise<MyWordbookCard | null> { return await this.mutate((state) => { const client = this.client(state, clientId); const book = client.wordbooks.find((item) => item.id === id && item.deletedAt); if (!book) return null; book.deletedAt = undefined; book.updatedAt = this.now().toISOString(); return card(book, client.events); }); }
   async listWords(clientId: string, id: string, status?: WordLearningStatus): Promise<LearningQueueItem[] | null> { return await this.read((state) => {
     const client = this.clientView(state, clientId); const book = client.wordbooks.find((item) => item.id === id && !item.deletedAt); if (!book) return null;
@@ -400,7 +561,7 @@ export abstract class BaseStore implements StudyStore {
   async purgeMyWordbook(clientId: string, id: string): Promise<boolean> { return await this.mutate((state) => {
     const client = this.client(state, clientId); const index = client.wordbooks.findIndex((item) => item.id === id && item.deletedAt);
     if (index < 0) return false;
-    client.wordbooks.splice(index, 1); client.events = client.events.filter((event) => event.wordbookId !== id); return true;
+    client.wordbooks.splice(index, 1); client.events = client.events.filter((event) => event.wordbookId !== id); client.studyRounds = client.studyRounds.filter((round) => round.wordbookId !== id); return true;
   }); }
   async deleteCatalogUpload(clientId: string, id: string): Promise<boolean> { return await this.mutate((state) => {
     const index = state.catalog.findIndex((book) => book.id === id && book.ownerClientId === clientId);
@@ -455,6 +616,7 @@ export abstract class BaseStore implements StudyStore {
         return false;
       });
       client.events = client.events.filter((event) => event.wordbookId !== wordbookId || !existingIds.has(event.wordId));
+      if (succeededIds.length) client.studyRounds = client.studyRounds.filter((round) => round.wordbookId !== wordbookId);
     } else if (input.action === "mark-mastered") {
       const at = this.now().toISOString();
       for (const word of book.words) {
@@ -577,6 +739,7 @@ export abstract class BaseStore implements StudyStore {
       const liveIds = new Set(replacement.map((word) => word.id));
       book.words = replacement;
       client.events = client.events.filter((event) => event.wordbookId !== book!.id || liveIds.has(event.wordId));
+      client.studyRounds = client.studyRounds.filter((round) => round.wordbookId !== book!.id);
       book.updatedAt = at;
       for (const sibling of siblings) {
         sibling.status = "committed";
@@ -605,19 +768,271 @@ export abstract class BaseStore implements StudyStore {
     }
     return card(book, client.events);
   }); }
+  async startStudyRound(clientId: string, input: StartStudyRoundInput): Promise<{ round: StudyRound; resumed: boolean } | null> {
+    return await this.mutate((state) => {
+      const client = this.client(state, clientId);
+      const book = client.wordbooks.find((item) => item.id === input.wordbookId && !item.deletedAt);
+      if (!book) return null;
+      const now = this.now();
+      const nowMs = now.getTime();
+      const expiresAt = new Date(nowMs + STUDY_ROUND_TTL_MS).toISOString();
+      client.studyRounds = client.studyRounds
+        .filter((round) => Date.parse(round.expiresAt) > nowMs && client.wordbooks.some((item) => item.id === round.wordbookId && !item.deletedAt))
+        .slice(-MAX_STUDY_ROUNDS_PER_CLIENT + 1);
+      const scope = input.scope ?? "standard";
+      const existing = client.studyRounds.find(
+        (round) => round.wordbookId === book.id
+          && round.mode === input.mode
+          && round.scope === scope
+          && !round.completedAt
+          && round.queue.length > 0,
+      );
+      if (existing) {
+        existing.updatedAt = now.toISOString();
+        existing.expiresAt = expiresAt;
+        return { round: clone(existing), resumed: true };
+      }
+
+      const preferences = preferencesOf(book);
+      const modePreferences = preferences.modes[input.mode];
+      const events = client.events.filter((event) => event.wordbookId === book.id);
+      const schedule = reviewScheduleOf(book);
+      const states = ladderStates(events, schedule);
+      let selected: WordbookWord[] = [];
+      if (input.mode === "new") {
+        const afterById = ladderEventLevels(events, schedule);
+        const today = day(now);
+        const completedToday = new Set(
+          events
+            .filter((event) => event.kind === "new" && day(new Date(event.occurredAt)) === today && afterById.get(event.id) === 1)
+            .map((event) => event.wordId),
+        ).size;
+        const unstudied = book.words.filter((word) => ladderOf(states, word.id).level === 0);
+        if (scope === "ahead") {
+          const batchSize = Math.min(200, Math.max(1, preferences.plan.newWords));
+          selected = unstudied.slice(0, batchSize);
+        } else {
+          const remaining = Math.max(0, preferences.plan.newWords - completedToday);
+          selected = unstudied.slice(0, remaining);
+        }
+      } else {
+        if (scope === "ahead") {
+          selected = book.words
+            .filter((word) => {
+              const wordState = ladderOf(states, word.id);
+              return wordState.level > 0 && !reviewDue(wordState, now, schedule);
+            })
+            .sort((left, right) => dueTimestamp(ladderOf(states, left.id)) - dueTimestamp(ladderOf(states, right.id)))
+            .slice(0, 200);
+        }
+        const lanes: Record<"protected" | "regular" | "backlog", WordbookWord[]> = {
+          protected: [],
+          regular: [],
+          backlog: [],
+        };
+        for (const word of book.words) {
+          const lane = reviewLane(ladderOf(states, word.id), now, schedule);
+          if (lane) lanes[lane].push(word);
+        }
+        lanes.protected.sort((left, right) => {
+          const a = ladderOf(states, left.id);
+          const b = ladderOf(states, right.id);
+          return Number(b.relearning) - Number(a.relearning) || dueTimestamp(a) - dueTimestamp(b);
+        });
+        lanes.regular.sort((left, right) => dueTimestamp(ladderOf(states, left.id)) - dueTimestamp(ladderOf(states, right.id)));
+        lanes.backlog.sort((left, right) => dueTimestamp(ladderOf(states, left.id)) - dueTimestamp(ladderOf(states, right.id)));
+        const completed = completedReviewLanes(events, schedule, day(now));
+        if (scope === "ahead") {
+          // The voluntary ahead deck was selected above and does not consume today's backlog cap.
+        } else if (scope === "backlog") {
+          const batchSize = Math.min(200, Math.max(50, preferences.plan.backlogReviews));
+          selected = lanes.backlog.slice(0, batchSize);
+        } else {
+          const remainingBacklog = Math.max(0, preferences.plan.backlogReviews - completed.backlog.size);
+          selected = [...lanes.protected, ...lanes.regular, ...lanes.backlog.slice(0, remainingBacklog)];
+        }
+      }
+
+      const wordIds = selected.map((word) => word.id);
+      const at = now.toISOString();
+      const queue = buildRoundTasks(wordIds, modePreferences.exerciseTypes);
+      const round: StudyRound = {
+        id: randomUUID(),
+        wordbookId: book.id,
+        mode: input.mode,
+        scope,
+        meaningPreference: modePreferences.meaningPreference,
+        exerciseTypes: clone(modePreferences.exerciseTypes),
+        wordIds,
+        queue,
+        passedTaskKeys: [],
+        completedWordIds: [],
+        vagueWordIds: [],
+        unknownWordIds: [],
+        processedOperationIds: [],
+        revision: 0,
+        createdAt: at,
+        updatedAt: at,
+        expiresAt,
+        ...(queue.length === 0 ? { completedAt: at } : {}),
+      };
+      client.studyRounds.push(round);
+      return { round: clone(round), resumed: false };
+    });
+  }
+  async getStudyRound(clientId: string, id: string): Promise<StudyRound | null> {
+    return await this.read((state) => {
+      const client = this.clientView(state, clientId);
+      const round = client.studyRounds.find((item) => item.id === id && Date.parse(item.expiresAt) > this.now().getTime());
+      if (!round || !client.wordbooks.some((book) => book.id === round.wordbookId && !book.deletedAt)) return null;
+      return clone(round);
+    });
+  }
+  async getStudyRoundTaskOptions(
+    clientId: string,
+    id: string,
+    taskId: string,
+    meaningPreference?: MeaningPreference,
+  ): Promise<StudyRoundTaskOptions | null> {
+    return await this.read((state) => {
+      const client = this.clientView(state, clientId);
+      const round = client.studyRounds.find((item) => item.id === id && Date.parse(item.expiresAt) > this.now().getTime());
+      const task = round?.queue[0];
+      const book = round ? client.wordbooks.find((item) => item.id === round.wordbookId && !item.deletedAt) : undefined;
+      const target = book?.words.find((word) => word.id === task?.wordId);
+      if (!round || !task || task.id !== taskId || task.exercise !== "meaning-choice" || !book || !target) return null;
+
+      const asOption = (entry: StudyWordEntry, wordId: string): StudyChoiceOption | null => {
+        const first = entry.meanings.find((meaning) => meaning.definition.trim()) ?? entry.meanings[0];
+        const englishDefinition = first?.definition.trim();
+        const chineseDefinition = entry.zhMeaning?.trim();
+        const definition = (meaningPreference ?? round.meaningPreference) === "zh"
+          ? chineseDefinition || englishDefinition
+          : englishDefinition || chineseDefinition;
+        if (!definition) return null;
+        return { wordId, word: entry.word, pos: first?.pos ?? "", definition };
+      };
+      const correct = asOption(target, target.id);
+      if (!correct) return { taskId: task.id, wordId: target.id, options: [] };
+
+      const pool = new Map<string, { entry: StudyWordEntry; wordId: string; local: boolean }>();
+      for (const candidateBook of client.wordbooks.filter((item) => !item.deletedAt)) {
+        for (const candidate of candidateBook.words) {
+          if (!pool.has(candidate.word)) pool.set(candidate.word, { entry: candidate, wordId: candidate.id, local: candidateBook.id === book.id });
+        }
+      }
+      state.catalog.forEach((catalogBook) => catalogBook.words.forEach((candidate, index) => {
+        if (!pool.has(candidate.word)) {
+          pool.set(candidate.word, { entry: candidate, wordId: `catalog-${catalogBook.id}-${index}`, local: false });
+        }
+      }));
+      pool.delete(target.word);
+
+      const definitions = new Set([correct.definition.trim().toLocaleLowerCase()]);
+      const ranked = [...pool.values()]
+        .map((candidate) => ({ candidate, option: asOption(candidate.entry, candidate.wordId) }))
+        .filter((item): item is { candidate: { entry: StudyWordEntry; wordId: string; local: boolean }; option: StudyChoiceOption } => {
+          if (!item.option) return false;
+          const key = item.option.definition.trim().toLocaleLowerCase();
+          if (definitions.has(key)) return false;
+          definitions.add(key);
+          return true;
+        })
+        .map((item) => ({
+          ...item,
+          score: lexicalSimilarity(target.word, item.candidate.entry.word) + (item.candidate.local ? 4 : 0),
+        }))
+        .sort((left, right) => right.score - left.score || left.option.word.localeCompare(right.option.word))
+        .slice(0, 3)
+        .map((item) => item.option);
+      const options = [correct, ...ranked].sort(
+        (left, right) => stableHash(`${task.id}:${left.word}`) - stableHash(`${task.id}:${right.word}`),
+      );
+      return { taskId: task.id, wordId: target.id, options };
+    });
+  }
+  async rotateStudyRound(clientId: string, id: string, revision: number): Promise<StudyRoundMutationResult> {
+    return await this.mutate((state) => {
+      const round = this.client(state, clientId).studyRounds.find((item) => item.id === id);
+      if (!round || round.completedAt || Date.parse(round.expiresAt) <= this.now().getTime() || round.queue.length === 0) return { kind: "not-found" };
+      if (round.revision !== revision) return { kind: "conflict", round: clone(round) };
+      const firstWordId = round.queue[0]!.wordId;
+      const moved = round.queue.filter((task) => task.wordId === firstWordId);
+      round.queue = [...round.queue.filter((task) => task.wordId !== firstWordId), ...moved];
+      round.revision += 1;
+      round.updatedAt = this.now().toISOString();
+      round.expiresAt = new Date(this.now().getTime() + STUDY_ROUND_TTL_MS).toISOString();
+      return { kind: "updated", round: clone(round) };
+    });
+  }
+  async answerStudyRound(clientId: string, id: string, input: StudyRoundAnswerInput): Promise<StudyRoundMutationResult> {
+    return await this.mutate((state) => {
+      const client = this.client(state, clientId);
+      const round = client.studyRounds.find((item) => item.id === id);
+      if (!round || round.completedAt || Date.parse(round.expiresAt) <= this.now().getTime()) return { kind: "not-found" };
+      if (round.processedOperationIds.includes(input.operationId)) return { kind: "updated", round: clone(round) };
+      if (round.revision !== input.revision || round.queue[0]?.id !== input.taskId) return { kind: "conflict", round: clone(round) };
+      const task = round.queue[0]!;
+      const responseMatches = task.exercise === "self-rating"
+        ? input.response === "know" || input.response === "vague" || input.response === "unknown"
+        : input.response === "correct" || input.response === "incorrect";
+      if (!responseMatches) return { kind: "conflict", round: clone(round) };
+      const book = client.wordbooks.find((item) => item.id === round.wordbookId && !item.deletedAt);
+      const target = book?.words.find((word) => word.id === task.wordId);
+      if (!book || !target) return { kind: "not-found" };
+
+      const passed = input.response === "know" || input.response === "correct";
+      round.queue.shift();
+      if (passed) {
+        const key = roundTaskKey(task);
+        if (!round.passedTaskKeys.includes(key)) round.passedTaskKeys.push(key);
+      } else {
+        const verdict = input.response === "vague" ? "vague" : "unknown";
+        this.appendLearningEvent(
+          client,
+          book,
+          target,
+          round.mode === "new"
+            ? { kind: "new", wordbookId: book.id, wordId: target.id, verdict }
+            : { kind: "flashcard", wordbookId: book.id, wordId: target.id, verdict },
+        );
+        const collection = verdict === "vague" ? round.vagueWordIds : round.unknownWordIds;
+        if (!collection.includes(target.id)) collection.push(target.id);
+        round.queue.push({ ...task, id: randomUUID() });
+      }
+
+      const completed = round.exerciseTypes.every((exercise) =>
+        round.passedTaskKeys.includes(roundTaskKey({ wordId: target.id, exercise })),
+      );
+      if (completed && !round.completedWordIds.includes(target.id)) {
+        this.appendLearningEvent(
+          client,
+          book,
+          target,
+          round.mode === "new"
+            ? { kind: "new", wordbookId: book.id, wordId: target.id, verdict: "know" }
+            : { kind: "flashcard", wordbookId: book.id, wordId: target.id, verdict: "know" },
+        );
+        round.completedWordIds.push(target.id);
+      }
+
+      round.processedOperationIds.push(input.operationId);
+      if (round.processedOperationIds.length > MAX_PROCESSED_ROUND_OPERATIONS) {
+        round.processedOperationIds.splice(0, round.processedOperationIds.length - MAX_PROCESSED_ROUND_OPERATIONS);
+      }
+      const now = this.now();
+      round.revision += 1;
+      round.updatedAt = now.toISOString();
+      round.expiresAt = new Date(now.getTime() + STUDY_ROUND_TTL_MS).toISOString();
+      if (round.queue.length === 0) round.completedAt = round.updatedAt;
+      return { kind: "updated", round: clone(round) };
+    });
+  }
   async recordEvent(clientId: string, input: LearningEventInput): Promise<LearningEvent | null> { return await this.mutate((state) => {
     const client = this.client(state, clientId); const book = client.wordbooks.find((item) => item.id === input.wordbookId && !item.deletedAt);
     const target = input.wordId ? book?.words.find((word) => word.id === input.wordId) : book?.words.find((word) => word.word === input.word);
     if (!book || !target) return null;
-    const now = this.now();
-    client.events = compactLearningEvents(
-      client.events,
-      now.getTime() - RETENTION_MS,
-      (wordbookId) => reviewScheduleOf(client.wordbooks.find((candidate) => candidate.id === wordbookId) ?? {}),
-    );
-    const common = { wordbookId: book.id, word: target.word, wordId: target.id, id: randomUUID(), occurredAt: now.toISOString() };
-    const event: LearningEvent = input.kind === "new" ? { ...common, kind: "new", ...(input.verdict ? { verdict: input.verdict } : {}) } : input.kind === "flashcard" ? { ...common, kind: "flashcard", verdict: input.verdict } : input.kind === "dictation" ? { ...common, kind: "dictation", correct: input.correct } : { ...common, kind: "mark", level: input.level };
-    client.events.push(event); book.updatedAt = event.occurredAt; return event;
+    return this.appendLearningEvent(client, book, target, input);
   }); }
   async getDashboard(clientId: string, id: string): Promise<StudyDashboard | null> { return await this.read((state) => {
     const client = this.clientView(state, clientId); const book = client.wordbooks.find((item) => item.id === id && !item.deletedAt); if (!book) return null;
@@ -633,28 +1048,43 @@ export abstract class BaseStore implements StudyStore {
       new Set(items.filter((event) => !kind || event.kind === kind).map((event) => event.wordId));
     // Count the first judgment that actually crosses L0 -> L1 so daily progress stays word-based.
     const completedNew = uniqueWords(todayEvents.filter((event) => event.kind === "new" && afterById.get(event.id) === 1)).size;
-    // Only a flashcard that was due immediately before the action completes the
-    // due-review plan. Ahead-review activity remains visible in weekly study data.
-    const completedDueReviewIds = new Set<string>();
-    for (let index = 0; index < events.length; index += 1) {
-      const event = events[index]!;
-      if (event.kind !== "flashcard" || day(new Date(event.occurredAt)) !== today) continue;
-      const before = replayLadder(events.slice(0, index).filter((candidate) => candidate.wordId === event.wordId), undefined, schedule);
-      if (reviewDue(before, new Date(event.occurredAt), schedule)) completedDueReviewIds.add(event.wordId);
-    }
-    const completedReview = completedDueReviewIds.size;
+    // The lane is captured at a word's first attempt today. A fuzzy/incorrect attempt can move
+    // its next due time, but the later successful retry still completes the originally due item.
+    const completedLanes = completedReviewLanes(events, schedule, today);
+    const completedReviewIds = new Set([
+      ...completedLanes.protected,
+      ...completedLanes.regular,
+      ...completedLanes.backlog,
+    ]);
+    const completedReview = completedReviewIds.size;
     const completedDictation = uniqueWords(todayEvents.filter((event) => event.kind === "dictation" && event.correct)).size;
     const states = ladderStates(events, schedule); const bookProgress = progress(book, events); const { levels } = bookProgress;
     // Availability per contract: 新词学习 from l0, 听写训练 from l2+l3+l4; 复习巩固 is the adaptive DUE count (below).
     const newAvailable = levels.l0; const dictationAvailable = levels.l2 + levels.l3 + levels.l4;
     // Every learned rung stays on the expanding review schedule. finalCheckDue is the L3 subset
     // currently due; a successful dictation at a mature interval can promote it to L4.
-    let reviewAvailable = 0; let finalCheckDue = 0;
+    const reviewBreakdown = { protected: 0, regular: 0, backlog: 0, scheduled: 0 };
+    let finalCheckDue = 0;
     for (const word of book.words) {
       const s = ladderOf(states, word.id);
-      if (reviewDue(s, now, schedule)) reviewAvailable += 1;
+      const lane = reviewLane(s, now, schedule);
+      if (lane) reviewBreakdown[lane] += 1;
       if (s.level === 3 && reviewDue(s, now, schedule)) finalCheckDue += 1;
     }
+    const preferences = preferencesOf(book);
+    const remainingBacklog = Math.max(0, preferences.plan.backlogReviews - completedLanes.backlog.size);
+    reviewBreakdown.scheduled = reviewBreakdown.protected
+      + reviewBreakdown.regular
+      + Math.min(reviewBreakdown.backlog, remainingBacklog);
+    const activeRounds = client.studyRounds
+      .filter((round) => round.wordbookId === book.id && !round.completedAt && round.queue.length > 0 && Date.parse(round.expiresAt) > now.getTime())
+      .map((round) => ({
+        id: round.id,
+        mode: round.mode,
+        scope: round.scope,
+        remainingWords: new Set(round.queue.map((task) => task.wordId)).size,
+        updatedAt: round.updatedAt,
+      }));
     const perDay = new Map<string, Set<string>>();
     for (const event of studyEvents) {
       const key = day(new Date(event.occurredAt)); const words = perDay.get(key) ?? new Set<string>();
@@ -672,7 +1102,29 @@ export abstract class BaseStore implements StudyStore {
     // The 结果 column shows the proficiency a word held right after each study action.
     // Reverse first so equal-millisecond events retain newest-insertion-first
     // ordering under JavaScript's stable sort.
-    return { wordbook: card(book, events), todayPlan: { new: { target: Math.min(20, Math.max(completedNew, newAvailable)), completed: completedNew }, review: { target: completedReview + reviewAvailable, completed: completedReview }, dictation: { target: Math.min(15, Math.max(completedDictation, dictationAvailable)), completed: completedDictation } }, recentActivity: clone([...activityEvents].reverse().sort((a, b) => b.occurredAt.localeCompare(a.occurredAt)).slice(0, 5)).map((event) => ({ ...event, levelAfter: afterById.get(event.id) ?? 0 as WordLevel })), calendar, week: { newCount: weekNew, reviewCount: weekReview, dictationCount: weekDictation, total: weekTotalIds.size }, streakDays: streak, finalCheckDue, updatedAt: book.updatedAt };
+    return {
+      wordbook: card(book, events),
+      todayPlan: {
+        new: {
+          target: Math.max(completedNew, Math.min(preferences.plan.newWords, completedNew + newAvailable)),
+          completed: completedNew,
+        },
+        review: { target: completedReview + reviewBreakdown.scheduled, completed: completedReview },
+        dictation: {
+          target: Math.max(completedDictation, Math.min(preferences.plan.dictation, completedDictation + dictationAvailable)),
+          completed: completedDictation,
+        },
+      },
+      recentActivity: clone([...activityEvents].reverse().sort((a, b) => b.occurredAt.localeCompare(a.occurredAt)).slice(0, 5))
+        .map((event) => ({ ...event, levelAfter: afterById.get(event.id) ?? 0 as WordLevel })),
+      calendar,
+      week: { newCount: weekNew, reviewCount: weekReview, dictationCount: weekDictation, total: weekTotalIds.size },
+      streakDays: streak,
+      reviewBreakdown,
+      activeRounds,
+      finalCheckDue,
+      updatedAt: book.updatedAt,
+    };
   }); }
 
   // --- Shared state plumbing ---
@@ -683,6 +1135,36 @@ export abstract class BaseStore implements StudyStore {
   /** Read-only view: never inserts a client record, so GETs cannot grow the persisted state. */
   private clientView(state: State, id: string): ClientData {
     return Object.hasOwn(state.clients, id) ? state.clients[id]! : defaultClient();
+  }
+  private appendLearningEvent(
+    client: ClientData,
+    book: MyWordbook,
+    target: WordbookWord,
+    input: LearningEventInput,
+  ): LearningEvent {
+    const now = this.now();
+    client.events = compactLearningEvents(
+      client.events,
+      now.getTime() - RETENTION_MS,
+      (wordbookId) => reviewScheduleOf(client.wordbooks.find((candidate) => candidate.id === wordbookId) ?? {}),
+    );
+    const common = {
+      wordbookId: book.id,
+      word: target.word,
+      wordId: target.id,
+      id: randomUUID(),
+      occurredAt: now.toISOString(),
+    };
+    const event: LearningEvent = input.kind === "new"
+      ? { ...common, kind: "new", ...(input.verdict ? { verdict: input.verdict } : {}) }
+      : input.kind === "flashcard"
+        ? { ...common, kind: "flashcard", verdict: input.verdict }
+        : input.kind === "dictation"
+          ? { ...common, kind: "dictation", correct: input.correct }
+          : { ...common, kind: "mark", level: input.level };
+    client.events.push(event);
+    book.updatedAt = event.occurredAt;
+    return event;
   }
   private favoriteCount(state: State, catalogId: string): number {
     let total = 0;

@@ -287,10 +287,10 @@ test("wordbook and learning-experience settings persist across account devices",
     assert.equal(created.studyPreferences, undefined);
 
     const preferences = {
-      plan: { newWords: 36, dictation: 18 },
+      plan: { newWords: 36, dictation: 18, backlogReviews: 40 },
       modes: {
-        new: { meaningPreference: "zh", showExamples: true, showPhonetic: true, autoPlayAudio: false },
-        review: { meaningPreference: "en", showExamples: false, showPhonetic: true, autoPlayAudio: true },
+        new: { meaningPreference: "zh", showExamples: true, showPhonetic: true, autoPlayAudio: false, exerciseTypes: ["self-rating", "meaning-choice"] },
+        review: { meaningPreference: "en", showExamples: false, showPhonetic: true, autoPlayAudio: true, exerciseTypes: ["self-rating", "meaning-choice"] },
         dictation: {
           meaningPreference: "zh",
           showExamples: true,
@@ -319,6 +319,7 @@ test("wordbook and learning-experience settings persist across account devices",
         pronunciation: { accent: "us" },
         shortcuts: {
           unknown: "a",
+          vague: "s",
           pronounce: "enter",
           known: "d",
           flip: " ",
@@ -341,6 +342,7 @@ test("wordbook and learning-experience settings persist across account devices",
     assert.deepEqual(remoteGlobal.settings?.pronunciation, { accent: "us" });
     assert.deepEqual(remoteGlobal.settings?.shortcuts, {
       unknown: "a",
+      vague: "s",
       pronounce: "enter",
       known: "d",
       flip: " ",
@@ -675,6 +677,75 @@ test("word is the only required import field and supplied parts of speech target
     });
     assert.equal(committed.status, 200);
     assert.equal((await committed.json() as { wordCount: number }).wordCount, 7);
+  } finally { await app.close(); }
+});
+
+test("an unmatched phrase composes its phonetic from dictionary-matched component words", async () => {
+  const lookedUp: string[] = [];
+  const app = await server({
+    wordLookup: {
+      async lookup(word) {
+        lookedUp.push(word);
+        if (word === "car") {
+          return {
+            word,
+            phonetic: "/kɑː/",
+            meanings: [{ pos: "noun", definition: "A road vehicle." }],
+            source: "backend",
+          };
+        }
+        if (word === "dealer") {
+          return {
+            word,
+            phonetic: "/ˈdiːlə/",
+            meanings: [{ pos: "noun", definition: "A person or business that trades goods." }],
+            source: "backend",
+          };
+        }
+        return null;
+      },
+    },
+  });
+  try {
+    const response = await fetch(`${app.baseUrl}/api/my/import-drafts`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        title: "词组音标",
+        lines: [{
+          line: 1,
+          word: "car dealer",
+          pos: "noun",
+          enDefinition: "A business that sells cars.",
+          zhMeaning: "汽车经销商",
+        }],
+      }),
+    });
+    assert.equal(response.status, 201);
+    const created = await response.json() as { id: string };
+    const draft = await eventually(
+      async () => await (await fetch(`${app.baseUrl}/api/my/import-drafts/${created.id}`, { headers })).json() as {
+        id: string;
+        status: string;
+        entries: Array<{ status: string; reason?: string; entry: { phonetic: string } }>;
+      },
+      (value) => value.status === "pending",
+    );
+
+    assert.deepEqual(lookedUp, ["car dealer", "car", "dealer"]);
+    assert.equal(draft.entries[0]?.status, "unmatched");
+    assert.equal(draft.entries[0]?.entry.phonetic, "/kɑː ˈdiːlə/");
+    assert.match(draft.entries[0]?.reason ?? "", /已按组成单词补全音标/);
+
+    const committedResponse = await fetch(`${app.baseUrl}/api/my/import-drafts/${draft.id}/commit`, {
+      method: "POST",
+      headers,
+      body: "{}",
+    });
+    assert.equal(committedResponse.status, 200);
+    const committed = await committedResponse.json() as { id: string };
+    const words = await (await fetch(`${app.baseUrl}/api/my/wordbooks/${committed.id}/words`, { headers })).json() as Array<{ phonetic: string }>;
+    assert.equal(words[0]?.phonetic, "/kɑː ˈdiːlə/");
   } finally { await app.close(); }
 });
 

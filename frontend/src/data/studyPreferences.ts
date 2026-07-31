@@ -2,12 +2,17 @@ import { storageKey } from '../lib/storage'
 
 export type MeaningPreference = 'zh' | 'en'
 export type StudyModeKey = 'new' | 'review' | 'dictation'
+export type StudyExerciseType = 'self-rating' | 'meaning-choice'
 
 export type StudyDisplayPreferences = {
   meaningPreference: MeaningPreference
   showExamples: boolean
   showPhonetic: boolean
   autoPlayAudio: boolean
+}
+
+export type FlashcardDisplayPreferences = StudyDisplayPreferences & {
+  exerciseTypes: StudyExerciseType[]
 }
 
 export type DictationDisplayPreferences = StudyDisplayPreferences & {
@@ -21,10 +26,11 @@ export type WordbookStudyPreferences = {
   plan: {
     newWords: number
     dictation: number
+    backlogReviews: number
   }
   modes: {
-    new: StudyDisplayPreferences
-    review: StudyDisplayPreferences
+    new: FlashcardDisplayPreferences
+    review: FlashcardDisplayPreferences
     dictation: DictationDisplayPreferences
   }
 }
@@ -35,6 +41,7 @@ export const DEFAULT_STUDY_PREFERENCES: WordbookStudyPreferences = {
   plan: {
     newWords: 20,
     dictation: 15,
+    backlogReviews: 50,
   },
   modes: {
     new: {
@@ -42,12 +49,14 @@ export const DEFAULT_STUDY_PREFERENCES: WordbookStudyPreferences = {
       showExamples: true,
       showPhonetic: true,
       autoPlayAudio: true,
+      exerciseTypes: ['self-rating', 'meaning-choice'],
     },
     review: {
       meaningPreference: 'zh',
       showExamples: true,
       showPhonetic: true,
       autoPlayAudio: true,
+      exerciseTypes: ['self-rating', 'meaning-choice'],
     },
     dictation: {
       meaningPreference: 'zh',
@@ -94,6 +103,29 @@ function displayPreferences(
   }
 }
 
+const EXERCISE_TYPES: StudyExerciseType[] = ['self-rating', 'meaning-choice']
+
+function flashcardPreferences(
+  value: unknown,
+  fallback: FlashcardDisplayPreferences,
+): FlashcardDisplayPreferences {
+  const display = displayPreferences(value, fallback)
+  if (!isRecord(value) || !Array.isArray(value.exerciseTypes)) {
+    return { ...display, exerciseTypes: [...fallback.exerciseTypes] }
+  }
+  const exerciseTypes = value.exerciseTypes.filter(
+    (item): item is StudyExerciseType => item === 'self-rating' || item === 'meaning-choice',
+  )
+  const valid = exerciseTypes.length > 0
+    && exerciseTypes.length <= EXERCISE_TYPES.length
+    && exerciseTypes.length === value.exerciseTypes.length
+    && new Set(exerciseTypes).size === exerciseTypes.length
+  return {
+    ...display,
+    exerciseTypes: valid ? exerciseTypes : [...fallback.exerciseTypes],
+  }
+}
+
 export function normalizeStudyPreferences(value: unknown): WordbookStudyPreferences {
   if (!isRecord(value)) return structuredClone(DEFAULT_STUDY_PREFERENCES)
   const plan = isRecord(value.plan) ? value.plan : {}
@@ -103,10 +135,11 @@ export function normalizeStudyPreferences(value: unknown): WordbookStudyPreferen
     plan: {
       newWords: boundedCount(plan.newWords, DEFAULT_STUDY_PREFERENCES.plan.newWords),
       dictation: boundedCount(plan.dictation, DEFAULT_STUDY_PREFERENCES.plan.dictation),
+      backlogReviews: boundedCount(plan.backlogReviews, DEFAULT_STUDY_PREFERENCES.plan.backlogReviews),
     },
     modes: {
-      new: displayPreferences(modes.new, DEFAULT_STUDY_PREFERENCES.modes.new),
-      review: displayPreferences(modes.review, DEFAULT_STUDY_PREFERENCES.modes.review),
+      new: flashcardPreferences(modes.new, DEFAULT_STUDY_PREFERENCES.modes.new),
+      review: flashcardPreferences(modes.review, DEFAULT_STUDY_PREFERENCES.modes.review),
       dictation: {
         ...dictation,
         underlineMistakes: isRecord(modes.dictation)

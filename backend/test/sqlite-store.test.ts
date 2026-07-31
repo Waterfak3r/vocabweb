@@ -93,10 +93,10 @@ test("SQLite durably reloads synchronized wordbook and global study settings", a
   const store = new SqliteStudyStore(files.databaseFile);
   const book = await store.createMyWordbook(CLIENT, { title: "Settings" });
   const preferences: WordbookStudyPreferences = {
-    plan: { newWords: 24, dictation: 16 },
+    plan: { newWords: 24, dictation: 16, backlogReviews: 50 },
     modes: {
-      new: { meaningPreference: "zh", showExamples: true, showPhonetic: true, autoPlayAudio: false },
-      review: { meaningPreference: "en", showExamples: true, showPhonetic: false, autoPlayAudio: true },
+      new: { meaningPreference: "zh", showExamples: true, showPhonetic: true, autoPlayAudio: false, exerciseTypes: ["self-rating", "meaning-choice"] },
+      review: { meaningPreference: "en", showExamples: true, showPhonetic: false, autoPlayAudio: true, exerciseTypes: ["self-rating", "meaning-choice"] },
       dictation: {
         meaningPreference: "zh",
         showExamples: false,
@@ -111,7 +111,7 @@ test("SQLite durably reloads synchronized wordbook and global study settings", a
   await store.updateMyWordbook(CLIENT, book.id, { studyPreferences: preferences });
   await store.updateStudySettings(CLIENT, {
     pronunciation: { accent: "us" },
-    shortcuts: { unknown: "a", pronounce: "enter", known: "d", flip: " ", dictationPronounce: "tab" },
+    shortcuts: { unknown: "a", vague: "s", pronounce: "enter", known: "d", flip: " ", dictationPronounce: "tab" },
   });
   store.close();
 

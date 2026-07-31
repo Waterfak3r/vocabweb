@@ -2,6 +2,7 @@ import { storageKey } from '../lib/storage'
 
 export type StudyShortcutAction =
   | 'unknown'
+  | 'vague'
   | 'pronounce'
   | 'known'
   | 'flip'
@@ -11,6 +12,7 @@ export type StudyShortcutPreferences = Record<StudyShortcutAction, string>
 
 export const DEFAULT_STUDY_SHORTCUTS: StudyShortcutPreferences = {
   unknown: 'q',
+  vague: 'w',
   pronounce: 'enter',
   known: 'e',
   flip: ' ',
@@ -45,7 +47,7 @@ export function normalizeStudyShortcuts(value: unknown): StudyShortcutPreference
       if (key) next[action] = key
     }
   }
-  const flashcard = [next.unknown, next.pronounce, next.known, next.flip]
+  const flashcard = [next.unknown, next.vague, next.pronounce, next.known, next.flip]
   if (new Set(flashcard).size !== flashcard.length || next.dictationPronounce === 'enter') {
     return { ...DEFAULT_STUDY_SHORTCUTS }
   }

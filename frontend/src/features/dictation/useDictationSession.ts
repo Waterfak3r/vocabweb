@@ -24,6 +24,7 @@ export type DictationSession = {
   wrongDeck: WordbookItem[]
   setAnswer: (value: string) => void
   submit: () => void
+  skip: () => void
   next: () => void
   retryAll: () => void
   retryWrong: () => void
@@ -34,6 +35,18 @@ export type DictationGradeReporter = (word: string, correct: boolean) => void
 export function advanceDictationStreak(current: number, correct: boolean) {
   const streak = correct ? Math.min(REQUIRED_DICTATION_STREAK, current + 1) : 0
   return { streak, passed: correct && streak === REQUIRED_DICTATION_STREAK }
+}
+
+export function skippedDictationAnswer(
+  item: Pick<WordbookItem, 'id' | 'word'>,
+): DictationAnswer {
+  return {
+    itemId: item.id,
+    word: item.word,
+    given: '',
+    grade: 'incorrect',
+    skipped: true,
+  }
 }
 
 /** A word passes after three consecutive correct attempts in this open session. */
@@ -61,18 +74,14 @@ export function useDictationSession(
     setInputError('')
   }, [])
 
-  const submit = useCallback(() => {
+  const finishAttempt = useCallback((attempt: DictationAnswer) => {
     if (!current || phase !== 'prompt') return
-    if (!answer.trim()) {
-      setInputError('先写下你听到的拼写。')
-      return
-    }
-    const grade = gradeAnswer(answer, current)
+    const grade = attempt.grade
     const { streak: nextStreak, passed } = advanceDictationStreak(
       streaks[current.id] ?? 0,
       grade === 'correct',
     )
-    setAnswers((list) => [...list, { itemId: current.id, word: current.word, given: answer.trim(), grade }])
+    setAnswers((list) => [...list, attempt])
     setStreaks((value) => ({ ...value, [current.id]: nextStreak }))
     setLastPassed(passed)
     if (passed) setPassedIds((ids) => ids.includes(current.id) ? ids : [...ids, current.id])
@@ -84,7 +93,26 @@ export function useDictationSession(
     } catch {
       // Local grading remains available when reporting is offline.
     }
-  }, [answer, current, onGrade, phase, streaks])
+  }, [current, onGrade, phase, streaks])
+
+  const submit = useCallback(() => {
+    if (!current || phase !== 'prompt') return
+    if (!answer.trim()) {
+      setInputError('先写下你听到的拼写。')
+      return
+    }
+    finishAttempt({
+      itemId: current.id,
+      word: current.word,
+      given: answer.trim(),
+      grade: gradeAnswer(answer, current),
+    })
+  }, [answer, current, finishAttempt, phase])
+
+  const skip = useCallback(() => {
+    if (!current || phase !== 'prompt') return
+    finishAttempt(skippedDictationAnswer(current))
+  }, [current, finishAttempt, phase])
 
   const next = useCallback(() => {
     if (phase !== 'feedback' || !current) return
@@ -136,8 +164,9 @@ export function useDictationSession(
     wrongDeck,
     setAnswer,
     submit,
+    skip,
     next,
     retryAll,
     retryWrong,
-  }), [answer, answers, current, currentStreak, deck, incorrectCount, inputError, isLast, next, passedIds.length, phase, queue.length, retryAll, retryWrong, setAnswer, submit, wrongDeck])
+  }), [answer, answers, current, currentStreak, deck, incorrectCount, inputError, isLast, next, passedIds.length, phase, queue.length, retryAll, retryWrong, setAnswer, skip, submit, wrongDeck])
 }

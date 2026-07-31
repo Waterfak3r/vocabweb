@@ -68,4 +68,5 @@ export type DictationAnswer = {
   word: string
   given: string
   grade: DictationGrade
+  skipped?: true
 }

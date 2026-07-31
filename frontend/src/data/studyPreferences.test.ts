@@ -40,9 +40,9 @@ describe('study preferences', () => {
     const storage = memoryStorage()
     writeStudyPreferences('first', {
       ...DEFAULT_STUDY_PREFERENCES,
-      plan: { newWords: 8, dictation: 6 },
+      plan: { newWords: 8, dictation: 6, backlogReviews: 40 },
     }, storage)
-    expect(readStudyPreferences('first', storage).plan).toEqual({ newWords: 8, dictation: 6 })
+    expect(readStudyPreferences('first', storage).plan).toEqual({ newWords: 8, dictation: 6, backlogReviews: 40 })
     expect(readStudyPreferences('second', storage)).toEqual(DEFAULT_STUDY_PREFERENCES)
   })
 })

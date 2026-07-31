@@ -156,6 +156,28 @@ describe('WorkspaceApi batch word actions', () => {
   })
 })
 
+describe('WorkspaceApi meaning-choice language', () => {
+  it('requests options in the currently selected language', async () => {
+    const payload = {
+      taskId: 'task-1',
+      wordId: 'word-1',
+      options: [{ wordId: 'word-1', word: 'resilient', pos: 'adjective', definition: 'Able to recover.' }],
+    }
+    const fetch = vi.fn<FetchLike>().mockImplementation(
+      async () => new Response(JSON.stringify(payload)),
+    )
+    const api = new WorkspaceApi('https://api.example.test/', { fetch, clientId: () => 'learner' })
+
+    await api.getStudyRoundTaskOptions('round-1', 'task-1', 'zh')
+    await api.getStudyRoundTaskOptions('round-1', 'task-1', 'en')
+
+    expect(fetch.mock.calls.map(([url]) => url.toString())).toEqual([
+      'https://api.example.test/api/study/rounds/round-1/tasks/task-1/options?meaningPreference=zh',
+      'https://api.example.test/api/study/rounds/round-1/tasks/task-1/options?meaningPreference=en',
+    ])
+  })
+})
+
 describe('WorkspaceApi adaptive review schedule', () => {
   it('preserves interval and due metadata and rejects malformed schedules', async () => {
     const word = {
@@ -225,6 +247,7 @@ describe('WorkspaceApi synchronized study settings', () => {
   it('loads account-wide settings and persists per-wordbook preferences', async () => {
     const shortcuts = {
       unknown: 'a',
+      vague: 's',
       pronounce: 'enter',
       known: 'd',
       flip: ' ',
@@ -232,7 +255,7 @@ describe('WorkspaceApi synchronized study settings', () => {
     }
     const preferences = {
       ...structuredClone(DEFAULT_STUDY_PREFERENCES),
-      plan: { newWords: 32, dictation: 12 },
+      plan: { newWords: 32, dictation: 12, backlogReviews: 50 },
     }
     const synced = {
       shortcuts,

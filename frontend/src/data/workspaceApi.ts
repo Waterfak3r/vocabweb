@@ -9,13 +9,17 @@ import {
 } from './reviewSchedule'
 import { getStudyClientId } from './studyApi'
 import {
+  DEFAULT_STUDY_SHORTCUTS,
   normalizeShortcutKey,
   type StudyShortcutAction,
   type StudyShortcutPreferences,
 } from './studyShortcuts'
 import type {
   DictationDisplayPreferences,
+  FlashcardDisplayPreferences,
+  MeaningPreference,
   StudyDisplayPreferences,
+  StudyExerciseType,
   WordbookStudyPreferences,
 } from './studyPreferences'
 import type { PronunciationPreferences } from './pronunciationPreferences'
@@ -100,21 +104,63 @@ export type StudyDashboard = {
     review: { target: number; completed: number }
     dictation: { target: number; completed: number }
   }
-  recentActivity: Array<{ id: string; kind: 'new' | 'flashcard' | 'dictation' | 'mark'; wordbookId: string; word: string; occurredAt: string; verdict?: 'know' | 'unknown'; correct?: boolean; level?: WordLevel; levelAfter?: WordLevel }>
+  recentActivity: Array<{ id: string; kind: 'new' | 'flashcard' | 'dictation' | 'mark'; wordbookId: string; word: string; occurredAt: string; verdict?: LearningVerdict; correct?: boolean; level?: WordLevel; levelAfter?: WordLevel }>
   calendar: Array<{ date: string; count: number; active: boolean }>
   week: { newCount: number; reviewCount: number; dictationCount: number; total: number }
   streakDays: number
+  reviewBreakdown?: { protected: number; regular: number; backlog: number; scheduled: number }
+  activeRounds?: Array<{ id: string; mode: StudyRoundMode; scope: StudyRoundScope; remainingWords: number; updatedAt: string }>
   /** Due L3 words whose next successful dictation can complete the final proficiency step. */
   finalCheckDue?: number
   updatedAt: string
 }
 
+export type LearningVerdict = 'know' | 'vague' | 'unknown'
 export type LearningEvent =
-  | { kind: 'new'; wordbookId: string; word: string; verdict?: 'know' | 'unknown' }
-  | { kind: 'flashcard'; wordbookId: string; word: string; verdict: 'know' | 'unknown' }
+  | { kind: 'new'; wordbookId: string; word: string; verdict?: LearningVerdict }
+  | { kind: 'flashcard'; wordbookId: string; word: string; verdict: LearningVerdict }
   | { kind: 'dictation'; wordbookId: string; word: string; correct: boolean }
   /** Manual proficiency override, e.g. 标熟 sets level 4. */
   | { kind: 'mark'; wordbookId: string; word: string; level: WordLevel }
+
+export type StudyRoundMode = 'new' | 'review'
+export type StudyRoundScope = 'standard' | 'backlog' | 'ahead'
+export type StudyRoundTask = {
+  id: string
+  wordId: string
+  exercise: StudyExerciseType
+}
+export type StudyRound = {
+  id: string
+  wordbookId: string
+  mode: StudyRoundMode
+  scope: StudyRoundScope
+  meaningPreference: 'zh' | 'en'
+  exerciseTypes: StudyExerciseType[]
+  wordIds: string[]
+  queue: StudyRoundTask[]
+  passedTaskKeys: string[]
+  completedWordIds: string[]
+  vagueWordIds: string[]
+  unknownWordIds: string[]
+  processedOperationIds: string[]
+  revision: number
+  createdAt: string
+  updatedAt: string
+  expiresAt: string
+  completedAt?: string
+}
+export type StudyChoiceOption = {
+  wordId: string
+  word: string
+  pos: string
+  definition: string
+}
+export type StudyRoundTaskOptions = {
+  taskId: string
+  wordId: string
+  options: StudyChoiceOption[]
+}
 
 export type ImportDraftLine = {
   line: number
@@ -232,18 +278,34 @@ function parseDisplayPreferences(value: unknown): StudyDisplayPreferences | null
   }
 }
 
+function parseFlashcardPreferences(value: unknown): FlashcardDisplayPreferences | null {
+  const display = parseDisplayPreferences(value)
+  if (!display || !isRecord(value)) return null
+  const source = value.exerciseTypes === undefined
+    ? ['self-rating', 'meaning-choice']
+    : value.exerciseTypes
+  if (!Array.isArray(source) || source.length < 1 || source.length > 2) return null
+  const exerciseTypes = source.filter(
+    (entry): entry is StudyExerciseType => entry === 'self-rating' || entry === 'meaning-choice',
+  )
+  if (exerciseTypes.length !== source.length || new Set(exerciseTypes).size !== exerciseTypes.length) return null
+  return { ...display, exerciseTypes }
+}
+
 function parseWordbookStudyPreferences(value: unknown): WordbookStudyPreferences | null {
   if (!isRecord(value) || !isRecord(value.plan) || !isRecord(value.modes)) return null
   const count = (entry: unknown) => typeof entry === 'number' && Number.isInteger(entry) && entry >= 0 && entry <= 999 ? entry : null
   const newWords = count(value.plan.newWords)
   const dictationCount = count(value.plan.dictation)
-  const newMode = parseDisplayPreferences(value.modes.new)
-  const review = parseDisplayPreferences(value.modes.review)
+  const backlogReviews = value.plan.backlogReviews === undefined ? 50 : count(value.plan.backlogReviews)
+  const newMode = parseFlashcardPreferences(value.modes.new)
+  const review = parseFlashcardPreferences(value.modes.review)
   const dictationBase = parseDisplayPreferences(value.modes.dictation)
   const dictationSource = value.modes.dictation
   if (
     newWords === null
     || dictationCount === null
+    || backlogReviews === null
     || !newMode
     || !review
     || !dictationBase
@@ -259,22 +321,25 @@ function parseWordbookStudyPreferences(value: unknown): WordbookStudyPreferences
     showCharacterMask: dictationSource.showCharacterMask,
   }
   return {
-    plan: { newWords, dictation: dictationCount },
+    plan: { newWords, dictation: dictationCount, backlogReviews },
     modes: { new: newMode, review, dictation },
   }
 }
 
 function parseStudyShortcuts(value: unknown): StudyShortcutPreferences | null {
   if (!isRecord(value)) return null
-  const actions: StudyShortcutAction[] = ['unknown', 'pronounce', 'known', 'flip', 'dictationPronounce']
+  const actions: StudyShortcutAction[] = ['unknown', 'vague', 'pronounce', 'known', 'flip', 'dictationPronounce']
   const parsed = {} as StudyShortcutPreferences
   for (const action of actions) {
-    if (typeof value[action] !== 'string') return null
-    const key = normalizeShortcutKey(value[action])
+    const source = action === 'vague' && value[action] === undefined
+      ? DEFAULT_STUDY_SHORTCUTS.vague
+      : value[action]
+    if (typeof source !== 'string') return null
+    const key = normalizeShortcutKey(source)
     if (!key) return null
     parsed[action] = key
   }
-  const flashcard = [parsed.unknown, parsed.pronounce, parsed.known, parsed.flip]
+  const flashcard = [parsed.unknown, parsed.vague, parsed.pronounce, parsed.known, parsed.flip]
   if (new Set(flashcard).size !== flashcard.length || parsed.dictationPronounce === 'enter') return null
   return parsed
 }
@@ -429,7 +494,7 @@ function parseDashboard(value: unknown): StudyDashboard | null {
   const recentActivity = value.recentActivity.map((entry) => {
     if (!isRecord(entry) || !isText(entry.id) || !isText(entry.kind) || !isText(entry.wordbookId) || !isText(entry.word) || !isText(entry.occurredAt)) return null
     if (entry.kind !== 'new' && entry.kind !== 'flashcard' && entry.kind !== 'dictation' && entry.kind !== 'mark') return null
-    if (entry.verdict !== undefined && entry.verdict !== 'know' && entry.verdict !== 'unknown') return null
+    if (entry.verdict !== undefined && entry.verdict !== 'know' && entry.verdict !== 'vague' && entry.verdict !== 'unknown') return null
     if (entry.correct !== undefined && typeof entry.correct !== 'boolean') return null
     if (entry.level !== undefined && !isWordLevel(entry.level)) return null
     if (entry.levelAfter !== undefined && !isWordLevel(entry.levelAfter)) return null
@@ -438,7 +503,148 @@ function parseDashboard(value: unknown): StudyDashboard | null {
   const calendar = value.calendar.map((entry) => isRecord(entry) && isText(entry.date) && isCount(entry.count) && typeof entry.active === 'boolean' ? { date: entry.date, count: entry.count, active: entry.active } : null)
   if (recentActivity.some((entry) => entry === null) || calendar.some((entry) => entry === null)) return null
   if (value.finalCheckDue !== undefined && !isCount(value.finalCheckDue)) return null
-  return { wordbook, todayPlan, recentActivity: recentActivity as StudyDashboard['recentActivity'], calendar: calendar as StudyDashboard['calendar'], week: { newCount: value.week.newCount, reviewCount: value.week.reviewCount, dictationCount: value.week.dictationCount, total: value.week.total }, streakDays: value.streakDays, ...(value.finalCheckDue !== undefined ? { finalCheckDue: value.finalCheckDue } : {}), updatedAt: value.updatedAt }
+  let reviewBreakdown: StudyDashboard['reviewBreakdown']
+  if (value.reviewBreakdown !== undefined) {
+    if (
+      !isRecord(value.reviewBreakdown)
+      || !isCount(value.reviewBreakdown.protected)
+      || !isCount(value.reviewBreakdown.regular)
+      || !isCount(value.reviewBreakdown.backlog)
+      || !isCount(value.reviewBreakdown.scheduled)
+    ) return null
+    reviewBreakdown = {
+      protected: value.reviewBreakdown.protected,
+      regular: value.reviewBreakdown.regular,
+      backlog: value.reviewBreakdown.backlog,
+      scheduled: value.reviewBreakdown.scheduled,
+    }
+  }
+  let activeRounds: StudyDashboard['activeRounds']
+  if (value.activeRounds !== undefined) {
+    if (!Array.isArray(value.activeRounds)) return null
+    const parsed = value.activeRounds.map((round) => (
+      isRecord(round)
+        && isText(round.id)
+        && (round.mode === 'new' || round.mode === 'review')
+        && (round.scope === 'standard' || round.scope === 'backlog' || round.scope === 'ahead')
+        && isCount(round.remainingWords)
+        && isText(round.updatedAt)
+        ? {
+            id: round.id,
+            mode: round.mode,
+            scope: round.scope,
+            remainingWords: round.remainingWords,
+            updatedAt: round.updatedAt,
+          }
+        : null
+    ))
+    if (parsed.some((round) => round === null)) return null
+    activeRounds = parsed as NonNullable<StudyDashboard['activeRounds']>
+  }
+  return {
+    wordbook,
+    todayPlan,
+    recentActivity: recentActivity as StudyDashboard['recentActivity'],
+    calendar: calendar as StudyDashboard['calendar'],
+    week: { newCount: value.week.newCount, reviewCount: value.week.reviewCount, dictationCount: value.week.dictationCount, total: value.week.total },
+    streakDays: value.streakDays,
+    ...(reviewBreakdown ? { reviewBreakdown } : {}),
+    ...(activeRounds ? { activeRounds } : {}),
+    ...(value.finalCheckDue !== undefined ? { finalCheckDue: value.finalCheckDue } : {}),
+    updatedAt: value.updatedAt,
+  }
+}
+
+function parseStudyRoundTask(value: unknown): StudyRoundTask | null {
+  if (!isRecord(value) || !isText(value.id) || !isText(value.wordId)) return null
+  if (value.exercise !== 'self-rating' && value.exercise !== 'meaning-choice') return null
+  return { id: value.id, wordId: value.wordId, exercise: value.exercise }
+}
+
+function parseStudyRound(value: unknown): StudyRound | null {
+  if (
+    !isRecord(value)
+    || !isText(value.id)
+    || !isText(value.wordbookId)
+    || (value.mode !== 'new' && value.mode !== 'review')
+    || (value.scope !== 'standard' && value.scope !== 'backlog' && value.scope !== 'ahead')
+    || (value.meaningPreference !== 'zh' && value.meaningPreference !== 'en')
+    || !Array.isArray(value.exerciseTypes)
+    || !Array.isArray(value.wordIds)
+    || !Array.isArray(value.queue)
+    || !Array.isArray(value.passedTaskKeys)
+    || !Array.isArray(value.completedWordIds)
+    || !Array.isArray(value.vagueWordIds)
+    || !Array.isArray(value.unknownWordIds)
+    || !Array.isArray(value.processedOperationIds)
+    || !isCount(value.revision)
+    || !Number.isInteger(value.revision)
+    || !isText(value.createdAt)
+    || !isText(value.updatedAt)
+    || !isText(value.expiresAt)
+    || (value.completedAt !== undefined && !isText(value.completedAt))
+  ) return null
+  const exerciseTypes = value.exerciseTypes.filter(
+    (entry): entry is StudyExerciseType => entry === 'self-rating' || entry === 'meaning-choice',
+  )
+  const queue = value.queue.map(parseStudyRoundTask)
+  const stringArrays = [
+    value.wordIds,
+    value.passedTaskKeys,
+    value.completedWordIds,
+    value.vagueWordIds,
+    value.unknownWordIds,
+    value.processedOperationIds,
+  ]
+  if (
+    exerciseTypes.length < 1
+    || exerciseTypes.length !== value.exerciseTypes.length
+    || new Set(exerciseTypes).size !== exerciseTypes.length
+    || queue.some((task) => task === null)
+    || stringArrays.some((array) => !array.every(isText))
+  ) return null
+  return {
+    id: value.id,
+    wordbookId: value.wordbookId,
+    mode: value.mode,
+    scope: value.scope,
+    meaningPreference: value.meaningPreference,
+    exerciseTypes,
+    wordIds: value.wordIds as string[],
+    queue: queue as StudyRoundTask[],
+    passedTaskKeys: value.passedTaskKeys as string[],
+    completedWordIds: value.completedWordIds as string[],
+    vagueWordIds: value.vagueWordIds as string[],
+    unknownWordIds: value.unknownWordIds as string[],
+    processedOperationIds: value.processedOperationIds as string[],
+    revision: value.revision,
+    createdAt: value.createdAt,
+    updatedAt: value.updatedAt,
+    expiresAt: value.expiresAt,
+    completedAt: value.completedAt,
+  }
+}
+
+function parseStudyRoundStart(value: unknown): { round: StudyRound; resumed: boolean } | null {
+  if (!isRecord(value) || typeof value.resumed !== 'boolean') return null
+  const round = parseStudyRound(value.round)
+  return round ? { round, resumed: value.resumed } : null
+}
+
+function parseStudyRoundTaskOptions(value: unknown): StudyRoundTaskOptions | null {
+  if (!isRecord(value) || !isText(value.taskId) || !isText(value.wordId) || !Array.isArray(value.options)) return null
+  const options = value.options.map((option): StudyChoiceOption | null => (
+    isRecord(option)
+      && isText(option.wordId)
+      && isText(option.word)
+      && isText(option.pos)
+      && isText(option.definition)
+      ? { wordId: option.wordId, word: option.word, pos: option.pos, definition: option.definition }
+      : null
+  ))
+  return options.some((option) => option === null)
+    ? null
+    : { taskId: value.taskId, wordId: value.wordId, options: options as StudyChoiceOption[] }
 }
 
 function parseImportStatus(value: unknown): ImportDraftStatus | null {
@@ -570,6 +776,45 @@ export class WorkspaceApi {
     )
   }
   getDashboard(id: string) { return this.json(`api/study/dashboard/${encodeURIComponent(id)}`, {}, parseDashboard) }
+  startStudyRound(wordbookId: string, mode: StudyRoundMode, scope: StudyRoundScope = 'standard') {
+    return this.json(
+      'api/study/rounds',
+      { method: 'POST', body: JSON.stringify({ wordbookId, mode, scope }) },
+      parseStudyRoundStart,
+    )
+  }
+  getStudyRound(id: string) {
+    return this.json(`api/study/rounds/${encodeURIComponent(id)}`, {}, parseStudyRound)
+  }
+  getStudyRoundTaskOptions(id: string, taskId: string, meaningPreference: MeaningPreference) {
+    return this.json(
+      `api/study/rounds/${encodeURIComponent(id)}/tasks/${encodeURIComponent(taskId)}/options?meaningPreference=${meaningPreference}`,
+      {},
+      parseStudyRoundTaskOptions,
+    )
+  }
+  rotateStudyRound(id: string, revision: number) {
+    return this.json(
+      `api/study/rounds/${encodeURIComponent(id)}/rotate`,
+      { method: 'POST', body: JSON.stringify({ revision }) },
+      parseStudyRound,
+    )
+  }
+  answerStudyRound(
+    id: string,
+    input: {
+      taskId: string
+      response: LearningVerdict | 'correct' | 'incorrect'
+      operationId: string
+      revision: number
+    },
+  ) {
+    return this.json(
+      `api/study/rounds/${encodeURIComponent(id)}/answers`,
+      { method: 'POST', body: JSON.stringify(input) },
+      parseStudyRound,
+    )
+  }
   recordStudyEvent(event: LearningEvent) { return this.json('api/study/events', { method: 'POST', body: JSON.stringify(event) }, (value) => value) }
   /** Adds one word to a wordbook; the backend supplements dictionary data. 200 means it was already there. */
   async addWordToWordbook(wordbookId: string, input: { word: string; zhMeaning?: string }) {

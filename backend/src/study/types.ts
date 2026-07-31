@@ -56,10 +56,11 @@ export interface MyWordbookCard {
 /** Proficiency ladder: 0 未学习 / 1 初识 / 2 熟悉 / 3 掌握 / 4 精通. */
 export type WordLevel = 0 | 1 | 2 | 3 | 4;
 export const LEVEL_NAMES: Record<WordLevel, string> = { 0: "未学习", 1: "初识", 2: "熟悉", 3: "掌握", 4: "精通" };
+export type LearningVerdict = "know" | "vague" | "unknown";
 
 export type LearningEventInput =
-  | { kind: "new"; wordbookId: string; word?: string; wordId?: string; verdict?: "know" | "unknown" }
-  | { kind: "flashcard"; wordbookId: string; word?: string; wordId?: string; verdict: "know" | "unknown" }
+  | { kind: "new"; wordbookId: string; word?: string; wordId?: string; verdict?: LearningVerdict }
+  | { kind: "flashcard"; wordbookId: string; word?: string; wordId?: string; verdict: LearningVerdict }
   | { kind: "dictation"; wordbookId: string; word?: string; wordId?: string; correct: boolean }
   | { kind: "mark"; wordbookId: string; word?: string; wordId?: string; level: WordLevel };
 export interface RetainedReviewState {
@@ -71,8 +72,8 @@ export interface RetainedReviewState {
   relearning: boolean;
 }
 export type LearningEvent =
-  | ({ kind: "new"; wordbookId: string; word: string; wordId: string; verdict?: "know" | "unknown"; id: string; occurredAt: string })
-  | ({ kind: "flashcard"; wordbookId: string; word: string; wordId: string; verdict: "know" | "unknown"; id: string; occurredAt: string })
+  | ({ kind: "new"; wordbookId: string; word: string; wordId: string; verdict?: LearningVerdict; id: string; occurredAt: string })
+  | ({ kind: "flashcard"; wordbookId: string; word: string; wordId: string; verdict: LearningVerdict; id: string; occurredAt: string })
   | ({ kind: "dictation"; wordbookId: string; word: string; wordId: string; correct: boolean; id: string; occurredAt: string })
   | ({
       kind: "mark"; wordbookId: string; word: string; wordId: string; level: WordLevel; id: string; occurredAt: string;
@@ -98,20 +99,25 @@ export interface StudyDisplayPreferences {
   showPhonetic: boolean;
   autoPlayAudio: boolean;
 }
+export type StudyExerciseType = "self-rating" | "meaning-choice";
+export interface FlashcardDisplayPreferences extends StudyDisplayPreferences {
+  /** At least one exercise is enabled. When both are selected, every word must pass both. */
+  exerciseTypes: StudyExerciseType[];
+}
 export interface DictationDisplayPreferences extends StudyDisplayPreferences {
   underlineMistakes: boolean;
   showMeaning: boolean;
   showCharacterMask: boolean;
 }
 export interface WordbookStudyPreferences {
-  plan: { newWords: number; dictation: number };
+  plan: { newWords: number; dictation: number; backlogReviews: number };
   modes: {
-    new: StudyDisplayPreferences;
-    review: StudyDisplayPreferences;
+    new: FlashcardDisplayPreferences;
+    review: FlashcardDisplayPreferences;
     dictation: DictationDisplayPreferences;
   };
 }
-export type StudyShortcutAction = "unknown" | "pronounce" | "known" | "flip" | "dictationPronounce";
+export type StudyShortcutAction = "unknown" | "vague" | "pronounce" | "known" | "flip" | "dictationPronounce";
 export type StudyShortcutPreferences = Record<StudyShortcutAction, string>;
 export interface PronunciationPreferences { accent: "gb" | "us"; }
 /** Account/client-wide settings shared by every wordbook and browser. */
@@ -154,10 +160,70 @@ export interface StudyDashboard {
   calendar: Array<{ date: string; count: number; active: boolean }>;
   week: { newCount: number; reviewCount: number; dictationCount: number; total: number };
   streakDays: number;
+  /** Due reviews are split so stale backlog cannot crowd out time-sensitive early consolidation. */
+  reviewBreakdown: { protected: number; regular: number; backlog: number; scheduled: number };
+  /** Live 24-hour snapshots let another device offer an exact resume entry point. */
+  activeRounds: Array<{ id: string; mode: StudyRoundMode; scope: StudyRoundScope; remainingWords: number; updatedAt: string }>;
   /** Due L3 words whose next successful dictation can complete the final proficiency step. */
   finalCheckDue: number;
   updatedAt: string;
 }
+
+export type StudyRoundMode = "new" | "review";
+export type StudyRoundScope = "standard" | "backlog" | "ahead";
+export interface StudyRoundTask {
+  id: string;
+  wordId: string;
+  exercise: StudyExerciseType;
+}
+/** Durable in-progress queue shared by all devices signed into the same account. */
+export interface StudyRound {
+  id: string;
+  wordbookId: string;
+  mode: StudyRoundMode;
+  scope: StudyRoundScope;
+  meaningPreference: MeaningPreference;
+  exerciseTypes: StudyExerciseType[];
+  wordIds: string[];
+  queue: StudyRoundTask[];
+  passedTaskKeys: string[];
+  completedWordIds: string[];
+  vagueWordIds: string[];
+  unknownWordIds: string[];
+  processedOperationIds: string[];
+  revision: number;
+  createdAt: string;
+  updatedAt: string;
+  expiresAt: string;
+  completedAt?: string;
+}
+export interface StartStudyRoundInput {
+  wordbookId: string;
+  mode: StudyRoundMode;
+  scope?: StudyRoundScope;
+}
+export interface StudyRoundAnswerInput {
+  taskId: string;
+  response: LearningVerdict | "correct" | "incorrect";
+  operationId: string;
+  revision: number;
+}
+export interface StudyChoiceOption {
+  /** The source word is revealed only after the learner chooses an option. */
+  wordId: string;
+  word: string;
+  pos: string;
+  definition: string;
+}
+export interface StudyRoundTaskOptions {
+  taskId: string;
+  wordId: string;
+  options: StudyChoiceOption[];
+}
+export type StudyRoundMutationResult =
+  | { kind: "updated"; round: StudyRound }
+  | { kind: "not-found" }
+  | { kind: "conflict"; round: StudyRound };
 
 export interface CatalogQuery { q?: string; exam?: CatalogExam; goal?: LearningGoal; sort?: CatalogSort; }
 export interface CreateMyWordbookInput { title: string; description?: string; category?: string; words?: StudyWordEntry[]; }
@@ -278,6 +344,16 @@ export interface StudyStore {
   getImportDraft(clientId: string, id: string): Promise<ImportDraft | null>;
   deleteImportDraft(clientId: string, id: string): Promise<boolean>;
   commitImportDraft(clientId: string, id: string, input: CommitImportDraftInput): Promise<MyWordbookCard | null>;
+  startStudyRound(clientId: string, input: StartStudyRoundInput): Promise<{ round: StudyRound; resumed: boolean } | null>;
+  getStudyRound(clientId: string, id: string): Promise<StudyRound | null>;
+  getStudyRoundTaskOptions(
+    clientId: string,
+    id: string,
+    taskId: string,
+    meaningPreference?: MeaningPreference,
+  ): Promise<StudyRoundTaskOptions | null>;
+  rotateStudyRound(clientId: string, id: string, revision: number): Promise<StudyRoundMutationResult>;
+  answerStudyRound(clientId: string, id: string, input: StudyRoundAnswerInput): Promise<StudyRoundMutationResult>;
   recordEvent(clientId: string, input: LearningEventInput): Promise<LearningEvent | null>;
   getDashboard(clientId: string, id: string): Promise<StudyDashboard | null>;
 }
