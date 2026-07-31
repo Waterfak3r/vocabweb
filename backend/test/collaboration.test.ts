@@ -4,6 +4,7 @@ import {
   catalogDiffStats,
   diffCatalogWords,
   inverseRevisionAgainstHead,
+  sameCatalogWord,
   threeWayContribution,
 } from "../src/study/collaboration.js";
 import { migrate } from "../src/study/ladder.js";
@@ -76,6 +77,28 @@ test("word diffs are canonical, treat renames as delete plus add, and compute th
     updates: 1,
     changedWords: 3,
   });
+});
+
+test("word diffs ignore internal dictionary provenance metadata", () => {
+  const before = entry("alpha", "甲");
+  const imported: StudyWordEntry = {
+    ...before,
+    source: "backend",
+    zhMeaningSource: "dictionary",
+  };
+
+  assert.equal(sameCatalogWord(before, imported), true);
+  assert.deepEqual(diffCatalogWords([before], [imported]), []);
+  assert.deepEqual(threeWayContribution([before], [imported], [before]), {
+    changes: [],
+    overlaps: [],
+  });
+
+  const meaningful = diffCatalogWords([before], [{ ...imported, zhMeaning: "新的甲" }]);
+  assert.deepEqual(meaningful.map((change) => [change.kind, change.key]), [["update", "alpha"]]);
+  assert.deepEqual(catalogDiffStats([
+    { kind: "update", key: "alpha", before, after: imported },
+  ]), { additions: 0, deletions: 0, updates: 0, changedWords: 0 });
 });
 
 test("a full contribution merge preserves same-spelling progress and revert creates an inverse version", async () => {
@@ -263,4 +286,3 @@ test("inverse revision reports later edits as conflicts", () => {
   assert.equal(result.changes.length, 0);
   assert.deepEqual(result.conflicts.map((conflict) => conflict.key), ["alpha"]);
 });
-

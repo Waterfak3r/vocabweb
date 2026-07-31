@@ -29,7 +29,6 @@ function fieldsOf(entry: WordEntry): Array<{ key: string; label: string; value: 
     { key: 'zhMeaning', label: '中文释义', value: display(entry.zhMeaning) },
     { key: 'meanings', label: '英文释义', value: meaningsText(entry) },
     { key: 'audioUrl', label: '发音地址', value: display(entry.audioUrl) },
-    { key: 'source', label: '内容来源', value: display(entry.source) },
   ]
 }
 
@@ -45,10 +44,17 @@ export function changedCatalogFields(before: WordEntry, after: WordEntry): DiffF
 }
 
 export function diffStats(changes: CatalogWordChange[]): CatalogDiffStats {
-  const additions = changes.filter((change) => change.kind === 'add').length
-  const deletions = changes.filter((change) => change.kind === 'delete').length
-  const updates = changes.filter((change) => change.kind === 'update').length
-  return { additions, deletions, updates, changedWords: changes.length }
+  const visible = visibleCatalogChanges(changes)
+  const additions = visible.filter((change) => change.kind === 'add').length
+  const deletions = visible.filter((change) => change.kind === 'delete').length
+  const updates = visible.filter((change) => change.kind === 'update').length
+  return { additions, deletions, updates, changedWords: visible.length }
+}
+
+function visibleCatalogChanges(changes: CatalogWordChange[]): CatalogWordChange[] {
+  return changes.filter((change) => (
+    change.kind !== 'update' || changedCatalogFields(change.before, change.after).length > 0
+  ))
 }
 
 function EntryFields({ entry }: { entry: WordEntry }) {
@@ -139,8 +145,9 @@ export function CatalogDiff({
   changes: CatalogWordChange[]
   emptyMessage?: string
 }) {
-  const stats = diffStats(changes)
-  if (!changes.length) return <p className="catalog-diff-empty">{emptyMessage}</p>
+  const visibleChanges = visibleCatalogChanges(changes)
+  const stats = diffStats(visibleChanges)
+  if (!visibleChanges.length) return <p className="catalog-diff-empty">{emptyMessage}</p>
   return (
     <section className="catalog-diff" aria-label="词条变化">
       <p className="catalog-diff-summary" aria-label={`新增 ${stats.additions}，删除 ${stats.deletions}，修改 ${stats.updates}`}>
@@ -149,7 +156,7 @@ export function CatalogDiff({
         <span>{stats.updates} 项修改</span>
       </p>
       <div className="catalog-diff-list">
-        {changes.map((change, index) => <ChangeItem change={change} key={`${change.kind}:${change.key}:${index}`} />)}
+        {visibleChanges.map((change, index) => <ChangeItem change={change} key={`${change.kind}:${change.key}:${index}`} />)}
       </div>
     </section>
   )

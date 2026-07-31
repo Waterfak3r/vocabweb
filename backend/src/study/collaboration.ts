@@ -29,7 +29,24 @@ function canonicalEntry(entry: StudyWordEntry): StudyWordEntry {
 
 export function sameCatalogWord(left: StudyWordEntry | undefined, right: StudyWordEntry | undefined): boolean {
   if (!left || !right) return left === right;
-  return JSON.stringify(canonicalEntry(left)) === JSON.stringify(canonicalEntry(right));
+  const content = (entry: StudyWordEntry) => {
+    const normalized = canonicalEntry(entry);
+    return {
+      word: normalized.word,
+      phonetic: normalized.phonetic,
+      ...(normalized.audioUrl ? { audioUrl: normalized.audioUrl } : {}),
+      meanings: normalized.meanings,
+      ...(normalized.zhMeaning ? { zhMeaning: normalized.zhMeaning } : {}),
+    };
+  };
+  return JSON.stringify(content(left)) === JSON.stringify(content(right));
+}
+
+/** Internal dictionary provenance is metadata, not a public wordbook change. */
+export function meaningfulCatalogChanges(changes: CatalogWordChange[]): CatalogWordChange[] {
+  return changes.filter((change) => (
+    change.kind !== "update" || !sameCatalogWord(change.before, change.after)
+  ));
 }
 
 function wordMap(words: StudyWordEntry[]): Map<string, StudyWordEntry> {
@@ -40,10 +57,11 @@ function wordMap(words: StudyWordEntry[]): Map<string, StudyWordEntry> {
 }
 
 export function catalogDiffStats(changes: CatalogWordChange[]): CatalogDiffStats {
-  const additions = changes.filter((change) => change.kind === "add").length;
-  const deletions = changes.filter((change) => change.kind === "delete").length;
-  const updates = changes.filter((change) => change.kind === "update").length;
-  return { additions, deletions, updates, changedWords: changes.length };
+  const meaningful = meaningfulCatalogChanges(changes);
+  const additions = meaningful.filter((change) => change.kind === "add").length;
+  const deletions = meaningful.filter((change) => change.kind === "delete").length;
+  const updates = meaningful.filter((change) => change.kind === "update").length;
+  return { additions, deletions, updates, changedWords: meaningful.length };
 }
 
 /** A deterministic, immutable word-level diff. Renames naturally become delete + add. */
@@ -134,7 +152,8 @@ export function validateContributionMerge(
 ): { changes: CatalogWordChange[]; conflicts: CatalogConflict[] } {
   const current = wordMap(head);
   const conflicts: CatalogConflict[] = [];
-  for (const change of changes) {
+  const meaningful = meaningfulCatalogChanges(changes);
+  for (const change of meaningful) {
     const currentValue = current.get(change.key);
     const expected = change.kind === "add" ? undefined : change.before;
     if (!sameCatalogWord(currentValue, expected)) {
@@ -147,7 +166,7 @@ export function validateContributionMerge(
       });
     }
   }
-  return { changes: clone(changes), conflicts };
+  return { changes: clone(meaningful), conflicts };
 }
 
 export function inverseRevisionAgainstHead(
@@ -219,4 +238,3 @@ export function inverseRevisionAgainstHead(
     alreadyReverted: alreadyReverted && conflicts.length === 0,
   };
 }
-

@@ -38,6 +38,8 @@ describe('CatalogDiff shared review semantics', () => {
     const after = entry({
       phonetic: '/ˈælfə/',
       meanings: [{ pos: 'noun', definition: 'the first item' }],
+      source: 'backend',
+      zhMeaningSource: 'dictionary',
     })
     expect(changedCatalogFields(before, after).map((field) => field.key)).toEqual(['phonetic', 'meanings'])
     const markup = renderToStaticMarkup(createElement(CatalogDiff, {
@@ -50,5 +52,22 @@ describe('CatalogDiff shared review semantics', () => {
     expect(markup).toContain('- 旧值')
     expect(markup).toContain('+ 新值')
   })
-})
 
+  it('never exposes provenance metadata or counts metadata-only updates', () => {
+    const before = entry()
+    const after = entry({ source: 'backend', zhMeaningSource: 'dictionary' })
+    const metadataOnly: CatalogWordChange[] = [{ kind: 'update', key: 'alpha', before, after }]
+
+    expect(changedCatalogFields(before, after)).toEqual([])
+    expect(diffStats(metadataOnly)).toEqual({ additions: 0, deletions: 0, updates: 0, changedWords: 0 })
+    const updateMarkup = renderToStaticMarkup(createElement(CatalogDiff, { changes: metadataOnly }))
+    expect(updateMarkup).toContain('没有词条变化。')
+    expect(updateMarkup).not.toContain('内容来源')
+
+    const addMarkup = renderToStaticMarkup(createElement(CatalogDiff, {
+      changes: [{ kind: 'add', key: 'alpha', after }],
+    }))
+    expect(addMarkup).not.toContain('内容来源')
+    expect(addMarkup).not.toContain('backend')
+  })
+})

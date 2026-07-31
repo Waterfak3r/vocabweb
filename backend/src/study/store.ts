@@ -9,6 +9,7 @@ import {
   catalogDiffStats,
   diffCatalogWords,
   inverseRevisionAgainstHead,
+  meaningfulCatalogChanges,
   sameCatalogWord,
   threeWayContribution,
   validateContributionMerge,
@@ -761,6 +762,7 @@ export abstract class BaseStore implements StudyStore {
         return { kind: "stale", headRevisionId: catalog.headRevisionId };
       }
       const validated = validateContributionMerge(catalog.words, contribution.changes);
+      if (!validated.changes.length) return { kind: "empty" };
       const ownerClient = this.client(state, clientId);
       const source = ownerClient.wordbooks.find(
         (book) => book.id === catalog.sourceWordbookId && !book.deletedAt,
@@ -1700,8 +1702,11 @@ export abstract class BaseStore implements StudyStore {
     userId: string | undefined,
   ): CatalogContributionView {
     const owner = catalog.authorUserId === userId;
+    const changes = meaningfulCatalogChanges(contribution.changes);
     return {
       ...clone(contribution),
+      changes: clone(changes),
+      stats: catalogDiffStats(changes),
       catalogTitle: catalog.title,
       canMerge: contribution.status === "open" && owner,
       canClose: contribution.status === "open"
@@ -1715,8 +1720,11 @@ export abstract class BaseStore implements StudyStore {
     revision: CatalogRevision,
     userId: string | undefined,
   ): CatalogRevisionView {
+    const changes = meaningfulCatalogChanges(revision.changes);
     return {
       ...clone(revision),
+      changes: clone(changes),
+      stats: catalogDiffStats(changes),
       catalogTitle: catalog.title,
       canRevert: catalog.authorUserId === userId && this.collaborationEnabled(state, catalog),
     };

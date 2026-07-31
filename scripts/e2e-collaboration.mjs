@@ -219,6 +219,7 @@ async function main() {
     await directSubmit.click();
     const submitDialog = contributor.getByRole("dialog", { name: "提交改进" });
     await submitDialog.getByText("± 修改").waitFor();
+    assert.equal(await submitDialog.getByText("内容来源", { exact: true }).count(), 0);
     assert.equal(contributor.url(), contributionUrl);
     await submitDialog.getByLabel("建议标题").fill("完善 alpha 中文释义");
     await submitDialog.getByLabel("补充说明").fill("补充更准确的学习释义。");
