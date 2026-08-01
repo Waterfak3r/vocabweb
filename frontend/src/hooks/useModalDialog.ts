@@ -14,6 +14,7 @@ type ModalDialogOptions = {
   open: boolean
   onClose: () => void
   canClose?: boolean
+  returnFocus?: HTMLElement | null
 }
 
 function focusableElements(dialog: HTMLElement): HTMLElement[] {
@@ -26,7 +27,7 @@ function focusableElements(dialog: HTMLElement): HTMLElement[] {
 }
 
 /** Shared keyboard, scroll-lock, initial-focus and focus-return behavior for modal dialogs. */
-export function useModalDialog<T extends HTMLElement>({ open, onClose, canClose = true }: ModalDialogOptions): RefObject<T | null> {
+export function useModalDialog<T extends HTMLElement>({ open, onClose, canClose = true, returnFocus }: ModalDialogOptions): RefObject<T | null> {
   const dialogRef = useRef<T>(null)
   const returnFocusRef = useRef<HTMLElement | null>(null)
   const onCloseRef = useRef(onClose)
@@ -40,9 +41,11 @@ export function useModalDialog<T extends HTMLElement>({ open, onClose, canClose 
     const dialog = dialogRef.current
     if (!dialog) return
     const activeElement = document.activeElement
-    returnFocusRef.current = activeElement instanceof HTMLElement && !dialog.contains(activeElement)
-      ? activeElement
-      : null
+    returnFocusRef.current = returnFocus ?? (
+      activeElement instanceof HTMLElement && !dialog.contains(activeElement)
+        ? activeElement
+        : null
+    )
 
     const previousOverflow = document.body.style.overflow
     document.body.style.overflow = 'hidden'

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Link, useNavigate, useParams } from 'react-router'
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router'
 import { CatalogDiff } from '../components/marketplace/CatalogDiff'
 import { Button } from '../components/ui/Button'
 import { EmptyState } from '../components/ui/EmptyState'
@@ -10,6 +10,7 @@ import {
   type RevertPreview,
 } from '../data/workspaceApi'
 import { useDocumentTitle } from '../hooks/useDocumentTitle'
+import { useModalDialog } from '../hooks/useModalDialog'
 
 const KIND: Record<CatalogRevision['kind'], string> = {
   initial: '首次发布',
@@ -29,6 +30,12 @@ function revertError(error: unknown): string {
 
 export function RevisionDetailPage() {
   const { id = '', revisionId = '' } = useParams()
+  const [searchParams] = useSearchParams()
+  const marketplaceFrom = (searchParams.get('from') ?? '').slice(0, 2_000)
+  const detailParams = new URLSearchParams({ tab: 'revisions' })
+  if (marketplaceFrom) detailParams.set('from', marketplaceFrom)
+  const revisionListHref = `/marketplace/${id}?${detailParams.toString()}`
+  const nestedSearch = marketplaceFrom ? `?${new URLSearchParams({ from: marketplaceFrom }).toString()}` : ''
   const navigate = useNavigate()
   const api = getWorkspaceApi()
   const [revision, setRevision] = useState<CatalogRevision | null>(null)
@@ -38,6 +45,11 @@ export function RevisionDetailPage() {
   const [submitting, setSubmitting] = useState(false)
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
+  const revertDialogRef = useModalDialog<HTMLElement>({
+    open: preview !== null,
+    onClose: () => setPreview(null),
+    canClose: !submitting,
+  })
   useDocumentTitle(revision ? `${revision.message} · 版本记录` : '版本记录')
 
   useEffect(() => {
@@ -83,7 +95,7 @@ export function RevisionDetailPage() {
         expectedHeadRevisionId: preview.headRevisionId,
         ...(message.trim() ? { message: message.trim() } : {}),
       })
-      navigate(`/marketplace/${id}/revisions/${created.id}`)
+      navigate(`/marketplace/${id}/revisions/${created.id}${nestedSearch}`)
     } catch (caught) {
       setError(revertError(caught))
       setPreview(null)
@@ -93,11 +105,11 @@ export function RevisionDetailPage() {
   }
 
   if (loading) return <section className="market-detail-state"><EmptyState title="正在加载版本" body="正在读取不可变差异和版本关系。" /></section>
-  if (!revision) return <section className="market-detail-state"><EmptyState title="无法打开版本" body={error} action={<Link to={`/marketplace/${id}?tab=revisions`}>返回版本记录</Link>} /></section>
+  if (!revision) return <section className="market-detail-state"><EmptyState title="无法打开版本" body={error} action={<Link to={revisionListHref}>返回版本记录</Link>} /></section>
 
   return (
     <article className="collab-detail-page">
-      <Link className="market-detail-back" to={`/marketplace/${id}?tab=revisions`}>← 返回版本记录</Link>
+      <Link className="market-detail-back" to={revisionListHref}>← 返回版本记录</Link>
       <header className="collab-detail-hero">
         <div>
           <p className="marginal">{KIND[revision.kind]} · {revision.catalogTitle}</p>
@@ -114,8 +126,8 @@ export function RevisionDetailPage() {
       {error && <p className="collab-error" role="alert">{error}</p>}
 
       <div className="collab-version-links">
-        {revision.contributionId && <Link to={`/marketplace/${id}/contributions/${revision.contributionId}`}>查看关联建议</Link>}
-        {revision.revertsRevisionId && <Link to={`/marketplace/${id}/revisions/${revision.revertsRevisionId}`}>查看被回滚版本</Link>}
+        {revision.contributionId && <Link to={`/marketplace/${id}/contributions/${revision.contributionId}${nestedSearch}`}>查看关联建议</Link>}
+        {revision.revertsRevisionId && <Link to={`/marketplace/${id}/revisions/${revision.revertsRevisionId}${nestedSearch}`}>查看被回滚版本</Link>}
       </div>
 
       <section className="collab-detail-diff" aria-labelledby="revision-diff-title">
@@ -127,7 +139,7 @@ export function RevisionDetailPage() {
         <div className="collab-modal-backdrop" role="presentation" onMouseDown={(event) => {
           if (!submitting && event.target === event.currentTarget) setPreview(null)
         }}>
-          <section className="collab-modal" role="alertdialog" aria-modal="true" aria-labelledby="revert-preview-title">
+          <section ref={revertDialogRef} className="collab-modal" role="alertdialog" aria-modal="true" aria-labelledby="revert-preview-title" tabIndex={-1}>
             <header className="collab-modal__header">
               <div><p className="marginal">反向版本预览</p><h2 id="revert-preview-title">确认回滚此版本</h2></div>
               <button type="button" aria-label="关闭" disabled={submitting} onClick={() => setPreview(null)}>×</button>
@@ -152,4 +164,3 @@ export function RevisionDetailPage() {
     </article>
   )
 }
-

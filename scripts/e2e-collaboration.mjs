@@ -219,6 +219,11 @@ async function main() {
     await directSubmit.click();
     const submitDialog = contributor.getByRole("dialog", { name: "提交改进" });
     await submitDialog.getByText("± 修改").waitFor();
+    assert.equal(await contributor.evaluate(() => document.body.style.overflow), "hidden");
+    assert.equal(await submitDialog.evaluate((dialog) => dialog.contains(document.activeElement)), true);
+    await submitDialog.getByRole("button", { name: "关闭", exact: true }).focus();
+    await contributor.keyboard.press("Shift+Tab");
+    assert.equal(await submitDialog.evaluate((dialog) => dialog.contains(document.activeElement)), true);
     assert.equal(await submitDialog.getByText("内容来源", { exact: true }).count(), 0);
     assert.equal(contributor.url(), contributionUrl);
     await submitDialog.getByLabel("建议标题").fill("完善 alpha 中文释义");
@@ -226,6 +231,9 @@ async function main() {
     await capture(contributor, "01-submit-preview-light.png");
     await submitDialog.getByRole("button", { name: "提交给发布者" }).click();
     await contributor.getByRole("status").filter({ hasText: "已提交" }).waitFor();
+    await contributor.waitForFunction(() => document.activeElement?.textContent?.trim() === "从个人副本提交", null, { timeout: 2_000 });
+    assert.equal(await directSubmit.evaluate((trigger) => trigger === document.activeElement), true);
+    assert.notEqual(await contributor.evaluate(() => document.body.style.overflow), "hidden");
     const authored = await api(contributor, "/api/account/contributions?scope=authored&limit=20");
     const contribution = authored.items[0];
     assert(contribution?.id);
@@ -245,6 +253,11 @@ async function main() {
     await publisher.getByRole("button", { name: "回滚此版本" }).click();
     const revertDialog = publisher.getByRole("alertdialog", { name: "确认回滚此版本" });
     await revertDialog.getByText("反向版本预览").waitFor();
+    assert.equal(await publisher.evaluate(() => document.body.style.overflow), "hidden");
+    assert.equal(await revertDialog.evaluate((dialog) => dialog.contains(document.activeElement)), true);
+    await revertDialog.getByRole("button", { name: "关闭", exact: true }).focus();
+    await publisher.keyboard.press("Shift+Tab");
+    assert.equal(await revertDialog.evaluate((dialog) => dialog.contains(document.activeElement)), true);
     await capture(publisher, "03-revert-preview-dark.png");
     await revertDialog.getByRole("button", { name: "创建回滚版本" }).click();
     await publisher.getByText("回滚", { exact: false }).first().waitFor();

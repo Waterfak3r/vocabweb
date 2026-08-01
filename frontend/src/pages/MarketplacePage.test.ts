@@ -3,7 +3,10 @@ import {
   filterMarketplaceBooks,
   isSnapshotSourceLocked,
   marketplaceCatalogQuery,
+  marketplaceDetailHref,
   parseMarketplaceCollection,
+  readMarketplaceUrlState,
+  writeMarketplaceUrlState,
   type MarketplaceBook,
 } from './MarketplacePage'
 
@@ -45,6 +48,25 @@ describe('MarketplacePage catalog filtering', () => {
     expect(parseMarketplaceCollection('favorites')).toBe('favorites')
     expect(parseMarketplaceCollection('uploads')).toBe('uploads')
     expect(parseMarketplaceCollection('unknown')).toBe('all')
+  })
+
+  it('round-trips search, filters, sort and view through the URL and carries them into details', () => {
+    const state = {
+      query: 'academic writing',
+      category: '写作',
+      examFilters: ['IELTS', 'TOEFL'],
+      goalFilters: ['写作'],
+      sort: 'latest' as const,
+      view: 'list' as const,
+    }
+    const params = writeMarketplaceUrlState(new URLSearchParams('collection=favorites&focus=book-1'), state)
+    expect(readMarketplaceUrlState(params)).toEqual(state)
+    expect(params.get('collection')).toBe('favorites')
+    expect(params.get('focus')).toBe('book-1')
+
+    const detail = new URL(marketplaceDetailHref('book/1', params.toString()), 'https://example.test')
+    expect(detail.pathname).toBe('/marketplace/book%2F1')
+    expect(detail.searchParams.get('from')).toBe(params.toString())
   })
 
   it('narrows a single selection server-side but never lets multi-select OR get cropped', () => {

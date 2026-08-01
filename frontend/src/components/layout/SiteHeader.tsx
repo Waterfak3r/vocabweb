@@ -3,6 +3,7 @@ import { Link, NavLink, useLocation } from 'react-router'
 import { AuthDialog, type AuthMode } from '../account/AuthDialog'
 import { useAuth } from '../../hooks/useAuth'
 import { useTheme } from '../../hooks/useTheme'
+import { useModalDialog } from '../../hooks/useModalDialog'
 import { getEngagementApi } from '../../data/engagementApi'
 import { getWorkspaceApi } from '../../data/workspaceApi'
 
@@ -86,6 +87,12 @@ export function SiteHeader() {
   const { theme, toggleTheme } = useTheme()
   const { pathname } = useLocation()
   const engagementApi = getEngagementApi()
+  const donationSettingsDialogRef = useModalDialog<HTMLElement>({
+    open: donationSettingsOpen,
+    onClose: () => setDonationSettingsOpen(false),
+    canClose: !donationSaving,
+    returnFocus: accountTriggerRef.current,
+  })
 
   useLayoutEffect(() => {
     const navigation = mainNavRef.current
@@ -433,7 +440,7 @@ export function SiteHeader() {
       )}
       {donationSettingsOpen && (
         <div className="donation-settings-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !donationSaving) setDonationSettingsOpen(false) }}>
-          <section className="donation-settings-dialog" role="dialog" aria-modal="true" aria-labelledby="donation-settings-title">
+          <section ref={donationSettingsDialogRef} className="donation-settings-dialog" role="dialog" aria-modal="true" aria-labelledby="donation-settings-title" tabIndex={-1}>
             <header><div><p>管理员设置</p><h2 id="donation-settings-title">配置打赏码</h2></div><button type="button" aria-label="关闭" disabled={donationSaving} onClick={() => setDonationSettingsOpen(false)}>×</button></header>
             <label>站内图片路径<input value={donationDraft.startsWith('data:') ? '' : donationDraft} onChange={(event) => setDonationDraft(event.target.value)} placeholder="/images/reward.png" /></label>
             <div className="donation-settings-divider"><span>或</span></div>

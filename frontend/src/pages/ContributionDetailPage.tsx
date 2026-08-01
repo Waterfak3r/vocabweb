@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Link, useParams } from 'react-router'
+import { Link, useParams, useSearchParams } from 'react-router'
 import { CatalogDiff } from '../components/marketplace/CatalogDiff'
 import { Button } from '../components/ui/Button'
 import { EmptyState } from '../components/ui/EmptyState'
@@ -27,6 +27,12 @@ function actionError(error: unknown): string {
 
 export function ContributionDetailPage() {
   const { id = '', contributionId = '' } = useParams()
+  const [searchParams] = useSearchParams()
+  const marketplaceFrom = (searchParams.get('from') ?? '').slice(0, 2_000)
+  const detailParams = new URLSearchParams({ tab: 'contributions' })
+  if (marketplaceFrom) detailParams.set('from', marketplaceFrom)
+  const contributionListHref = `/marketplace/${id}?${detailParams.toString()}`
+  const nestedSearch = marketplaceFrom ? `?${new URLSearchParams({ from: marketplaceFrom }).toString()}` : ''
   const api = getWorkspaceApi()
   const [contribution, setContribution] = useState<CatalogContribution | null>(null)
   const [loading, setLoading] = useState(true)
@@ -88,11 +94,11 @@ export function ContributionDetailPage() {
   }
 
   if (loading) return <section className="market-detail-state"><EmptyState title="正在加载改进建议" body="正在读取提交说明和词条差异。" /></section>
-  if (!contribution) return <section className="market-detail-state"><EmptyState title="无法打开改进建议" body={error} action={<Link to={`/marketplace/${id}?tab=contributions`}>返回建议列表</Link>} /></section>
+  if (!contribution) return <section className="market-detail-state"><EmptyState title="无法打开改进建议" body={error} action={<Link to={contributionListHref}>返回建议列表</Link>} /></section>
 
   return (
     <article className="collab-detail-page">
-      <Link className="market-detail-back" to={`/marketplace/${id}?tab=contributions`}>← 返回改进建议</Link>
+      <Link className="market-detail-back" to={contributionListHref}>← 返回改进建议</Link>
       <header className="collab-detail-hero">
         <div>
           <p className="marginal">改进建议 · {contribution.catalogTitle}</p>
@@ -126,7 +132,7 @@ export function ContributionDetailPage() {
         <section className="collab-resolution">
           <strong>{STATUS[contribution.status]}</strong>
           <p>{contribution.handledBy ? `由 ${contribution.handledBy} 处理。` : '建议已处理。'} {contribution.resolutionNote}</p>
-          {contribution.mergedRevisionId && <Link to={`/marketplace/${id}/revisions/${contribution.mergedRevisionId}`}>查看合并版本</Link>}
+          {contribution.mergedRevisionId && <Link to={`/marketplace/${id}/revisions/${contribution.mergedRevisionId}${nestedSearch}`}>查看合并版本</Link>}
         </section>
       )}
 
@@ -140,4 +146,3 @@ export function ContributionDetailPage() {
     </article>
   )
 }
-

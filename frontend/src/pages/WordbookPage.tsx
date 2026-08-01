@@ -299,6 +299,10 @@ export function WordbookPage() {
   )
   const dashboardRequest = useRef(0)
   const studyRefreshTimer = useRef<number | null>(null)
+  const recycleDialogRef = useModalDialog<HTMLElement>({
+    open: recycleCandidate !== null,
+    onClose: () => setRecycleCandidate(null),
+  })
 
   useEffect(() => {
     if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return
@@ -432,13 +436,6 @@ export function WordbookPage() {
   }, [api])
 
   useEffect(() => { void refreshMyWordbooks() }, [refreshMyWordbooks])
-
-  useEffect(() => {
-    if (!recycleCandidate) return
-    const close = (event: KeyboardEvent) => { if (event.key === 'Escape') setRecycleCandidate(null) }
-    window.addEventListener('keydown', close)
-    return () => window.removeEventListener('keydown', close)
-  }, [recycleCandidate])
 
   const refreshSelectedBook = useCallback(async (requestedWordbookId?: string) => {
     const requestId = ++dashboardRequest.current
@@ -1088,7 +1085,7 @@ export function WordbookPage() {
         targetWords={importTargetId ? activeBook.entries.map((entry) => entry.word) : []}
       />
       {recycleCandidate && <div className="workspace-modal-backdrop" role="presentation" onMouseDown={() => setRecycleCandidate(null)}>
-        <section className="recycle-confirm-dialog" role="alertdialog" aria-modal="true" aria-labelledby="recycle-confirm-title" aria-describedby="recycle-confirm-body" onMouseDown={(event) => event.stopPropagation()}>
+        <section ref={recycleDialogRef} className="recycle-confirm-dialog" role="alertdialog" aria-modal="true" aria-labelledby="recycle-confirm-title" aria-describedby="recycle-confirm-body" tabIndex={-1} onMouseDown={(event) => event.stopPropagation()}>
           <h2 id="recycle-confirm-title">移入回收站？</h2>
           <p id="recycle-confirm-body">「{recycleCandidate.title}」将从学习词本中移除，之后仍可在回收站恢复。</p>
           <div><Button variant="secondary" autoFocus onClick={() => setRecycleCandidate(null)}>取消</Button><Button onClick={() => void confirmMoveToRecycle()}>确认移入</Button></div>
@@ -1263,18 +1260,6 @@ function StudySettingsDialog({
   const [scheduleDraft, setScheduleDraft] = useState<ReviewSchedule>(() => structuredClone(reviewSchedule))
   const [scheduleError, setScheduleError] = useState('')
   const [scheduleSaving, setScheduleSaving] = useState(false)
-  useEffect(() => {
-    const previousOverflow = document.body.style.overflow
-    document.body.style.overflow = 'hidden'
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', closeOnEscape)
-    return () => {
-      document.body.style.overflow = previousOverflow
-      window.removeEventListener('keydown', closeOnEscape)
-    }
-  }, [onClose])
 
   const titles: Record<SettingsSection, string> = {
     plan: '自定义学习计划',
@@ -1339,10 +1324,12 @@ function StudySettingsDialog({
     })
   }
   const modePreferences = section === 'plan' || section === 'pronunciation' || section === 'shortcuts' ? null : preferences.modes[section]
+  const requestClose = () => { if (!scheduleSaving) onClose() }
+  const dialogRef = useModalDialog<HTMLElement>({ open: true, onClose: requestClose, canClose: !scheduleSaving })
 
-  return <div className="workspace-modal-backdrop" role="presentation" onMouseDown={onClose}>
-    <section className="study-settings-dialog" role="dialog" aria-modal="true" aria-labelledby="study-settings-title" onMouseDown={(event) => event.stopPropagation()}>
-      <header><div><p className="marginal">{section === 'plan' ? '当前词本' : '学习体验'}</p><h2 id="study-settings-title">{titles[section]}</h2></div><button type="button" className="workspace-modal-close" aria-label="关闭设置" onClick={onClose}>×</button></header>
+  return <div className="workspace-modal-backdrop" role="presentation" onMouseDown={requestClose}>
+    <section ref={dialogRef} className="study-settings-dialog" role="dialog" aria-modal="true" aria-labelledby="study-settings-title" tabIndex={-1} onMouseDown={(event) => event.stopPropagation()}>
+      <header><div><p className="marginal">{section === 'plan' ? '当前词本' : '学习体验'}</p><h2 id="study-settings-title">{titles[section]}</h2></div><button type="button" className="workspace-modal-close" aria-label="关闭设置" disabled={scheduleSaving} onClick={requestClose}>×</button></header>
       {section === 'plan' ? <div className="study-plan-settings">
         <label><span><strong>每日新词</strong><small>计划学习的未学习单词数</small></span><input type="number" min="0" max="999" inputMode="numeric" value={preferences.plan.newWords} onChange={(event) => updatePlan('newWords', Number(event.target.value))} /><em>词</em></label>
         <label><span><strong>每日听写</strong><small>每轮听写抽取的单词数</small></span><input type="number" min="0" max="999" inputMode="numeric" value={preferences.plan.dictation} onChange={(event) => updatePlan('dictation', Number(event.target.value))} /><em>词</em></label>

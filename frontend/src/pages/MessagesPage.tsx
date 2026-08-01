@@ -55,7 +55,7 @@ export function MessagesPage() {
         try { localStorage.setItem('vocab-message-nickname-v1', guestName) } catch { /* Optional. */ }
       }
       await api.createMessage({ content: text, ...(!user ? { nickname: guestName } : {}), ...(contact.trim() ? { contact: contact.trim() } : {}), ...(replying ? { parentId: replying.id } : {}) })
-      setContent(''); setReplying(undefined)
+      setContent(''); setContact(''); setReplying(undefined)
       await load()
     } catch {
       setError('留言发布失败，可能操作过于频繁，请稍后重试。')

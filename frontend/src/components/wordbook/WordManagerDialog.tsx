@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import type { WordbookItem } from '../../domain/types'
 import type { BatchWordAction, BatchWordResult, WordLevel, WordStatus } from '../../data/workspaceApi'
+import { useModalDialog } from '../../hooks/useModalDialog'
 import './word-manager-dialog.css'
 
 export type EditableWordbookItem = WordbookItem & {
@@ -107,6 +108,7 @@ export function WordManagerDialog({
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set())
   const [batching, setBatching] = useState<BatchWordAction | null>(null)
   const [batchMessage, setBatchMessage] = useState('')
+  const dialogRef = useModalDialog<HTMLElement>({ open: true, onClose, canClose: !saving && !batching })
 
   const levelCounts = useMemo(
     () => WORD_LEVELS.map((level) => entries.filter((entry) => levelOf(entry) === level).length),
@@ -115,19 +117,6 @@ export function WordManagerDialog({
   const visibleIds = visible.map((entry) => entry.id)
   const selectedVisibleCount = visibleIds.filter((id) => selectedIds.has(id)).length
   const allVisibleSelected = visibleIds.length > 0 && selectedVisibleCount === visibleIds.length
-
-  useEffect(() => {
-    const previousOverflow = document.body.style.overflow
-    document.body.style.overflow = 'hidden'
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', closeOnEscape)
-    return () => {
-      document.body.style.overflow = previousOverflow
-      window.removeEventListener('keydown', closeOnEscape)
-    }
-  }, [onClose])
 
   // Key on the entry's content, not just its id: after a save the parent
   // refreshes entries (same id, rematched dictionary fields) and the form must
@@ -209,13 +198,13 @@ export function WordManagerDialog({
 
   return (
     <div className="workspace-modal-backdrop word-manager-backdrop" role="presentation">
-      <section className="word-manager-dialog" role="dialog" aria-modal="true" aria-labelledby="word-manager-title">
+      <section ref={dialogRef} className="word-manager-dialog" role="dialog" aria-modal="true" aria-labelledby="word-manager-title" tabIndex={-1}>
         <header>
           <div>
             <p>浏览词条</p>
             <h2 id="word-manager-title">{title}</h2>
           </div>
-          <button type="button" className="workspace-modal-close" aria-label="关闭" onClick={onClose}>×</button>
+          <button type="button" className="workspace-modal-close" aria-label="关闭" disabled={saving || Boolean(batching)} onClick={onClose}>×</button>
         </header>
         <div className="word-manager-layout">
           <aside>

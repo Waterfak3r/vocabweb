@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { getWorkspaceApi, WorkspaceApiError, type CatalogContribution, type ContributionPreview } from '../../data/workspaceApi'
+import { useModalDialog } from '../../hooks/useModalDialog'
 import { Button } from '../ui/Button'
 import { CatalogDiff } from './CatalogDiff'
 
@@ -18,10 +19,12 @@ export function ContributionSubmitDialog({
   wordbookId,
   onClose,
   onSubmitted,
+  returnFocus,
 }: {
   wordbookId: string
   onClose: () => void
   onSubmitted: (contribution: CatalogContribution) => void
+  returnFocus?: HTMLElement | null
 }) {
   const api = getWorkspaceApi()
   const titleRef = useRef<HTMLInputElement>(null)
@@ -32,6 +35,7 @@ export function ContributionSubmitDialog({
   const [loading, setLoading] = useState(true)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
+  const dialogRef = useModalDialog<HTMLElement>({ open: true, onClose, canClose: !submitting, returnFocus })
 
   useEffect(() => {
     if (!api) {
@@ -58,14 +62,6 @@ export function ContributionSubmitDialog({
       })
     return () => { active = false }
   }, [api, wordbookId])
-
-  useEffect(() => {
-    const close = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && !submitting) onClose()
-    }
-    window.addEventListener('keydown', close)
-    return () => window.removeEventListener('keydown', close)
-  }, [onClose, submitting])
 
   const valid = Boolean(
     preview
@@ -100,7 +96,7 @@ export function ContributionSubmitDialog({
     <div className="collab-modal-backdrop" role="presentation" onMouseDown={(event) => {
       if (!submitting && event.target === event.currentTarget) onClose()
     }}>
-      <section className="collab-modal" role="dialog" aria-modal="true" aria-labelledby="contribution-submit-title">
+      <section ref={dialogRef} className="collab-modal" role="dialog" aria-modal="true" aria-labelledby="contribution-submit-title" tabIndex={-1}>
         <header className="collab-modal__header">
           <div>
             <p className="marginal">协作建议</p>
@@ -168,4 +164,3 @@ export function ContributionSubmitDialog({
     </div>
   )
 }
-

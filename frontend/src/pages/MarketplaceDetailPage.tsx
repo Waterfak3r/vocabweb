@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router'
 import { Button } from '../components/ui/Button'
 import { EmptyState } from '../components/ui/EmptyState'
@@ -45,6 +45,7 @@ export function MarketplaceDetailPage() {
   const { id = '' } = useParams()
   const [searchParams, setSearchParams] = useSearchParams()
   const requestedTab = searchParams.get('tab')
+  const marketplaceFrom = (searchParams.get('from') ?? '').slice(0, 2_000)
   const activeTab: DetailTab = requestedTab === 'contributions' || requestedTab === 'revisions'
     ? requestedTab
     : 'words'
@@ -53,14 +54,18 @@ export function MarketplaceDetailPage() {
   const [book, setBook] = useState<CatalogDetail | null>(null)
   const [contributions, setContributions] = useState<CatalogContribution[]>([])
   const [revisions, setRevisions] = useState<CatalogRevision[]>([])
+  const [contributionsNextCursor, setContributionsNextCursor] = useState<string>()
+  const [revisionsNextCursor, setRevisionsNextCursor] = useState<string>()
   const [loading, setLoading] = useState(true)
   const [tabLoading, setTabLoading] = useState(false)
+  const [tabLoadingMore, setTabLoadingMore] = useState(false)
   const [error, setError] = useState('')
   const [tabError, setTabError] = useState('')
   const [query, setQuery] = useState('')
   const [message, setMessage] = useState('')
   const [preparingContribution, setPreparingContribution] = useState(false)
   const [contributionBookId, setContributionBookId] = useState<string | null>(null)
+  const contributionTriggerRef = useRef<HTMLElement | null>(null)
   useDocumentTitle(book?.title ? `${book.title} · 单词广场` : '词本概况')
 
   const load = async () => {
@@ -87,14 +92,26 @@ export function MarketplaceDetailPage() {
     if (!api || !id || activeTab === 'words') return
     let active = true
     setTabLoading(true)
+    setTabLoadingMore(false)
     setTabError('')
     const request = activeTab === 'contributions'
       ? api.listCatalogContributions(id).then((page) => {
-        if (active) setContributions(page.items)
+        if (!active) return
+        setContributions(page.items)
+        setContributionsNextCursor(page.nextCursor)
       })
       : api.listCatalogRevisions(id).then((page) => {
-        if (active) setRevisions(page.items)
+        if (!active) return
+        setRevisions(page.items)
+        setRevisionsNextCursor(page.nextCursor)
       })
+    if (activeTab === 'contributions') {
+      setContributions([])
+      setContributionsNextCursor(undefined)
+    } else {
+      setRevisions([])
+      setRevisionsNextCursor(undefined)
+    }
     void request.catch(() => {
       if (active) setTabError(activeTab === 'contributions' ? '改进建议暂时无法加载。' : '版本记录暂时无法加载。')
     }).finally(() => {
@@ -138,6 +155,7 @@ export function MarketplaceDetailPage() {
       setMessage('请先登录账号，再从个人副本提交改进。')
       return
     }
+    contributionTriggerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
     setPreparingContribution(true)
     setMessage('')
     try {
@@ -155,17 +173,46 @@ export function MarketplaceDetailPage() {
     }
   }
 
-  const selectTab = (tab: DetailTab) => {
-    if (tab === 'words') setSearchParams({}, { replace: true })
-    else setSearchParams({ tab }, { replace: true })
+  async function loadMoreHistory() {
+    if (!api || tabLoadingMore) return
+    const cursor = activeTab === 'contributions' ? contributionsNextCursor : revisionsNextCursor
+    if (!cursor || activeTab === 'words') return
+    setTabLoadingMore(true)
+    setTabError('')
+    try {
+      if (activeTab === 'contributions') {
+        const page = await api.listCatalogContributions(id, cursor)
+        setContributions((current) => [...current, ...page.items])
+        setContributionsNextCursor(page.nextCursor)
+      } else {
+        const page = await api.listCatalogRevisions(id, cursor)
+        setRevisions((current) => [...current, ...page.items])
+        setRevisionsNextCursor(page.nextCursor)
+      }
+    } catch {
+      setTabError(activeTab === 'contributions' ? '更多改进建议加载失败，请稍后重试。' : '更多版本记录加载失败，请稍后重试。')
+    } finally {
+      setTabLoadingMore(false)
+    }
   }
 
+  const selectTab = (tab: DetailTab) => {
+    const next = new URLSearchParams()
+    if (tab !== 'words') next.set('tab', tab)
+    if (marketplaceFrom) next.set('from', marketplaceFrom)
+    setSearchParams(next, { replace: true })
+  }
+
+  const canonicalMarketplaceSearch = marketplaceFrom ? new URLSearchParams(marketplaceFrom).toString() : ''
+  const marketplaceBackHref = canonicalMarketplaceSearch ? `/marketplace?${canonicalMarketplaceSearch}` : '/marketplace'
+  const nestedSearch = marketplaceFrom ? `?${new URLSearchParams({ from: marketplaceFrom }).toString()}` : ''
+
   if (loading) return <section className="market-detail-state"><EmptyState title="正在加载词本概况" body="正在读取作者和单词列表。" /></section>
-  if (!book) return <section className="market-detail-state"><EmptyState title="无法打开词本" body={error} action={<Link to="/marketplace">返回单词广场</Link>} /></section>
+  if (!book) return <section className="market-detail-state"><EmptyState title="无法打开词本" body={error} action={<Link to={marketplaceBackHref}>返回单词广场</Link>} /></section>
 
   return (
     <article className="market-detail-page">
-      <Link className="market-detail-back" to="/marketplace">← 返回单词广场</Link>
+      <Link className="market-detail-back" to={marketplaceBackHref}>← 返回单词广场</Link>
       <header className="market-detail-hero">
         <div>
           <p className="marginal">{book.exams.concat(book.goals).join(' · ') || '共享词本'}</p>
@@ -238,7 +285,7 @@ export function MarketplaceDetailPage() {
           )}
           <div className="market-collab-list">
             {contributions.map((contribution) => (
-              <Link key={contribution.id} to={`/marketplace/${book.id}/contributions/${contribution.id}`}>
+              <Link key={contribution.id} to={`/marketplace/${book.id}/contributions/${contribution.id}${nestedSearch}`}>
                 <span className={`collab-status collab-status--${contribution.status}`}>{CONTRIBUTION_STATUS[contribution.status]}</span>
                 <div>
                   <strong>{contribution.title}</strong>
@@ -248,6 +295,7 @@ export function MarketplaceDetailPage() {
               </Link>
             ))}
           </div>
+          {contributionsNextCursor && <div className="collab-load-more"><Button variant="secondary" disabled={tabLoadingMore} onClick={() => void loadMoreHistory()}>{tabLoadingMore ? '正在加载…' : '加载更多建议'}</Button></div>}
         </section>
       )}
 
@@ -258,7 +306,7 @@ export function MarketplaceDetailPage() {
           {tabError && <p className="collab-error" role="alert">{tabError}</p>}
           <div className="market-collab-list market-revision-list">
             {revisions.map((revision) => (
-              <Link key={revision.id} to={`/marketplace/${book.id}/revisions/${revision.id}`}>
+              <Link key={revision.id} to={`/marketplace/${book.id}/revisions/${revision.id}${nestedSearch}`}>
                 <span className={`revision-kind revision-kind--${revision.kind}`}>{REVISION_KIND[revision.kind]}</span>
                 <div>
                   <strong>{revision.message}</strong>
@@ -268,10 +316,12 @@ export function MarketplaceDetailPage() {
               </Link>
             ))}
           </div>
+          {revisionsNextCursor && <div className="collab-load-more"><Button variant="secondary" disabled={tabLoadingMore} onClick={() => void loadMoreHistory()}>{tabLoadingMore ? '正在加载…' : '加载更多版本'}</Button></div>}
         </section>
       )}
       {contributionBookId && <ContributionSubmitDialog
         wordbookId={contributionBookId}
+        returnFocus={contributionTriggerRef.current}
         onClose={() => setContributionBookId(null)}
         onSubmitted={(contribution) => {
           setContributionBookId(null)

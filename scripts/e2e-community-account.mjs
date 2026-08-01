@@ -344,7 +344,21 @@ async function main() {
     await owner.waitForTimeout(50);
     assert.equal(await studyTrigger.evaluate((trigger) => trigger === document.activeElement), true);
     assert.notEqual(await owner.evaluate(() => document.body.style.overflow), "hidden");
-    step("新建与学习弹窗均锁定焦点、页面滚动并恢复触发按钮");
+    const wordManagerTrigger = owner.getByRole("button", { name: "浏览词条", exact: true });
+    await wordManagerTrigger.click();
+    const wordManagerDialog = owner.getByRole("dialog", { name: targetBookTitle });
+    await wordManagerDialog.waitFor();
+    assert.equal(await owner.evaluate(() => document.body.style.overflow), "hidden");
+    assert.equal(await wordManagerDialog.evaluate((dialog) => dialog.contains(document.activeElement)), true);
+    await wordManagerDialog.getByRole("button", { name: "关闭", exact: true }).focus();
+    await owner.keyboard.press("Shift+Tab");
+    assert.equal(await wordManagerDialog.evaluate((dialog) => dialog.contains(document.activeElement)), true);
+    await owner.keyboard.press("Escape");
+    await wordManagerDialog.waitFor({ state: "hidden" });
+    await owner.waitForTimeout(50);
+    assert.equal(await wordManagerTrigger.evaluate((trigger) => trigger === document.activeElement), true);
+    assert.notEqual(await owner.evaluate(() => document.body.style.overflow), "hidden");
+    step("新建、学习与词条管理弹窗均锁定焦点、页面滚动并恢复触发按钮");
 
     const identityBeforeReset = await owner.evaluate(() => {
       localStorage.setItem("vocab-ielts:theme:v1", "dark");
@@ -366,6 +380,11 @@ async function main() {
     step("重置本机偏好保留匿名数据身份并仅清理应用偏好");
     await owner.setViewportSize({ width: 1280, height: 720 });
 
+    let marketplaceMeRequests = 0;
+    const countMarketplaceMe = (request) => {
+      if (new URL(request.url()).pathname === "/api/auth/me") marketplaceMeRequests += 1;
+    };
+    owner.on("request", countMarketplaceMe);
     await owner.goto("/marketplace");
     await owner.getByRole("heading", { name: "共享单词本广场" }).waitFor();
 
@@ -386,6 +405,28 @@ async function main() {
     }
     step("匿名空广场隐藏上传词库入口");
 
+    await guest.goto("/messages");
+    await guest.getByLabel("昵称").fill("匿名验收者");
+    const contactField = guest.getByLabel(/联系方式/);
+    await contactField.fill("private-contact@example.test");
+    await guest.getByLabel("留言内容").fill("第一条留言用于验证私密联系方式不会残留。");
+    const firstMessageRequest = guest.waitForRequest((request) => new URL(request.url()).pathname === "/api/messages" && request.method() === "POST");
+    await guest.getByRole("button", { name: "发布留言" }).click();
+    const firstMessagePayload = (await firstMessageRequest).postDataJSON();
+    assert.equal(firstMessagePayload.contact, "private-contact@example.test");
+    await guest.getByText("第一条留言用于验证私密联系方式不会残留。", { exact: true }).waitFor();
+    assert.equal(await contactField.inputValue(), "");
+    await guest.getByLabel("留言内容").fill("第二条留言不应再次携带上一条的联系方式。");
+    const secondMessageRequest = guest.waitForRequest((request) => new URL(request.url()).pathname === "/api/messages" && request.method() === "POST");
+    await guest.getByRole("button", { name: "发布留言" }).click();
+    const secondMessagePayload = (await secondMessageRequest).postDataJSON();
+    assert.equal(Object.hasOwn(secondMessagePayload, "contact"), false);
+    await guest.getByText("第二条留言不应再次携带上一条的联系方式。", { exact: true }).waitFor();
+    if (captureDir) await guest.screenshot({ path: join(captureDir, "messages-contact-cleared-mobile.png"), fullPage: true });
+    step("匿名留言成功后清空私密联系方式，后续留言不会误带旧值");
+    await guest.goto("/marketplace");
+    await guest.getByRole("heading", { name: "共享单词本广场" }).waitFor();
+
     await owner.getByRole("button", { name: "上传我的词库" }).waitFor();
     await publish(owner, "public", titles.public);
     await publish(owner, "unlisted", titles.unlisted);
@@ -398,7 +439,62 @@ async function main() {
     const privateUpload = uploads.find((book) => book.title === titles.private);
     assert.match(unlisted?.shareCode ?? "", /^[A-Z0-9]{24}$/);
     assert.match(privateUpload?.shareCode ?? "", /^[A-Z0-9]{24}$/);
+    assert.equal(marketplaceMeRequests, 1, `单词广场重复请求登录态：${marketplaceMeRequests}`);
+    owner.off("request", countMarketplaceMe);
+    step("单词广场与页头共用一次登录态判定");
     step("三档可见性均通过页面发布并保存正确");
+
+    const publicUpload = uploads.find((book) => book.title === titles.public);
+    assert(publicUpload?.id && publicUpload.sourceWordbookId && publicUpload.headRevisionId);
+    let revisionHead = publicUpload.headRevisionId;
+    for (let index = 1; index <= 21; index += 1) {
+      const updated = await api(owner, `/api/catalog/wordbooks/${publicUpload.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          sourceWordbookId: publicUpload.sourceWordbookId,
+          expectedHeadRevisionId: revisionHead,
+          description: `分页回归版本 ${index}`,
+          message: `分页回归版本 ${String(index).padStart(2, "0")}`,
+        }),
+      });
+      revisionHead = updated.headRevisionId;
+    }
+    await owner.goto(`/marketplace/${publicUpload.id}?tab=revisions`);
+    const revisionLinks = owner.locator(".market-revision-list > a");
+    await revisionLinks.first().waitFor();
+    assert.equal(await revisionLinks.count(), 20);
+    await owner.getByRole("button", { name: "加载更多版本" }).click();
+    await owner.waitForFunction(() => document.querySelectorAll(".market-revision-list > a").length === 22);
+    assert.equal(await revisionLinks.count(), 22);
+    if (captureDir) {
+      await owner.setViewportSize({ width: 390, height: 844 });
+      await owner.screenshot({ path: join(captureDir, "revision-pagination-mobile.png"), fullPage: true });
+      await owner.setViewportSize({ width: 1280, height: 720 });
+    }
+    step("协作详情可继续加载第 21 条后的版本记录");
+
+    await owner.goto("/marketplace");
+    const marketplaceSearch = owner.getByLabel("搜索词库");
+    await marketplaceSearch.fill(titles.public);
+    await owner.getByRole("combobox", { name: "排序" }).selectOption("latest");
+    await owner.getByRole("button", { name: "列表视图" }).click();
+    await owner.waitForURL((url) => url.searchParams.get("q") === titles.public && url.searchParams.get("sort") === "latest" && url.searchParams.get("view") === "list");
+    await owner.getByRole("link", { name: `查看「${titles.public}」概况` }).click();
+    await owner.getByRole("heading", { name: titles.public, exact: true }).waitFor();
+    await owner.getByRole("link", { name: "返回单词广场" }).click();
+    await owner.getByRole("heading", { name: "共享单词本广场" }).waitFor();
+    assert.equal(await marketplaceSearch.inputValue(), titles.public);
+    assert.equal(await owner.getByRole("combobox", { name: "排序" }).inputValue(), "latest");
+    assert.equal(await owner.getByRole("button", { name: "列表视图" }).getAttribute("class"), "active");
+    if (captureDir) {
+      await owner.setViewportSize({ width: 390, height: 844 });
+      await owner.reload();
+      await owner.getByRole("heading", { name: "共享单词本广场" }).waitFor();
+      assert.equal(await owner.getByLabel("搜索词库").inputValue(), titles.public);
+      await owner.screenshot({ path: join(captureDir, "marketplace-context-restored-mobile.png"), fullPage: true });
+      await owner.setViewportSize({ width: 1280, height: 720 });
+    }
+    step("从详情返回后保留广场搜索、排序和视图上下文");
 
     await guest.setViewportSize({ width: 1280, height: 720 });
     await guest.reload();
