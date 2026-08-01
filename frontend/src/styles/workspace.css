@@ -60,7 +60,14 @@
 }
 .workspace-book-tools > div { display: grid; grid-template-columns: 1fr 1fr; gap: .35rem; }
 .workspace-filter-empty { display: grid; gap: .35rem; padding: .8rem .4rem; color: var(--muted); font-size: var(--text-sm); text-align: center; }
-.workspace-filter-empty button { color: var(--accent-strong); font-weight: 650; }
+.workspace-filter-empty button {
+  min-height: 2rem;
+  padding: .3rem .55rem;
+  border-radius: .35rem;
+  color: var(--accent-strong);
+  font-weight: 650;
+}
+.workspace-filter-empty button:hover { background: var(--accent-soft); }
 .workspace-category-editor { display: flex; align-items: center; gap: .45rem; margin-top: .65rem; }
 .workspace-category-editor label { color: var(--muted); font-size: var(--text-sm); }
 .workspace-category-field { position: relative; width: min(13rem, 45%); }

@@ -642,6 +642,8 @@
 }
 
 .study-card {
+  min-width: 0;
+  max-width: 100%;
   padding: 1rem 1.2rem;
   border: 1px solid var(--rule);
   border-radius: var(--radius-lg);
@@ -1020,7 +1022,7 @@
     font-size: clamp(1.9rem, 9.2vw, 2.35rem);
     max-width: 100%;
     overflow-wrap: anywhere;
-    word-break: break-all;
+    text-wrap: balance;
   }
   .home-subtitle { margin-top: 0.45rem; font-size: var(--text-sm); }
   .search-panel { padding: 1rem; }

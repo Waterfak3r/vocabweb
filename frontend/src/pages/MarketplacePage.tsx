@@ -187,6 +187,12 @@ export function MarketplacePage() {
   const [goalFilters, setGoalFilters] = useState<string[]>([])
   const [sort, setSort] = useState<'popular' | 'latest' | 'rating'>('popular')
   const [view, setView] = useState<'grid' | 'list'>('grid')
+  const [compactFilterLayout, setCompactFilterLayout] = useState(() => (
+    typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+      ? window.matchMedia('(max-width: 640px)').matches
+      : false
+  ))
+  const [filtersExpanded, setFiltersExpanded] = useState(false)
   const [showPublish, setShowPublish] = useState(false)
   const [publishStep, setPublishStep] = useState<PublishStep>('details')
   const [publishForm, setPublishForm] = useState<PublishForm>(EMPTY_PUBLISH_FORM)
@@ -210,6 +216,15 @@ export function MarketplacePage() {
   const publishReturnFocusRef = useRef<HTMLElement | null>(null)
   const publishLoadingRef = useRef(publishLoading)
   publishLoadingRef.current = publishLoading
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return
+    const media = window.matchMedia('(max-width: 640px)')
+    const syncLayout = () => setCompactFilterLayout(media.matches)
+    syncLayout()
+    media.addEventListener('change', syncLayout)
+    return () => media.removeEventListener('change', syncLayout)
+  }, [])
 
   // Sequence counter drops out-of-order responses when filters change quickly.
   const refreshSeq = useRef(0)
@@ -310,6 +325,8 @@ export function MarketplacePage() {
     [activeCategory, books, examFilters, goalFilters, query],
   )
   const hasActiveFilters = Boolean(query.trim() || activeCategory !== '全部' || examFilters.length || goalFilters.length)
+  const activeFilterCount = examFilters.length + goalFilters.length
+  const filterPanelOpen = !compactFilterLayout || filtersExpanded
   const favoriteIds = useMemo(() => {
     const ids = new Set<string>()
     for (const book of remoteCatalog ?? []) if (book.favorited) ids.add(book.id)
@@ -569,12 +586,36 @@ export function MarketplacePage() {
       </div>
 
       <div className="marketplace-layout">
-        <aside className="market-filter" aria-label="分类筛选">
-          <h2><MarketplaceIcon name="filter" />分类筛选</h2>
-          <fieldset><legend>考试类型</legend><div className="filter-grid"><Toggle label="IELTS" checked={examFilters.includes('IELTS')} onChange={() => toggleFilter('IELTS', setExamFilters)} /><Toggle label="TOEFL" checked={examFilters.includes('TOEFL')} onChange={() => toggleFilter('TOEFL', setExamFilters)} /><Toggle label="GRE" checked={examFilters.includes('GRE')} onChange={() => toggleFilter('GRE', setExamFilters)} /><Toggle label="高考" checked={examFilters.includes('高考')} onChange={() => toggleFilter('高考', setExamFilters)} /><Toggle label="四级" checked={examFilters.includes('四级')} onChange={() => toggleFilter('四级', setExamFilters)} /><Toggle label="六级" checked={examFilters.includes('六级')} onChange={() => toggleFilter('六级', setExamFilters)} /></div></fieldset>
-          <fieldset><legend>学习目标</legend><div className="filter-grid"><Toggle label="写作" checked={goalFilters.includes('写作')} onChange={() => toggleFilter('写作', setGoalFilters)} /><Toggle label="阅读" checked={goalFilters.includes('阅读')} onChange={() => toggleFilter('阅读', setGoalFilters)} /><Toggle label="听力" checked={goalFilters.includes('听力')} onChange={() => toggleFilter('听力', setGoalFilters)} /><Toggle label="口语" checked={goalFilters.includes('口语')} onChange={() => toggleFilter('口语', setGoalFilters)} /></div></fieldset>
-          <fieldset><legend>排序方式</legend><div className="filter-radio">{([['popular', '热门'], ['latest', '最近更新'], ['rating', '评分最高']] as const).map(([value, label]) => <label key={value}><input type="radio" name="market-sort" checked={sort === value} onChange={() => setSort(value)} />{label}</label>)}</div></fieldset>
-          <button className="clear-filters" type="button" onClick={() => { setExamFilters([]); setGoalFilters([]); setActiveCategory('全部'); setQuery('') }}>清空筛选</button>
+        <aside className={`market-filter${filtersExpanded ? ' is-expanded' : ''}`} aria-label="分类筛选">
+          <div className="market-filter-heading">
+            <h2>
+              <MarketplaceIcon name="filter" />
+              分类筛选
+              {activeFilterCount > 0 && (
+                <span className="market-filter-count" aria-label={`${activeFilterCount} 项筛选条件`}>
+                  {activeFilterCount}
+                </span>
+              )}
+            </h2>
+            <button
+              className="market-filter-toggle"
+              type="button"
+              aria-expanded={filterPanelOpen}
+              aria-controls="market-filter-options"
+              onClick={() => setFiltersExpanded((expanded) => !expanded)}
+            >
+              {filtersExpanded ? '收起' : '展开'}
+              <span className="market-filter-chevron" aria-hidden="true">⌄</span>
+            </button>
+          </div>
+          <div id="market-filter-options" className="market-filter-options" hidden={!filterPanelOpen}>
+            <div className="market-filter-options-inner">
+              <fieldset><legend>考试类型</legend><div className="filter-grid"><Toggle label="IELTS" checked={examFilters.includes('IELTS')} onChange={() => toggleFilter('IELTS', setExamFilters)} /><Toggle label="TOEFL" checked={examFilters.includes('TOEFL')} onChange={() => toggleFilter('TOEFL', setExamFilters)} /><Toggle label="GRE" checked={examFilters.includes('GRE')} onChange={() => toggleFilter('GRE', setExamFilters)} /><Toggle label="高考" checked={examFilters.includes('高考')} onChange={() => toggleFilter('高考', setExamFilters)} /><Toggle label="四级" checked={examFilters.includes('四级')} onChange={() => toggleFilter('四级', setExamFilters)} /><Toggle label="六级" checked={examFilters.includes('六级')} onChange={() => toggleFilter('六级', setExamFilters)} /></div></fieldset>
+              <fieldset><legend>学习目标</legend><div className="filter-grid"><Toggle label="写作" checked={goalFilters.includes('写作')} onChange={() => toggleFilter('写作', setGoalFilters)} /><Toggle label="阅读" checked={goalFilters.includes('阅读')} onChange={() => toggleFilter('阅读', setGoalFilters)} /><Toggle label="听力" checked={goalFilters.includes('听力')} onChange={() => toggleFilter('听力', setGoalFilters)} /><Toggle label="口语" checked={goalFilters.includes('口语')} onChange={() => toggleFilter('口语', setGoalFilters)} /></div></fieldset>
+              <fieldset><legend>排序方式</legend><div className="filter-radio">{([['popular', '热门'], ['latest', '最近更新'], ['rating', '评分最高']] as const).map(([value, label]) => <label key={value}><input type="radio" name="market-sort" checked={sort === value} onChange={() => setSort(value)} />{label}</label>)}</div></fieldset>
+              <button className="clear-filters" type="button" onClick={() => { setExamFilters([]); setGoalFilters([]); setActiveCategory('全部'); setQuery('') }}>清空筛选</button>
+            </div>
+          </div>
         </aside>
 
         <div className="market-content">

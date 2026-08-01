@@ -403,6 +403,8 @@
   background: var(--rule);
 }
 
+.site-footer a { white-space: nowrap; }
+
 /* The marketplace and wordbook references end with their content cards. */
 .app-shell:has(.marketplace-page, .workspace-page, .workspace-study) .site-footer {
   display: none;
@@ -454,6 +456,14 @@
   .site-footer { min-width: 0; max-width: 100%; }
 
   .app-shell { width: 100%; overflow-x: clip; }
+
+  .site-footer {
+    flex-wrap: wrap;
+    gap: 0.35rem 0.75rem;
+    letter-spacing: 0.06em;
+  }
+
+  .site-footer span { display: none; }
 
   .main-nav {
     display: grid;
@@ -518,3 +528,19 @@
 .sources-page article:first-of-type { margin-top: 2rem; }
 .sources-page article h2 { margin-bottom: 0.45rem; font-family: var(--font-serif); }
 .sources-page article p { margin-bottom: 0.5rem; }
+
+.privacy-page article button {
+  min-height: 2.25rem;
+  margin-top: 0.4rem;
+  padding: 0.45rem 0.7rem;
+  border: 1px solid color-mix(in srgb, var(--danger) 45%, var(--rule));
+  border-radius: var(--radius-sm);
+  color: var(--danger);
+  font-weight: 600;
+  transition: background-color 180ms ease, border-color 180ms ease;
+}
+
+.privacy-page article button:hover {
+  border-color: var(--danger);
+  background: var(--danger-soft);
+}
