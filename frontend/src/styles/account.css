@@ -139,6 +139,10 @@
 
 .auth-hint { color: var(--muted); font-size: 0.72rem; }
 .auth-error { color: var(--danger); font-size: 0.78rem; }
+.auth-password-toggle { justify-self: start; min-height: 2rem; padding: 0.25rem 0; color: var(--accent-strong); font-size: 0.76rem; font-weight: 650; }
+.auth-password-toggle:hover:not(:disabled) { text-decoration: underline; }
+.auth-password-toggle:disabled { cursor: wait; opacity: 0.55; }
+.auth-recovery-note { padding: 0.6rem 0.7rem; border-left: 2px solid var(--gold); background: var(--gold-soft); color: var(--muted); font-size: 0.72rem; line-height: 1.55; }
 
 .auth-submit {
   min-height: 2.6rem;

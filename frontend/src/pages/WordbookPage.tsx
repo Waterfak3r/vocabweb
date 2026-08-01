@@ -53,6 +53,7 @@ import {
   type PronunciationPreferences,
 } from '../data/pronunciationPreferences'
 import { wordbookCsvFilename, wordbookToCsv } from '../data/wordbookExport'
+import { useModalDialog } from '../hooks/useModalDialog'
 import {
   DEFAULT_REVIEW_SCHEDULE,
   isDefaultReviewSchedule,
@@ -277,10 +278,18 @@ export function WordbookPage() {
   const [bookQuery, setBookQuery] = useState(() => readWordbookFilters().query)
   const [bookCategory, setBookCategory] = useState(() => readWordbookFilters().category)
   const [bookSort, setBookSort] = useState<WordbookSort>(() => readWordbookFilters().sort)
+  const [compactBookLayout, setCompactBookLayout] = useState(() => (
+    typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+      ? window.matchMedia('(max-width: 640px)').matches
+      : false
+  ))
+  const [booksExpanded, setBooksExpanded] = useState(false)
   const [categoryDraft, setCategoryDraft] = useState('')
   const [categoryEditing, setCategoryEditing] = useState(false)
   const [categorySaving, setCategorySaving] = useState(false)
   const categoryInputRef = useRef<HTMLInputElement>(null)
+  const workspaceMainRef = useRef<HTMLDivElement>(null)
+  const workspaceTitleRef = useRef<HTMLHeadingElement>(null)
   const [preferences, setPreferences] = useState<WordbookStudyPreferences>(
     () => structuredClone(DEFAULT_STUDY_PREFERENCES),
   )
@@ -290,6 +299,15 @@ export function WordbookPage() {
   )
   const dashboardRequest = useRef(0)
   const studyRefreshTimer = useRef<number | null>(null)
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return
+    const media = window.matchMedia('(max-width: 640px)')
+    const syncLayout = () => setCompactBookLayout(media.matches)
+    syncLayout()
+    media.addEventListener('change', syncLayout)
+    return () => media.removeEventListener('change', syncLayout)
+  }, [])
   const preferenceSaveQueue = useRef<Promise<void>>(Promise.resolve())
   const globalSettingsSaveQueue = useRef<Promise<void>>(Promise.resolve())
   const globalSettingsGeneration = useRef(0)
@@ -712,23 +730,43 @@ export function WordbookPage() {
     }
   }
 
+  function selectWorkspaceBook(id: string) {
+    setSelectedId(id)
+    if (!compactBookLayout) return
+    setBooksExpanded(false)
+    window.requestAnimationFrame(() => {
+      workspaceMainRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' })
+      workspaceTitleRef.current?.focus({ preventScroll: true })
+    })
+  }
+
+  const bookPickerOpen = !compactBookLayout || booksExpanded
+
   const workspaceSidebar = (
     <aside className="workspace-sidebar" aria-label="我的词库">
       <button type="button" className="workspace-create" onClick={createBook}><WorkspaceIcon name="plus" />创建单词本</button>
-      <h2>学习词本</h2>
-      <div className="workspace-book-tools">
-        <input aria-label="搜索单词本" value={bookQuery} onChange={(event) => setBookQuery(event.target.value)} placeholder="搜索名称或说明" />
-        <div>
-          <select aria-label="按分类筛选" value={bookCategory} onChange={(event) => setBookCategory(event.target.value)}>
-            <option>全部</option><option>未分类</option>{categories.map((category) => <option key={category}>{category}</option>)}
-          </select>
-          <select aria-label="单词本排序" value={bookSort} onChange={(event) => setBookSort(event.target.value as typeof bookSort)}>
-            <option value="updated">最近更新</option><option value="name">名称</option><option value="count">单词数</option><option value="progress">学习进度</option>
-          </select>
-        </div>
+      <div className="workspace-sidebar-heading">
+        <h2>学习词本 <span>{filteredBooks.length}</span></h2>
+        <button type="button" aria-expanded={bookPickerOpen} aria-controls="workspace-book-picker" onClick={() => setBooksExpanded((expanded) => !expanded)}>
+          {booksExpanded ? '收起列表' : '更换词本'}
+          <span aria-hidden="true">⌄</span>
+        </button>
       </div>
-      <div className="workspace-book-list">{filteredBooks.map((book) => <button key={book.id} type="button" className={book.id === selectedBook?.id ? 'selected' : ''} onClick={() => setSelectedId(book.id)}><WorkspaceCover tone={book.tone} label={book.shortLabel} small /><span><strong>{book.title}</strong><small>{book.category ?? '未分类'} · {book.wordCount} 词</small></span></button>)}</div>
-      {!filteredBooks.length && <div className="workspace-filter-empty"><p>没有匹配的单词本</p><button type="button" onClick={() => { setBookQuery(''); setBookCategory('全部') }}>清除筛选</button></div>}
+      <div id="workspace-book-picker" className="workspace-book-picker" hidden={!bookPickerOpen}>
+        <div className="workspace-book-tools">
+          <input aria-label="搜索单词本" value={bookQuery} onChange={(event) => setBookQuery(event.target.value)} placeholder="搜索名称或说明" />
+          <div>
+            <select aria-label="按分类筛选" value={bookCategory} onChange={(event) => setBookCategory(event.target.value)}>
+              <option>全部</option><option>未分类</option>{categories.map((category) => <option key={category}>{category}</option>)}
+            </select>
+            <select aria-label="单词本排序" value={bookSort} onChange={(event) => setBookSort(event.target.value as typeof bookSort)}>
+              <option value="updated">最近更新</option><option value="name">名称</option><option value="count">单词数</option><option value="progress">学习进度</option>
+            </select>
+          </div>
+        </div>
+        <div className="workspace-book-list">{filteredBooks.map((book) => <button key={book.id} type="button" className={book.id === selectedBook?.id ? 'selected' : ''} onClick={() => selectWorkspaceBook(book.id)}><WorkspaceCover tone={book.tone} label={book.shortLabel} small /><span><strong>{book.title}</strong><small>{book.category ?? '未分类'} · {book.wordCount} 词</small></span></button>)}</div>
+        {!filteredBooks.length && <div className="workspace-filter-empty"><p>没有匹配的单词本</p><button type="button" onClick={() => { setBookQuery(''); setBookCategory('全部') }}>清除筛选</button></div>}
+      </div>
       <WorkspaceCatalogGroup title="广场收藏" icon="star" collection="favorites" books={favoriteCatalog} />
       <WorkspaceCatalogGroup title="我的上传" icon="book" collection="uploads" books={uploadCatalog} />
       <button type="button" className="workspace-recycle" onClick={() => void toggleRecycle()}><WorkspaceIcon name="trash" />回收站{remoteTrash.length ? ` (${remoteTrash.length})` : ''}</button>
@@ -737,14 +775,15 @@ export function WordbookPage() {
   )
 
   if (loading) {
-    return <section className="workspace-empty-page"><EmptyState title="正在加载单词本" body="正在从后端读取你的词本与学习数据。" /></section>
+    return <section className="workspace-empty-page" aria-labelledby="workspace-loading-title"><h1 id="workspace-loading-title" className="workspace-visually-hidden">我的单词本</h1><EmptyState title="正在加载单词本" body="正在从后端读取你的词本与学习数据。" /></section>
   }
 
   if (!selectedBook) {
     return <>
-      <section className="workspace-page workspace-page-empty">
+      <section className="workspace-page workspace-page-empty" aria-labelledby="workspace-empty-title">
+        <h1 id="workspace-empty-title" className="workspace-visually-hidden">我的单词本</h1>
         {workspaceSidebar}
-        <main className="workspace-main"><section className="workspace-empty-page"><EmptyState title="还没有可用的学习词本" body={notice || '你仍可浏览左侧收藏和上传；选择“加入词本”后即可开始学习。'} action={<Button onClick={createBook}>创建单词本</Button>} /></section></main>
+        <div ref={workspaceMainRef} className="workspace-main"><section className="workspace-empty-page"><EmptyState title="还没有可用的学习词本" body={notice || '你仍可浏览左侧收藏和上传；选择“加入词本”后即可开始学习。'} action={<Button onClick={createBook}>创建单词本</Button>} /></section></div>
       </section>
       <ImportWordbookDialog
         open={showImporter}
@@ -875,12 +914,12 @@ export function WordbookPage() {
     <section className="workspace-page" aria-labelledby="workspace-title">
       {workspaceSidebar}
 
-      <main className="workspace-main">
+      <div ref={workspaceMainRef} className="workspace-main">
         {notice && <p className="workspace-notice" role="status">{notice}</p>}
         <section className="workspace-overview">
           <WorkspaceCover tone={selectedBook.tone} label={selectedBook.shortLabel} />
           <div className="workspace-overview-main">
-            <div className="workspace-title-row"><h1 id="workspace-title">{selectedBook.title}</h1></div>
+            <div className="workspace-title-row"><h1 ref={workspaceTitleRef} id="workspace-title" tabIndex={-1}>{selectedBook.title}</h1></div>
             <p>{wordCount} 个单词　|　创建于 {new Date(selectedBook.createdAt).toLocaleDateString('zh-CN')}　|　最后更新：{new Date(selectedBook.updatedAt).toLocaleString('zh-CN')}</p>
             <div className={`workspace-category-editor ${categoryEditing ? 'is-editing' : ''}`}>
               <label htmlFor="wordbook-category">分类</label>
@@ -1006,7 +1045,7 @@ export function WordbookPage() {
           />
           <StudyCalendar calendar={dashboard?.calendar} loading={dashboardLoading} />
         </div>
-      </main>
+      </div>
 
       <aside className="workspace-rail" aria-label="快捷功能和学习数据">
         <section className="quick-actions"><h2>快捷功能</h2><QuickAction icon="book" title="单词学习" detail="认识新词，理解含义" onClick={() => openStudy('new')} /><QuickAction icon="repeat" title="复习巩固" detail="复习旧词，加深记忆" onClick={() => openStudy('review')} /><QuickAction icon="headphones" title="听写训练" detail="听音拼写，强化记忆" onClick={() => openStudy('dictation')} /></section>
@@ -1412,21 +1451,10 @@ function StudySessionDialog({
   const guardedCloseRef = useRef<() => void>(onClose)
   const requestClose = useCallback(() => guardedCloseRef.current(), [])
   const registerCloseGuard = useCallback((handler: () => void) => { guardedCloseRef.current = handler }, [])
-  useEffect(() => {
-    const previousOverflow = document.body.style.overflow
-    document.body.style.overflow = 'hidden'
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') requestClose()
-    }
-    window.addEventListener('keydown', closeOnEscape)
-    return () => {
-      document.body.style.overflow = previousOverflow
-      window.removeEventListener('keydown', closeOnEscape)
-    }
-  }, [requestClose])
+  const dialogRef = useModalDialog<HTMLElement>({ open: true, onClose: requestClose })
 
   return <div className="workspace-modal-backdrop study-session-backdrop" role="presentation">
-    <section className="workspace-study-modal" role="dialog" aria-modal="true" aria-label={`${mode === 'new' ? '新词学习' : mode === 'review' ? '复习巩固' : '听写训练'}悬浮窗口`}>
+    <section ref={dialogRef} className="workspace-study-modal" role="dialog" aria-modal="true" aria-label={`${mode === 'new' ? '新词学习' : mode === 'review' ? '复习巩固' : '听写训练'}悬浮窗口`} tabIndex={-1}>
       <button type="button" className="workspace-modal-close session-close" aria-label="关闭学习窗口" onClick={requestClose}>×</button>
       <WordbookStudyMode book={sessionBook} mode={mode} scope={scope} preferences={preferences} shortcuts={shortcuts} accent={accent} onProgressCommitted={onProgressCommitted} onExit={onClose} registerCloseGuard={registerCloseGuard} />
     </section>

@@ -1045,6 +1045,10 @@
   .meaning-definition { font-size: 0.94rem; }
   .study-sidebar { grid-template-columns: 1fr; }
 }
+
+@media (max-width: 360px) {
+  .headword-word { font-size: clamp(2rem, 10vw, 2.25rem); }
+}
 .dictionary-language-row {
   display: flex;
   align-items: center;

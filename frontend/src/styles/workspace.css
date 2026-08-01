@@ -59,6 +59,14 @@
   font-size: var(--text-sm);
 }
 .workspace-book-tools > div { display: grid; grid-template-columns: 1fr 1fr; gap: .35rem; }
+.workspace-sidebar-heading { display: flex; align-items: center; justify-content: space-between; gap: .75rem; margin: 1.65rem .1rem .6rem; }
+.workspace-sidebar-heading h2 { display: flex; align-items: center; gap: .4rem; margin: 0; font-size: .95rem; }
+.workspace-sidebar-heading h2 span { color: var(--muted); font: 600 .68rem var(--font-mono); }
+.workspace-sidebar-heading > button { display: none; align-items: center; gap: .35rem; min-height: 2.25rem; padding: .35rem .5rem; border: 1px solid var(--input-border); border-radius: .4rem; color: var(--accent-strong); font-size: .74rem; font-weight: 650; }
+.workspace-sidebar-heading > button:hover { background: var(--accent-soft); }
+.workspace-sidebar-heading > button > span { transition: transform .18s ease; }
+.workspace-sidebar-heading > button[aria-expanded='true'] > span { transform: rotate(180deg); }
+.workspace-book-picker[hidden] { display: none; }
 .workspace-filter-empty { display: grid; gap: .35rem; padding: .8rem .4rem; color: var(--muted); font-size: var(--text-sm); text-align: center; }
 .workspace-filter-empty button {
   min-height: 2rem;
@@ -559,6 +567,18 @@
 .meaning-choice-unavailable { display: grid; justify-items: center; gap: .7rem; padding: 2rem; color: var(--muted); text-align: center; }
 
 @media (max-width: 640px) {
+  .workspace-sidebar { padding-bottom: .8rem; }
+  .workspace-sidebar-heading { margin-top: 1rem; }
+  .workspace-sidebar-heading > button { display: inline-flex; }
+  .workspace-book-picker { padding-top: .15rem; }
+  .workspace-plan > header { align-items: flex-start; flex-direction: column; }
+  .workspace-plan > header > span { width: 100%; justify-content: space-between; gap: .25rem; }
+  .workspace-plan > header button { min-height: 2.4rem; padding: .35rem .3rem; }
+  .study-calendar { overflow-x: visible; }
+  .calendar-days { min-width: 0; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: .2rem; }
+  .calendar-days article { min-height: 4.8rem; padding-inline: 0; }
+  .calendar-days strong { font-size: .62rem; }
+  .calendar-days small { font-size: .58rem; }
   .plan-card-extra-actions,
   .exercise-preference,
   .meaning-choice-options { grid-template-columns: 1fr; }

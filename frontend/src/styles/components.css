@@ -244,10 +244,12 @@
   font-family: var(--font-serif);
   font-size: var(--text-lg);
   font-weight: 600;
+  text-wrap: balance;
 }
 
 .empty-state-body {
   color: var(--muted);
+  text-wrap: pretty;
 }
 
 .empty-state-action {

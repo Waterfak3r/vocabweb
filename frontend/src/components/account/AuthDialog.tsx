@@ -46,6 +46,9 @@ const FOCUSABLE = 'button:not(:disabled), input:not(:disabled), [href], [tabinde
 export function AuthDialog({ mode, onModeChange, onClose, login, register, returnFocus }: Props) {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const [confirmTouched, setConfirmTouched] = useState(false)
+  const [showPassword, setShowPassword] = useState(false)
   const [touched, setTouched] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
@@ -57,7 +60,8 @@ export function AuthDialog({ mode, onModeChange, onClose, login, register, retur
 
   const usernameValid = USERNAME_RE.test(username)
   const passwordValid = password.length >= PASSWORD_MIN && password.length <= PASSWORD_MAX
-  const canSubmit = usernameValid && passwordValid && !submitting
+  const confirmationValid = mode === 'login' || (confirmPassword.length > 0 && confirmPassword === password)
+  const canSubmit = usernameValid && passwordValid && confirmationValid && !submitting
 
   // Lock body scroll and restore the invoking control when the dialog unmounts.
   useEffect(() => {
@@ -101,7 +105,8 @@ export function AuthDialog({ mode, onModeChange, onClose, login, register, retur
   async function submit(event: FormEvent) {
     event.preventDefault()
     setTouched(true)
-    if (!usernameValid || !passwordValid || submitting) return
+    if (mode === 'register') setConfirmTouched(true)
+    if (!usernameValid || !passwordValid || !confirmationValid || submitting) return
     setSubmitting(true)
     setError('')
     try {
@@ -118,6 +123,9 @@ export function AuthDialog({ mode, onModeChange, onClose, login, register, retur
     setError('')
     setTouched(false)
     setPassword('')
+    setConfirmPassword('')
+    setConfirmTouched(false)
+    setShowPassword(false)
     onModeChange(next)
   }
 
@@ -159,7 +167,7 @@ export function AuthDialog({ mode, onModeChange, onClose, login, register, retur
           <label>
             密码
             <input
-              type="password"
+              type={showPassword ? 'text' : 'password'}
               value={password}
               onChange={(event) => setPassword(event.target.value)}
               onBlur={() => setTouched(true)}
@@ -172,6 +180,28 @@ export function AuthDialog({ mode, onModeChange, onClose, login, register, retur
           {touched && password && !passwordValid && (
             <p id="auth-password-hint" className="auth-hint">密码至少 8 位。</p>
           )}
+          {mode === 'register' && <>
+            <label>
+              确认密码
+              <input
+                type={showPassword ? 'text' : 'password'}
+                value={confirmPassword}
+                onChange={(event) => setConfirmPassword(event.target.value)}
+                onBlur={() => setConfirmTouched(true)}
+                autoComplete="new-password"
+                maxLength={PASSWORD_MAX}
+                aria-invalid={confirmTouched && !confirmationValid}
+                aria-describedby={confirmTouched && !confirmationValid ? 'auth-password-confirm-hint' : undefined}
+              />
+            </label>
+            {confirmTouched && !confirmationValid && (
+              <p id="auth-password-confirm-hint" className="auth-hint">{confirmPassword ? '两次输入的密码不一致。' : '请再次输入密码。'}</p>
+            )}
+          </>}
+          <button className="auth-password-toggle" type="button" aria-pressed={showPassword} disabled={submitting} onClick={() => setShowPassword((visible) => !visible)}>
+            {showPassword ? '隐藏密码' : '显示密码'}
+          </button>
+          {mode === 'register' && <p className="auth-recovery-note">本站暂不提供密码找回。请确认两次输入一致，并妥善保存密码。</p>}
           {error && <p className="auth-error" role="alert">{error}</p>}
           <button type="submit" className="auth-submit" disabled={!canSubmit}>
             {submitting ? '处理中…' : title}

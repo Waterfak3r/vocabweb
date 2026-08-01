@@ -15,6 +15,7 @@ const MessagesPage = lazy(() => import('./pages/MessagesPage').then((m) => ({ de
 const AccountPage = lazy(() => import('./pages/AccountPage').then((m) => ({ default: m.AccountPage })))
 const SourcesPage = lazy(() => import('./pages/SourcesPage').then((m) => ({ default: m.SourcesPage })))
 const PrivacyPage = lazy(() => import('./pages/PrivacyPage').then((m) => ({ default: m.PrivacyPage })))
+const NotFoundPage = lazy(() => import('./pages/NotFoundPage').then((m) => ({ default: m.NotFoundPage })))
 
 type ChunkErrorBoundaryState = { failed: boolean }
 
@@ -59,7 +60,7 @@ function App() {
           <Route path="privacy" element={<PrivacyPage />} />
           <Route path="flashcards" element={<Navigate to="/wordbook?mode=flashcards" replace />} />
           <Route path="dictation" element={<Navigate to="/wordbook?mode=dictation" replace />} />
-          <Route path="*" element={<Navigate to="/" replace />} />
+          <Route path="*" element={<NotFoundPage />} />
         </Route>
       </Routes>
     </ChunkErrorBoundary>

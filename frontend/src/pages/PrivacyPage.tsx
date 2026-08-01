@@ -1,15 +1,13 @@
 import { useDocumentTitle } from '../hooks/useDocumentTitle'
+import { clearBrowserPreferences } from '../data/privacyStorage'
 
 export function PrivacyPage() {
   useDocumentTitle('隐私说明')
 
-  function clearLocalData() {
-    if (!window.confirm('清除这台浏览器中的匿名身份、主题和本地学习数据？已注册账号的服务器数据不会被删除。')) return
+  function resetBrowserPreferences() {
+    if (!window.confirm('重置这台浏览器中的主题、界面偏好和本地缓存？匿名身份会保留，以免失去服务器词本的访问入口；账号和匿名服务器数据都不会删除。')) return
     try {
-      for (let index = localStorage.length - 1; index >= 0; index -= 1) {
-        const key = localStorage.key(index)
-        if (key?.startsWith('vocab-ielts:') || key === 'vocab-message-nickname-v1') localStorage.removeItem(key)
-      }
+      clearBrowserPreferences(localStorage)
     } finally {
       window.location.assign('/')
     }
@@ -19,7 +17,7 @@ export function PrivacyPage() {
     <section className="sources-page privacy-page" aria-labelledby="privacy-title">
       <p className="marginal">PRIVACY</p>
       <h1 id="privacy-title">隐私与数据说明</h1>
-      <p>本页说明 WeCreate Vocab 在提供查词、词书、学习记录和社区功能时处理的数据。最后更新：2026 年 7 月 28 日。</p>
+      <p>本页说明 WeCreate Vocab 在提供查词、词书、学习记录和社区功能时处理的数据。最后更新：2026 年 8 月 1 日。</p>
 
       <article>
         <h2>账号与学习数据</h2>
@@ -40,7 +38,8 @@ export function PrivacyPage() {
       <article>
         <h2>控制自己的数据</h2>
         <p>登录后可在“账户资料”页修改密码，或导出服务器保存的账号、词书、学习记录、发布内容和留言；注销账号需要再次输入用户名和密码，并会删除私人学习数据、会话和发布内容，同时匿名化留言。</p>
-        <button type="button" onClick={clearLocalData}>清除这台浏览器的本地数据</button>
+        <p>重置本机偏好不会删除服务器上的匿名或账号数据，也不会更换匿名身份；因此不会让仍在使用的匿名词本失去访问入口。</p>
+        <button type="button" onClick={resetBrowserPreferences}>重置本机偏好与缓存</button>
       </article>
 
       <article>

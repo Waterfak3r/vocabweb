@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { MyWordbook, ImportConflictResolution, ImportDraft, ImportDraftEntry, ImportDraftLine } from '../../data/workspaceApi'
 import { MAX_IMPORT_ENTRIES, parseWordbookText, readImportFile, validateImportText, type ParsedImport } from '../../data/wordbookImport'
+import { useModalDialog } from '../../hooks/useModalDialog'
 import { Button } from '../ui/Button'
 import styles from './ImportWordbookDialog.module.css'
 
@@ -86,6 +87,7 @@ export function ImportWordbookDialog({ open, api, onClose, onCreated, initialTit
   const [busy, setBusy] = useState(false)
   const [commitMode, setCommitMode] = useState<'append' | 'overwrite'>('append')
   const [overwriteImpact, setOverwriteImpact] = useState<{ imported: number; removed: number } | null>(null)
+  const dialogRef = useModalDialog<HTMLElement>({ open, onClose, canClose: !busy })
 
   useEffect(() => {
     if (!open) return
@@ -94,13 +96,6 @@ export function ImportWordbookDialog({ open, api, onClose, onCreated, initialTit
     setCategory(initialCategory)
     setStep(targetWordbookId ? 'source' : 'details')
   }, [initialCategory, initialDescription, initialTitle, open, targetWordbookId])
-
-  useEffect(() => {
-    if (!open) return
-    const keydown = (event: KeyboardEvent) => { if (event.key === 'Escape' && !busy) onClose() }
-    window.addEventListener('keydown', keydown)
-    return () => window.removeEventListener('keydown', keydown)
-  }, [busy, onClose, open])
 
   useEffect(() => {
     if (!open || !api) return
@@ -299,7 +294,7 @@ export function ImportWordbookDialog({ open, api, onClose, onCreated, initialTit
 
   return (
     <div className={styles.backdrop} role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) onClose() }}>
-      <section className={styles.dialog} role="dialog" aria-modal="true" aria-labelledby="wordbook-import-title">
+      <section ref={dialogRef} className={styles.dialog} role="dialog" aria-modal="true" aria-labelledby="wordbook-import-title" tabIndex={-1}>
         <header className={styles.header}>
           <h2 className={styles.title} id="wordbook-import-title">{targetWordbookId || draft?.targetWordbookId ? '导入到单词本' : '新建单词本'}</h2>
           <button className={styles.close} type="button" aria-label="关闭" disabled={busy} onClick={onClose}>×</button>
@@ -312,7 +307,7 @@ export function ImportWordbookDialog({ open, api, onClose, onCreated, initialTit
           {step === 'details' && <>
             <div className={styles.field}>
               <label htmlFor="import-title">词本名称</label>
-              <input id="import-title" value={title} maxLength={80} autoFocus onChange={(event) => setTitle(event.target.value)} placeholder="例如：雅思写作高频词" />
+              <input id="import-title" value={title} maxLength={80} data-modal-autofocus onChange={(event) => setTitle(event.target.value)} placeholder="例如：雅思写作高频词" />
             </div>
             <div className={styles.field}>
               <label htmlFor="import-description">说明（可选）</label>

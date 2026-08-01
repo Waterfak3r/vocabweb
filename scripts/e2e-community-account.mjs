@@ -154,7 +154,7 @@ async function openAuth(page, action) {
 async function signIn(page, passwordValue = password) {
   const dialog = await openAuth(page, "登录");
   await dialog.getByLabel("用户名").fill(username);
-  await dialog.getByLabel("密码").fill(passwordValue);
+  await dialog.getByLabel("密码", { exact: true }).fill(passwordValue);
   await dialog.getByRole("button", { name: "登录", exact: true }).click();
   await page.getByRole("button", { name: "账号", exact: true }).click();
   await page.getByText(username, { exact: true }).waitFor();
@@ -165,6 +165,8 @@ async function main() {
   const frontendBuild = resolve(repoRoot, "frontend", "dist", "index.html");
   const backendBuild = resolve(repoRoot, "backend", "dist", "server.js");
   assert(existsSync(frontendBuild) && existsSync(backendBuild), "缺少构建产物；请先运行 npm run build");
+  const captureDir = visualCaptureDir ? resolve(repoRoot, visualCaptureDir) : null;
+  if (captureDir) await mkdir(captureDir, { recursive: true });
 
   const tempDir = await mkdtemp(join(tmpdir(), "vacabweb-e2e-"));
   const port = await freePort();
@@ -201,6 +203,18 @@ async function main() {
     await owner.goto("/");
     await owner.getByRole("heading", { level: 1 }).waitFor();
 
+    await owner.goto("/missing-e2e-page");
+    await owner.getByRole("heading", { name: "没有找到这个页面" }).waitFor();
+    assert.equal(new URL(owner.url()).pathname, "/missing-e2e-page");
+    if (captureDir) {
+      await owner.setViewportSize({ width: 390, height: 844 });
+      await owner.screenshot({ path: join(captureDir, "not-found-mobile.png"), fullPage: true });
+      await owner.setViewportSize({ width: 1280, height: 720 });
+    }
+    await owner.getByRole("link", { name: "返回首页" }).click();
+    await owner.getByRole("heading", { level: 1 }).waitFor();
+    step("无效地址保留原路径并展示可恢复的 404 页面");
+
     const created = await api(owner, "/api/my/wordbooks", {
       method: "POST",
       body: JSON.stringify({
@@ -221,7 +235,22 @@ async function main() {
 
     const register = await openAuth(owner, "注册");
     await register.getByLabel("用户名").fill(username);
-    await register.getByLabel("密码").fill(password);
+    await register.getByLabel("密码", { exact: true }).fill(password);
+    const confirmation = register.getByLabel("确认密码", { exact: true });
+    await confirmation.fill(`${password}x`);
+    await confirmation.press("Tab");
+    await register.getByText("两次输入的密码不一致。").waitFor();
+    assert.equal(await register.getByRole("button", { name: "注册", exact: true }).isDisabled(), true);
+    await register.getByRole("button", { name: "显示密码" }).click();
+    assert.equal(await register.getByLabel("密码", { exact: true }).getAttribute("type"), "text");
+    assert.equal(await confirmation.getAttribute("type"), "text");
+    await register.getByRole("button", { name: "隐藏密码" }).click();
+    await confirmation.fill(password);
+    if (captureDir) {
+      await owner.setViewportSize({ width: 390, height: 844 });
+      await owner.screenshot({ path: join(captureDir, "register-mobile.png"), fullPage: true });
+      await owner.setViewportSize({ width: 1280, height: 720 });
+    }
     await register.getByRole("button", { name: "注册", exact: true }).click();
     await owner.getByRole("button", { name: "账号", exact: true }).click();
     await owner.getByText(username, { exact: true }).waitFor();
@@ -238,9 +267,7 @@ async function main() {
     await owner.locator(".account-metrics dd").first().waitFor();
     assert.deepEqual(await owner.locator(".account-metrics dd").allTextContents(), ["1", "1", "0"]);
     step("账户资料页展示真实词书、收录词和上传统计");
-    if (visualCaptureDir) {
-      const captureDir = resolve(repoRoot, visualCaptureDir);
-      await mkdir(captureDir, { recursive: true });
+    if (captureDir) {
       await owner.setViewportSize({ width: 1440, height: 900 });
       await owner.screenshot({ path: join(captureDir, "account-page-light.png"), fullPage: true });
       await owner.getByRole("button", { name: "切换到黑夜模式" }).click();
@@ -252,8 +279,114 @@ async function main() {
       step("账户资料页视觉快照已生成");
     }
 
+    const mobileBookTitles = Array.from({ length: 22 }, (_, index) => `移动验收词本 ${String(index + 2).padStart(2, "0")}`);
+    for (const title of mobileBookTitles) {
+      await api(owner, "/api/my/wordbooks", {
+        method: "POST",
+        body: JSON.stringify({
+          title,
+          description: "用于验证大量词本时的移动导航",
+          words: [{
+            word: "resilient",
+            phonetic: "/rɪˈzɪliənt/",
+            meanings: [{ pos: "adjective", definition: "able to recover quickly" }],
+            source: "user",
+            zhMeaning: "有韧性的",
+            zhMeaningSource: "user",
+          }],
+        }),
+      });
+    }
+
+    await owner.setViewportSize({ width: 390, height: 844 });
+    await owner.goto("/wordbook");
+    const bookToggle = owner.locator('button[aria-controls="workspace-book-picker"]');
+    await bookToggle.waitFor();
+    assert.equal(await bookToggle.getAttribute("aria-expanded"), "false");
+    assert.equal(await owner.locator("#workspace-book-picker").isHidden(), true);
+    await bookToggle.click();
+    assert.equal(await bookToggle.getAttribute("aria-expanded"), "true");
+    const targetBookTitle = mobileBookTitles[10];
+    await owner.locator(".workspace-book-list > button", { hasText: targetBookTitle }).click();
+    await owner.getByRole("heading", { name: targetBookTitle, exact: true }).waitFor();
+    await owner.waitForTimeout(350);
+    assert.equal(await bookToggle.getAttribute("aria-expanded"), "false");
+    assert.equal(await owner.evaluate(() => document.activeElement?.id), "workspace-title");
+    const sidebarBox = await owner.locator(".workspace-sidebar").boundingBox();
+    assert(sidebarBox && sidebarBox.height < 700, `折叠后的移动词书栏仍过高：${sidebarBox?.height}`);
+    if (captureDir) await owner.screenshot({ path: join(captureDir, "wordbook-mobile-collapsed.png"), fullPage: true });
+    step("23 本词书在手机端默认折叠，切换后直接显示当前词书");
+
+    const createTrigger = owner.getByRole("button", { name: "创建单词本", exact: true }).first();
+    await createTrigger.click();
+    const importDialog = owner.getByRole("dialog", { name: "新建单词本" });
+    await importDialog.waitFor();
+    assert.equal(await owner.evaluate(() => document.body.style.overflow), "hidden");
+    assert.equal(await importDialog.evaluate((dialog) => dialog.contains(document.activeElement)), true);
+    await importDialog.getByRole("button", { name: "关闭", exact: true }).focus();
+    await owner.keyboard.press("Shift+Tab");
+    assert.equal(await importDialog.evaluate((dialog) => dialog.contains(document.activeElement)), true);
+    await owner.keyboard.press("Escape");
+    await importDialog.waitFor({ state: "hidden" });
+    await owner.waitForTimeout(50);
+    assert.equal(await createTrigger.evaluate((trigger) => trigger === document.activeElement), true);
+
+    const studyTrigger = owner.locator(".plan-card", { hasText: "新词学习" }).first().locator("button:not(.plan-card-settings)").first();
+    await studyTrigger.click();
+    const studyDialog = owner.getByRole("dialog", { name: "新词学习悬浮窗口" });
+    await studyDialog.waitFor();
+    assert.equal(await studyDialog.evaluate((dialog) => dialog.contains(document.activeElement)), true);
+    await studyDialog.getByRole("button", { name: "关闭学习窗口" }).focus();
+    await owner.keyboard.press("Shift+Tab");
+    assert.equal(await studyDialog.evaluate((dialog) => dialog.contains(document.activeElement)), true);
+    await owner.keyboard.press("Escape");
+    await studyDialog.waitFor({ state: "hidden" });
+    await owner.waitForTimeout(50);
+    assert.equal(await studyTrigger.evaluate((trigger) => trigger === document.activeElement), true);
+    assert.notEqual(await owner.evaluate(() => document.body.style.overflow), "hidden");
+    step("新建与学习弹窗均锁定焦点、页面滚动并恢复触发按钮");
+
+    const identityBeforeReset = await owner.evaluate(() => {
+      localStorage.setItem("vocab-ielts:theme:v1", "dark");
+      localStorage.setItem("unrelated-e2e", "keep");
+      return localStorage.getItem("vocab-ielts:client-id:v1");
+    });
+    await owner.goto("/privacy");
+    owner.once("dialog", (dialog) => dialog.accept());
+    await owner.getByRole("button", { name: "重置本机偏好与缓存" }).click();
+    await owner.waitForURL((url) => url.pathname === "/");
+    const resetState = await owner.evaluate(() => ({
+      clientId: localStorage.getItem("vocab-ielts:client-id:v1"),
+      theme: localStorage.getItem("vocab-ielts:theme:v1"),
+      unrelated: localStorage.getItem("unrelated-e2e"),
+    }));
+    assert.equal(resetState.clientId, identityBeforeReset);
+    assert.equal(resetState.theme, null);
+    assert.equal(resetState.unrelated, "keep");
+    step("重置本机偏好保留匿名数据身份并仅清理应用偏好");
+    await owner.setViewportSize({ width: 1280, height: 720 });
+
     await owner.goto("/marketplace");
     await owner.getByRole("heading", { name: "共享单词本广场" }).waitFor();
+
+    const guestContext = await browser.newContext({ baseURL: baseUrl, locale: "zh-CN" });
+    const guest = await guestContext.newPage();
+    watchPage(guest, "匿名导入浏览器", browserErrors);
+    await guest.setViewportSize({ width: 390, height: 844 });
+    await guest.goto("/marketplace");
+    await guest.getByRole("heading", { name: "共享单词本广场" }).waitFor();
+    await guest.getByText("使用分享码导入词库；登录后可分享自己的词库。").waitFor();
+    assert.equal(await guest.getByRole("button", { name: "上传我的词库" }).count(), 0);
+    assert.equal(await guest.getByRole("button", { name: "上传第一本词库" }).count(), 0);
+    if (captureDir) {
+      await guest.screenshot({
+        path: join(captureDir, "marketplace-anonymous-empty-mobile.png"),
+        fullPage: true,
+      });
+    }
+    step("匿名空广场隐藏上传词库入口");
+
+    await owner.getByRole("button", { name: "上传我的词库" }).waitFor();
     await publish(owner, "public", titles.public);
     await publish(owner, "unlisted", titles.unlisted);
     await publish(owner, "private", titles.private);
@@ -267,10 +400,8 @@ async function main() {
     assert.match(privateUpload?.shareCode ?? "", /^[A-Z0-9]{24}$/);
     step("三档可见性均通过页面发布并保存正确");
 
-    const guestContext = await browser.newContext({ baseURL: baseUrl, locale: "zh-CN" });
-    const guest = await guestContext.newPage();
-    watchPage(guest, "匿名导入浏览器", browserErrors);
-    await guest.goto("/marketplace");
+    await guest.setViewportSize({ width: 1280, height: 720 });
+    await guest.reload();
     await guest.getByRole("heading", { name: "共享单词本广场" }).waitFor();
     const guestCatalog = await api(guest, "/api/catalog/wordbooks");
     assert(guestCatalog.some((book) => book.title === titles.public), "公开词本未出现在匿名广场");
@@ -344,9 +475,9 @@ async function main() {
     const deleteDialog = owner.getByRole("dialog", { name: "永久注销账号" });
     await deleteDialog.getByLabel(`输入用户名“${username}”确认`).fill(username);
     await deleteDialog.getByLabel("当前密码").fill(changedPassword);
-    if (visualCaptureDir) {
+    if (captureDir) {
       await owner.screenshot({
-        path: join(resolve(repoRoot, visualCaptureDir), "account-delete-dialog.png"),
+        path: join(captureDir, "account-delete-dialog.png"),
         fullPage: true,
       });
     }
