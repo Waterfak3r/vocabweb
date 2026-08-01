@@ -17,7 +17,7 @@ import {
   parseCursorQuery,
   parseCreateMyWordbook, parseLearningEvent, parseResourceId, parseShareCode, parseStartStudyRound, parseStatus,
   parseResolveCatalogContribution, parseRevertRevision, parseStudyRoundAnswer, parseStudyRoundRevision, parseUpdateCatalog, parseUpdateMyWordbook, parseUpdateStudySettings,
-  parseUpdateWord, parseUploadCatalog, parseWordId,
+  isCatalogTitle, parseUpdateWord, parseUploadCatalog, parseWordId,
 } from "./study/validation.js";
 import type {
   AccountUser,
@@ -1130,6 +1130,11 @@ export function createApp(options: CreateAppOptions = {}) {
     const input = parseUploadCatalog(request.body);
     if (!input) { response.status(400).json(apiError("INVALID_CATALOG_UPLOAD", "Catalog upload is invalid")); return; }
     try {
+      if (input.sourceWordbookId && input.title === undefined) {
+        const source = await studyStore.getMyWordbook(clientId, input.sourceWordbookId);
+        if (!source) { response.status(404).json(apiError("WORDBOOK_NOT_FOUND", "Source wordbook was not found")); return; }
+        if (!isCatalogTitle(source.title)) { response.status(400).json(apiError("INVALID_CATALOG_UPLOAD", "Catalog title must be 40 characters or fewer")); return; }
+      }
       const catalog = await studyStore.uploadCatalog(clientId, {
         ...input,
         author: { userId: user.id, username: user.username },

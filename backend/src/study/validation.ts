@@ -14,6 +14,7 @@ const GOALS = ["写作", "阅读", "听力", "口语"] as const;
 const SORTS = ["recommended", "hot", "newest", "rating"] as const;
 const RESOLUTIONS = ["keep", "replace", "merge", "discard"] as const;
 const VISIBILITIES = ["public", "unlisted", "private"] as const;
+export const CATALOG_TITLE_MAX_LENGTH = 40;
 
 export function isJsonObject(value: unknown): value is JsonObject { return typeof value === "object" && value !== null && !Array.isArray(value); }
 export function parseClientId(value: unknown): string | null {
@@ -49,6 +50,7 @@ function text(value: unknown, max: number, allowEmpty = false): string | null {
   if (typeof value !== "string") return null;
   const result = value.trim(); return (allowEmpty || result) && result.length <= max ? result : null;
 }
+export function isCatalogTitle(value: unknown): value is string { return text(value, CATALOG_TITLE_MAX_LENGTH) !== null; }
 function timestamp(value: unknown): string | null {
   if (typeof value !== "string" || value.length > 40 || !value.trim()) return null;
   return Number.isFinite(Date.parse(value)) ? value : null;
@@ -248,17 +250,17 @@ export function parseUploadCatalog(value: unknown): UploadCatalogWordbookInput |
   const message = value.message === undefined ? undefined : text(value.message, 80);
   if (visibility === null || message === null) return null;
   if (sourceWordbookId) {
-    const title = value.title === undefined ? undefined : text(value.title, 100);
+    const title = value.title === undefined ? undefined : text(value.title, CATALOG_TITLE_MAX_LENGTH);
     const description = value.description === undefined ? undefined : text(value.description, 500, true);
     return title !== null && description !== null ? { sourceWordbookId, ...(title ? { title } : {}), ...(description !== undefined ? { description } : {}), exams, goals, ...(visibility ? { visibility } : {}), ...(message ? { message } : {}) } : null;
   }
-  const base = parseWordbookInput(value); return base ? { ...base, exams, goals, ...(visibility ? { visibility } : {}), ...(message ? { message } : {}) } : null;
+  const base = parseWordbookInput(value); return base && isCatalogTitle(base.title) ? { ...base, exams, goals, ...(visibility ? { visibility } : {}), ...(message ? { message } : {}) } : null;
 }
 export function parseUpdateCatalog(value: unknown): UpdateCatalogWordbookInput | null {
   if (!isJsonObject(value)) return null;
   const sourceWordbookId = value.sourceWordbookId === undefined ? undefined : parseResourceId(value.sourceWordbookId);
   const expectedHeadRevisionId = value.expectedHeadRevisionId === undefined ? undefined : parseResourceId(value.expectedHeadRevisionId);
-  const title = value.title === undefined ? undefined : text(value.title, 100); const description = value.description === undefined ? undefined : text(value.description, 500, true);
+  const title = value.title === undefined ? undefined : text(value.title, CATALOG_TITLE_MAX_LENGTH); const description = value.description === undefined ? undefined : text(value.description, 500, true);
   const exams = value.exams === undefined ? undefined : choices(value.exams, EXAMS); const goals = value.goals === undefined ? undefined : choices(value.goals, GOALS);
   const visibility = value.visibility === undefined ? undefined : VISIBILITIES.includes(value.visibility as typeof VISIBILITIES[number]) ? value.visibility as typeof VISIBILITIES[number] : null;
   const message = value.message === undefined ? undefined : text(value.message, 80);

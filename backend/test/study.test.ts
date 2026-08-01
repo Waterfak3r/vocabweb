@@ -376,6 +376,17 @@ test("study routes reject malformed inputs and events outside the selected wordb
     assert.equal(invalidQuery.status, 400);
     const invalidUpload = await fetch(`${app.baseUrl}/api/catalog/uploads`, { method: "POST", headers: accountHeaders, body: JSON.stringify({ title: "" }) });
     assert.equal(invalidUpload.status, 400);
+    const maximumTitleUpload = await fetch(`${app.baseUrl}/api/catalog/uploads`, { method: "POST", headers: accountHeaders, body: JSON.stringify({ title: "a".repeat(40) }) });
+    assert.equal(maximumTitleUpload.status, 201);
+    const maximumTitleCatalog = await maximumTitleUpload.json() as { id: string };
+    const overlongTitleUpload = await fetch(`${app.baseUrl}/api/catalog/uploads`, { method: "POST", headers: accountHeaders, body: JSON.stringify({ title: "a".repeat(41) }) });
+    assert.equal(overlongTitleUpload.status, 400);
+    const overlongTitleUpdate = await fetch(`${app.baseUrl}/api/catalog/wordbooks/${maximumTitleCatalog.id}`, { method: "PATCH", headers: accountHeaders, body: JSON.stringify({ title: "a".repeat(41) }) });
+    assert.equal(overlongTitleUpdate.status, 400);
+    const longSourceResponse = await fetch(`${app.baseUrl}/api/my/wordbooks`, { method: "POST", headers: accountHeaders, body: JSON.stringify({ title: "b".repeat(41) }) });
+    const longSource = await longSourceResponse.json() as { id: string };
+    const inheritedOverlongTitle = await fetch(`${app.baseUrl}/api/catalog/uploads`, { method: "POST", headers: accountHeaders, body: JSON.stringify({ sourceWordbookId: longSource.id }) });
+    assert.equal(inheritedOverlongTitle.status, 400);
     const invalidEvent = await fetch(`${app.baseUrl}/api/study/events`, { method: "POST", headers: accountHeaders, body: JSON.stringify({ kind: "flashcard", wordbookId: "my-not-real", word: "test" }) });
     assert.equal(invalidEvent.status, 400);
     const unknownWord = await fetch(`${app.baseUrl}/api/study/events`, { method: "POST", headers: accountHeaders, body: JSON.stringify({ kind: "new", wordbookId: "my-not-real", word: "test" }) });

@@ -4,6 +4,8 @@ import {
   isSnapshotSourceLocked,
   marketplaceCatalogQuery,
   marketplaceDetailHref,
+  marketplaceTitleError,
+  MARKETPLACE_TITLE_MAX_LENGTH,
   parseMarketplaceCollection,
   readMarketplaceUrlState,
   writeMarketplaceUrlState,
@@ -37,6 +39,13 @@ function book(
 }
 
 describe('MarketplacePage catalog filtering', () => {
+  it('keeps marketplace display titles within the card-oriented limit', () => {
+    expect(MARKETPLACE_TITLE_MAX_LENGTH).toBe(40)
+    expect(marketplaceTitleError('词'.repeat(40))).toBe('')
+    expect(marketplaceTitleError('词'.repeat(41))).toContain('40')
+    expect(marketplaceTitleError('   ')).toContain('请填写')
+  })
+
   it('locks an existing upload to its active source but allows repairing a missing source', () => {
     const wordbooks = [{ id: 'source-a' }, { id: 'source-b' }]
     expect(isSnapshotSourceLocked('source-a', wordbooks)).toBe(true)
