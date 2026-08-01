@@ -414,14 +414,18 @@ async function main() {
     await guest.getByRole("button", { name: "发布留言" }).click();
     const firstMessagePayload = (await firstMessageRequest).postDataJSON();
     assert.equal(firstMessagePayload.contact, "private-contact@example.test");
-    await guest.getByText("第一条留言用于验证私密联系方式不会残留。", { exact: true }).waitFor();
+    await guest.locator(".message-item").filter({ hasText: "第一条留言用于验证私密联系方式不会残留。" }).waitFor();
+    await guest.waitForFunction(() => {
+      const field = document.querySelector('.message-composer input[placeholder="邮箱、QQ 或其他联系方式"]');
+      return field instanceof HTMLInputElement && field.value === "";
+    });
     assert.equal(await contactField.inputValue(), "");
     await guest.getByLabel("留言内容").fill("第二条留言不应再次携带上一条的联系方式。");
     const secondMessageRequest = guest.waitForRequest((request) => new URL(request.url()).pathname === "/api/messages" && request.method() === "POST");
     await guest.getByRole("button", { name: "发布留言" }).click();
     const secondMessagePayload = (await secondMessageRequest).postDataJSON();
     assert.equal(Object.hasOwn(secondMessagePayload, "contact"), false);
-    await guest.getByText("第二条留言不应再次携带上一条的联系方式。", { exact: true }).waitFor();
+    await guest.locator(".message-item").filter({ hasText: "第二条留言不应再次携带上一条的联系方式。" }).waitFor();
     if (captureDir) await guest.screenshot({ path: join(captureDir, "messages-contact-cleared-mobile.png"), fullPage: true });
     step("匿名留言成功后清空私密联系方式，后续留言不会误带旧值");
     await guest.goto("/marketplace");
