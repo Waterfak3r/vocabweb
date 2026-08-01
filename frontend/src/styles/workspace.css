@@ -117,6 +117,53 @@
 .plan-card > button:not(.plan-card-settings) { grid-column: 1 / -1; }
 .plan-card > button:disabled { cursor: not-allowed; background: var(--muted); opacity: .72; }
 
+/* Proficiency distribution doubles as a one-click browser for each level. */
+.workspace-summary-stats > button {
+  --stat-color: var(--accent);
+
+  display: grid;
+  min-width: 0;
+  gap: .24rem;
+  padding: .15rem .75rem .3rem;
+  border-right: 1px solid var(--rule);
+  border-radius: .35rem;
+  color: var(--muted);
+  text-align: left;
+  transition: background-color .18s ease, color .18s ease, transform .18s ease;
+}
+.workspace-summary-stats > button:first-child { padding-left: 0; }
+.workspace-summary-stats > button:last-child { border-right: 0; }
+.workspace-summary-stats > button:not(:disabled):hover {
+  background: color-mix(in srgb, var(--accent-soft) 68%, transparent);
+  color: var(--accent-strong);
+  transform: translateY(-1px);
+}
+.workspace-summary-stats > button:active:not(:disabled) { transform: translateY(0); }
+.workspace-summary-stats > button:disabled { cursor: default; }
+.workspace-summary-stats > button em {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: .35rem;
+  font-size: .78rem;
+  font-style: normal;
+}
+.workspace-summary-stats > button small { color: var(--muted); font-size: .64rem; font-variant-numeric: tabular-nums; }
+.workspace-summary-stats > button strong { font-variant-numeric: tabular-nums; }
+.workspace-summary-stats > button > i {
+  display: block;
+  height: 2px;
+  overflow: hidden;
+  border-radius: 99px;
+  background: var(--track);
+}
+.workspace-summary-stats > button > i > b { display: block; height: 100%; border-radius: inherit; background: var(--stat-color); }
+.workspace-summary-stats > button[data-level='0'] { --stat-color: var(--muted); }
+.workspace-summary-stats > button[data-level='2'] { --stat-color: var(--gold); }
+.workspace-summary-stats > button[data-level='3'] { --stat-color: var(--success); }
+.workspace-summary-stats > button[data-level='4'] { --stat-color: var(--accent-strong); }
+
 .data-donut {
   position: relative;
   display: grid;
@@ -508,6 +555,10 @@
   .plan-card-extra-actions,
   .exercise-preference,
   .meaning-choice-options { grid-template-columns: 1fr; }
+  .workspace-summary-stats.levels-5 > button { padding: .5rem .65rem; }
+  .workspace-summary-stats.levels-5 > button:nth-child(even) { border-right: 0; }
+  .workspace-summary-stats.levels-5 > button:nth-child(n + 3) { border-top: 1px solid var(--rule); }
+  .workspace-summary-stats.levels-5 > button:last-child { border-right: 1px solid var(--rule); }
   .study-verdicts.three-way { gap: .2rem; }
   .study-verdicts.three-way .study-verdict { padding-inline: .25rem; font-size: 1.15rem; }
   .study-answer-feedback { grid-template-columns: 1fr; justify-items: center; text-align: center; }

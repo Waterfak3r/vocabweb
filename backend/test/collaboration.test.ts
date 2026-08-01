@@ -180,11 +180,14 @@ test("three-way preview keeps unrelated publisher changes and merge rejects late
   const publisherWords = await store.listWords(PUBLISHER_CLIENT, source.id);
   const beta = publisherWords!.find((word) => word.word === "beta")!;
   await store.updateWord(PUBLISHER_CLIENT, source.id, beta.id, { zhMeaning: "发布者乙" });
-  await store.updateCatalog(PUBLISHER_CLIENT, catalog.id, {
+  const betaSnapshot = await store.updateCatalog(PUBLISHER_CLIENT, catalog.id, {
     sourceWordbookId: source.id,
+    expectedHeadRevisionId: catalog.headRevisionId,
     message: "更新 beta",
     author: publisher,
   });
+  assert.equal(betaSnapshot.kind, "updated");
+  if (betaSnapshot.kind !== "updated") throw new Error("snapshot was not updated");
 
   const preview = await store.getContributionPreview(CONTRIBUTOR_CLIENT, contributor.userId, joined.id);
   assert.ok(preview);
@@ -203,6 +206,7 @@ test("three-way preview keeps unrelated publisher changes and merge rejects late
   await store.updateWord(PUBLISHER_CLIENT, source.id, publisherAlpha.id, { zhMeaning: "发布者后来修改" });
   await store.updateCatalog(PUBLISHER_CLIENT, catalog.id, {
     sourceWordbookId: source.id,
+    expectedHeadRevisionId: betaSnapshot.catalog.headRevisionId,
     message: "抢先修改 alpha",
     author: publisher,
   });
@@ -235,6 +239,79 @@ test("publisher source divergence blocks merge without changing the public head"
   const result = await store.mergeContribution(PUBLISHER_CLIENT, publisher, catalog.id, created.contribution.id, {});
   assert.equal(result.kind, "conflict");
   assert.equal((await store.getCatalog(PUBLISHER_CLIENT, catalog.id))!.headRevisionId, headBefore);
+});
+
+test("snapshot updates require the current head, keep the linked source, and skip empty versions", async () => {
+  const { store, publisher, contributor, source, catalog, joined } = await collaborationFixture();
+
+  const missingHead = await store.updateCatalog(PUBLISHER_CLIENT, catalog.id, {
+    sourceWordbookId: source.id,
+    author: publisher,
+  });
+  assert.deepEqual(missingHead, { kind: "head-required", headRevisionId: catalog.headRevisionId });
+
+  const stale = await store.updateCatalog(PUBLISHER_CLIENT, catalog.id, {
+    sourceWordbookId: source.id,
+    expectedHeadRevisionId: "revision-stale-preview",
+    author: publisher,
+  });
+  assert.deepEqual(stale, { kind: "stale", headRevisionId: catalog.headRevisionId });
+
+  const noOp = await store.updateCatalog(PUBLISHER_CLIENT, catalog.id, {
+    sourceWordbookId: source.id,
+    expectedHeadRevisionId: catalog.headRevisionId,
+    message: "没有实际变化",
+    author: publisher,
+  });
+  assert.equal(noOp.kind, "updated");
+  if (noOp.kind !== "updated") throw new Error("no-op snapshot was rejected");
+  assert.equal(noOp.catalog.headRevisionId, catalog.headRevisionId);
+  const initialHistory = await store.listCatalogRevisions(PUBLISHER_CLIENT, publisher.userId, catalog.id, {});
+  assert.deepEqual(initialHistory?.items.map((revision) => revision.kind), ["initial"]);
+
+  const alternate = await store.createMyWordbook(PUBLISHER_CLIENT, {
+    title: "Wrong source",
+    words: [entry("alpha", "另一个来源")],
+  });
+  const switched = await store.updateCatalog(PUBLISHER_CLIENT, catalog.id, {
+    sourceWordbookId: alternate.id,
+    expectedHeadRevisionId: catalog.headRevisionId,
+    author: publisher,
+  });
+  assert.deepEqual(switched, {
+    kind: "source-mismatch",
+    headRevisionId: catalog.headRevisionId,
+    sourceWordbookId: source.id,
+  });
+
+  const contributorWords = await store.listWords(CONTRIBUTOR_CLIENT, joined.id);
+  const alpha = contributorWords!.find((word) => word.word === "alpha")!;
+  await store.updateWord(CONTRIBUTOR_CLIENT, joined.id, alpha.id, { zhMeaning: "合并后的甲" });
+  const preview = await store.getContributionPreview(CONTRIBUTOR_CLIENT, contributor.userId, joined.id);
+  assert.ok(preview);
+  const created = await store.createContribution(CONTRIBUTOR_CLIENT, contributor, catalog.id, {
+    title: "提交 alpha 改进",
+    expectedSourceUpdatedAt: preview.expectedSourceUpdatedAt,
+    expectedHeadRevisionId: preview.expectedHeadRevisionId,
+  });
+  assert.equal(created.kind, "created");
+  if (created.kind !== "created") throw new Error("contribution was not created");
+  assert.equal((await store.mergeContribution(PUBLISHER_CLIENT, publisher, catalog.id, created.contribution.id, {})).kind, "updated");
+
+  const merged = await store.getCatalog(PUBLISHER_CLIENT, catalog.id);
+  assert.ok(merged);
+  const afterMergeSnapshot = await store.updateCatalog(PUBLISHER_CLIENT, catalog.id, {
+    sourceWordbookId: source.id,
+    expectedHeadRevisionId: merged.headRevisionId,
+    message: "合并后刷新同一来源",
+    author: publisher,
+  });
+  assert.equal(afterMergeSnapshot.kind, "updated");
+  if (afterMergeSnapshot.kind !== "updated") throw new Error("same-source snapshot was rejected");
+  assert.equal(afterMergeSnapshot.catalog.headRevisionId, merged.headRevisionId);
+  assert.equal((await store.getCatalog(PUBLISHER_CLIENT, catalog.id))?.words.find((word) => word.word === "alpha")?.zhMeaning, "合并后的甲");
+  const finalHistory = await store.listCatalogRevisions(PUBLISHER_CLIENT, publisher.userId, catalog.id, {});
+  assert.deepEqual(finalHistory?.items.map((revision) => revision.kind), ["merge", "initial"]);
 });
 
 test("v5 migration creates one deterministic immutable initial revision per catalog", () => {

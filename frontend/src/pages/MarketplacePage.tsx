@@ -48,6 +48,7 @@ type PublishForm = {
 }
 type PublishCatalogInput = {
   sourceWordbookId: string
+  expectedHeadRevisionId?: string
   title: string
   description: string
   exams: string[]
@@ -74,6 +75,13 @@ const MODAL_FOCUSABLE = 'button:not(:disabled), input:not(:disabled), select:not
 
 export function parseMarketplaceCollection(value: string | null): 'all' | 'favorites' | 'uploads' {
   return value === 'favorites' || value === 'uploads' ? value : 'all'
+}
+
+export function isSnapshotSourceLocked(
+  sourceWordbookId: string | undefined,
+  wordbooks: readonly Pick<MyWordbook, 'id'>[],
+): boolean {
+  return Boolean(sourceWordbookId && wordbooks.some((book) => book.id === sourceWordbookId))
 }
 
 // Prefer the structured API status; retain the message fallback for older
@@ -315,6 +323,7 @@ export function MarketplacePage() {
   const myFavorites = (favoritesCatalog ?? (remoteCatalog ?? []).filter((book) => book.favorited)).map(catalogToMarketplace)
   const findOwnUpload = (id: string): CatalogWordbook | null => (uploadsCatalog ?? []).find((book) => book.id === id) ?? remoteCatalog?.find((book) => book.id === id) ?? null
   const selectedSource = personalWordbooks.find((book) => book.id === publishForm.sourceWordbookId)
+  const snapshotSourceLocked = isSnapshotSourceLocked(publishTarget?.sourceWordbookId, personalWordbooks)
 
   useEffect(() => {
     if (!focusId || !filtered.some((book) => book.id === focusId)) return
@@ -355,14 +364,17 @@ export function MarketplacePage() {
     try { user = await api.me() } catch { user = null }
     setAuthUser(user)
     try {
-      const available = (await api.listMyWordbooks()).filter((book) => book.wordCount > 0)
-      setPersonalWordbooks(available)
+      const wordbooks = await api.listMyWordbooks()
+      const available = wordbooks.filter((book) => book.wordCount > 0)
       // Never guess an update source from a mutable display title. New uploads
       // can safely start on the first book; existing uploads use the explicit
       // owner-only source id when available, otherwise require a fresh choice.
       const matchingBook = target
-        ? available.find((book) => book.id === target.sourceWordbookId)
+        ? wordbooks.find((book) => book.id === target.sourceWordbookId)
         : available[0]
+      // An existing active source is the only safe full-snapshot source. If it no
+      // longer exists, expose the remaining books so the owner can explicitly repair it.
+      setPersonalWordbooks(target && matchingBook ? [matchingBook] : available)
       // Keep an existing entry's visibility; new uploads default to 公开, falling
       // back to 邀请码 when the user is not logged in (公开 needs an account).
       let visibility: CatalogVisibility = target?.visibility ?? 'public'
@@ -376,7 +388,8 @@ export function MarketplacePage() {
         visibility,
         revisionMessage: target ? '更新词书' : '首次发布',
       })
-      if (!available.length) setPublishError('请先在“我的单词本”创建并导入至少一个非空词本。')
+      if (target && matchingBook && matchingBook.wordCount === 0) setPublishError('原发布源当前没有词条，请先补充词条后再更新快照。')
+      else if (!available.length) setPublishError('请先在“我的单词本”创建并导入至少一个非空词本。')
       else if (target && !matchingBook) setPublishError('为避免更新错词本，请重新选择这次快照的来源。')
     } catch {
       setPublishError('个人词本加载失败，请稍后重试。')
@@ -386,6 +399,7 @@ export function MarketplacePage() {
   }
 
   function chooseSourceWordbook(sourceWordbookId: string) {
+    if (snapshotSourceLocked && sourceWordbookId !== publishTarget?.sourceWordbookId) return
     setPublishForm((current) => {
       const nextBook = personalWordbooks.find((book) => book.id === sourceWordbookId)
       const previousBook = personalWordbooks.find((book) => book.id === current.sourceWordbookId)
@@ -400,6 +414,10 @@ export function MarketplacePage() {
       setPublishError('请选择一个非空词本。')
       return
     }
+    if (selectedSource.wordCount === 0) {
+      setPublishError('原发布源当前没有词条，请先补充词条后再更新快照。')
+      return
+    }
     if (!publishForm.title.trim()) {
       setPublishError('请填写在广场展示的词库名称。')
       return
@@ -410,9 +428,15 @@ export function MarketplacePage() {
 
   async function submitPublish() {
     if (!api || !selectedSource || !publishForm.title.trim()) return
+    if (publishTarget && !publishTarget.headRevisionId) {
+      setPublishStep('details')
+      setPublishError('当前上传缺少版本信息，请刷新单词广场后重新打开更新窗口。')
+      return
+    }
     const publishApi = api as typeof api & PublishingWorkspaceApi
     const input: PublishCatalogInput = {
       sourceWordbookId: selectedSource.id,
+      ...(publishTarget ? { expectedHeadRevisionId: publishTarget.headRevisionId } : {}),
       title: publishForm.title.trim(),
       description: publishForm.description.trim(),
       exams: publishForm.exam ? [publishForm.exam] : [],
@@ -434,7 +458,18 @@ export function MarketplacePage() {
       setShowPublish(false)
       await refreshRemote()
     } catch (error) {
-      if (input.visibility === 'public' && isAuthRequiredError(error)) {
+      if (error instanceof WorkspaceApiError && (
+        error.code === 'CATALOG_HEAD_REQUIRED'
+        || error.code === 'CATALOG_HEAD_STALE'
+        || error.code === 'CATALOG_SOURCE_MISMATCH'
+      )) {
+        setShowPublish(false)
+        setPublishTarget(null)
+        await refreshRemote()
+        setSyncMessage(error.code === 'CATALOG_SOURCE_MISMATCH'
+          ? '快照未更新：该上传已绑定另一发布源，请重新打开并使用原发布源。'
+          : '快照未更新：广场版本已经变化，请重新打开更新窗口确认最新内容。')
+      } else if (input.visibility === 'public' && isAuthRequiredError(error)) {
         setAuthUser(null)
         setPublishStep('details')
         setPublishError(UPLOAD_LOGIN_HINT)

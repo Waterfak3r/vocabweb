@@ -1148,11 +1148,31 @@ export function createApp(options: CreateAppOptions = {}) {
       return;
     }
     try {
-      const catalog = await studyStore.updateCatalog(clientId, id, {
+      const result = await studyStore.updateCatalog(clientId, id, {
         ...input,
         author: { userId: user.id, username: user.username },
       });
-      if (!catalog) response.status(404).json(apiError("CATALOG_NOT_FOUND", "Catalog wordbook or source wordbook was not found")); else response.status(200).json(catalog);
+      if (result.kind === "updated") {
+        response.status(200).json(result.catalog);
+      } else if (result.kind === "not-found") {
+        response.status(404).json(apiError("CATALOG_NOT_FOUND", "Catalog wordbook or source wordbook was not found"));
+      } else if (result.kind === "head-required") {
+        response.status(409).json({
+          ...apiError("CATALOG_HEAD_REQUIRED", "Refresh the upload before publishing a new snapshot"),
+          headRevisionId: result.headRevisionId,
+        });
+      } else if (result.kind === "stale") {
+        response.status(409).json({
+          ...apiError("CATALOG_HEAD_STALE", "The public wordbook changed; preview the snapshot again"),
+          headRevisionId: result.headRevisionId,
+        });
+      } else {
+        response.status(409).json({
+          ...apiError("CATALOG_SOURCE_MISMATCH", "The upload is already linked to another active source wordbook"),
+          headRevisionId: result.headRevisionId,
+          sourceWordbookId: result.sourceWordbookId,
+        });
+      }
     } catch (error) { next(error); }
   };
   app.patch("/api/catalog/wordbooks/:id", updateCatalogSnapshot);

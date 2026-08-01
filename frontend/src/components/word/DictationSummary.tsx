@@ -8,6 +8,7 @@ export type DictationSummaryProps = {
   wrong: WordbookItem[]
   attempts?: number
   incorrect?: number
+  skipped?: number
   meaningPreference?: MeaningLanguagePreference
   onRetryAll: () => void
   onRetryWrong: () => void
@@ -19,6 +20,7 @@ export function DictationSummary({
   wrong,
   attempts = total,
   incorrect = wrong.length,
+  skipped = 0,
   meaningPreference = 'zh',
   onRetryAll,
   onRetryWrong,
@@ -29,7 +31,9 @@ export function DictationSummary({
       <p className="dictation-score">
         过关 <strong>{correct}</strong> 词，共 {total} 词
       </p>
-      <p className="dictation-summary-meta">共尝试 {attempts} 次，错误 {incorrect} 次</p>
+      <p className="dictation-summary-meta">
+        共作答 {attempts} 次，错误 {incorrect} 次{skipped > 0 ? `，跳过 ${skipped} 次` : ''}
+      </p>
 
       {wrong.length > 0 && (
         <div className="dictation-wrong">

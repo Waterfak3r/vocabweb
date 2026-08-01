@@ -654,11 +654,54 @@ test("collaboration API supports preview, public audit, atomic merge, version hi
     })).json() as { words: Array<{ word: string; zhMeaning?: string }>; headRevisionId: string };
     assert.equal(mergedCatalog.words.find((word) => word.word === "alpha")?.zhMeaning, "改进后的甲");
 
+    const missingSnapshotHead = await fetch(`${app.baseUrl}/api/catalog/wordbooks/${catalog.id}`, {
+      method: "PATCH",
+      headers: jsonHeaders(ALICE_CLIENT, publisher.cookie),
+      body: JSON.stringify({ sourceWordbookId: source.id }),
+    });
+    assert.equal(missingSnapshotHead.status, 409);
+    assert.equal((await missingSnapshotHead.json() as { error: { code: string } }).error.code, "CATALOG_HEAD_REQUIRED");
+
+    const staleSnapshot = await fetch(`${app.baseUrl}/api/catalog/wordbooks/${catalog.id}`, {
+      method: "PATCH",
+      headers: jsonHeaders(ALICE_CLIENT, publisher.cookie),
+      body: JSON.stringify({ sourceWordbookId: source.id, expectedHeadRevisionId: catalog.headRevisionId }),
+    });
+    assert.equal(staleSnapshot.status, 409);
+    assert.equal((await staleSnapshot.json() as { error: { code: string } }).error.code, "CATALOG_HEAD_STALE");
+
+    const alternateSourceResponse = await fetch(`${app.baseUrl}/api/my/wordbooks`, {
+      method: "POST",
+      headers: jsonHeaders(ALICE_CLIENT, publisher.cookie),
+      body: JSON.stringify({
+        title: "Alternate source",
+        words: [{ word: "alpha", phonetic: "/alpha/", meanings: [{ pos: "noun", definition: "alpha" }], source: "user", zhMeaning: "另一个来源", zhMeaningSource: "user" }],
+      }),
+    });
+    assert.equal(alternateSourceResponse.status, 201);
+    const alternateSource = await alternateSourceResponse.json() as { id: string };
+    const switchedSource = await fetch(`${app.baseUrl}/api/catalog/wordbooks/${catalog.id}`, {
+      method: "PATCH",
+      headers: jsonHeaders(ALICE_CLIENT, publisher.cookie),
+      body: JSON.stringify({ sourceWordbookId: alternateSource.id, expectedHeadRevisionId: mergedCatalog.headRevisionId }),
+    });
+    assert.equal(switchedSource.status, 409);
+    assert.equal((await switchedSource.json() as { error: { code: string } }).error.code, "CATALOG_SOURCE_MISMATCH");
+
+    const noOpSnapshot = await fetch(`${app.baseUrl}/api/catalog/wordbooks/${catalog.id}`, {
+      method: "PATCH",
+      headers: jsonHeaders(ALICE_CLIENT, publisher.cookie),
+      body: JSON.stringify({ sourceWordbookId: source.id, expectedHeadRevisionId: mergedCatalog.headRevisionId }),
+    });
+    assert.equal(noOpSnapshot.status, 200);
+    assert.equal((await noOpSnapshot.json() as { headRevisionId: string }).headRevisionId, mergedCatalog.headRevisionId);
+
     const revisionsResponse = await fetch(`${app.baseUrl}/api/catalog/wordbooks/${catalog.id}/revisions`, {
       headers: jsonHeaders(ALICE_CLIENT, publisher.cookie),
     });
     assert.equal(revisionsResponse.status, 200);
     const revisions = await revisionsResponse.json() as { items: Array<{ id: string; kind: string }> };
+    assert.equal(revisions.items.some((revision) => revision.kind === "update"), false);
     const mergeRevision = revisions.items.find((revision) => revision.kind === "merge")!;
     const revertPreviewResponse = await fetch(`${app.baseUrl}/api/catalog/wordbooks/${catalog.id}/revisions/${mergeRevision.id}/revert-preview`, {
       headers: jsonHeaders(ALICE_CLIENT, publisher.cookie),

@@ -28,7 +28,11 @@ export function AppShell() {
             本地存储不可用，最近的更改不会被保存——请检查浏览器隐私模式或存储空间。
           </p>
         )}
-        <main id="main-content" className="site-main" tabIndex={-1}>
+        <main
+          id="main-content"
+          className={`site-main${pathname === '/' ? ' site-main-home' : ''}`}
+          tabIndex={-1}
+        >
           {/* Inside the shell so header/nav stay visible while a lazy page chunk loads. */}
           <Suspense fallback={<p className="page-loading">加载中…</p>}>
             <Outlet />

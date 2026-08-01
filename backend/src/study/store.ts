@@ -23,7 +23,7 @@ import type { ClientData, State } from "./ladder.js";
 import type {
   AccountUser, BatchWordInput, BatchWordResult, CatalogAuthor, CatalogCard, CatalogConflict, CatalogContribution, CatalogContributionView,
   CatalogQuery, CatalogRevision, CatalogRevisionSummary, CatalogRevisionView, CatalogWordChange, CatalogWordbook,
-  CommitImportDraftInput, ContributionMutationResult, ContributionPreview, CreateCatalogContributionInput, CreateImportDraftInput, CreateMyWordbookInput,
+  CatalogUpdateMutationResult, CommitImportDraftInput, ContributionMutationResult, ContributionPreview, CreateCatalogContributionInput, CreateImportDraftInput, CreateMyWordbookInput,
   CursorPage, CursorQuery,
   ImportDraft, ImportDraftEntry, LearningEvent, LearningEventInput, LearningQueueItem, MyWordbook, MyWordbookCard,
   MeaningPreference, ResolveCatalogContributionInput, ResolvedImportDraftEntry, RevertPreview, RevertRevisionInput, ReviewSchedule, RevisionMutationResult,
@@ -557,13 +557,32 @@ export abstract class BaseStore implements StudyStore {
     state.catalog.push(book);
     return this.catalogCard(state, book, client, clientId);
   }); }
-  async updateCatalog(clientId: string, id: string, input: UpdateCatalogWordbookInput): Promise<CatalogCard | null> { return await this.mutate((state) => {
-    const catalog = state.catalog.find((item) => item.id === id && item.ownerClientId === clientId); if (!catalog) return null;
+  async updateCatalog(clientId: string, id: string, input: UpdateCatalogWordbookInput): Promise<CatalogUpdateMutationResult> { return await this.mutate((state) => {
+    const catalog = state.catalog.find((item) => item.id === id && item.ownerClientId === clientId);
+    if (!catalog) return { kind: "not-found" };
     const client = this.client(state, clientId);
+    if (input.sourceWordbookId !== undefined) {
+      if (!input.expectedHeadRevisionId) {
+        return { kind: "head-required", headRevisionId: catalog.headRevisionId };
+      }
+      if (input.expectedHeadRevisionId !== catalog.headRevisionId) {
+        return { kind: "stale", headRevisionId: catalog.headRevisionId };
+      }
+      const linkedSource = catalog.sourceWordbookId
+        ? client.wordbooks.find((item) => item.id === catalog.sourceWordbookId && !item.deletedAt)
+        : undefined;
+      if (linkedSource && linkedSource.id !== input.sourceWordbookId) {
+        return {
+          kind: "source-mismatch",
+          headRevisionId: catalog.headRevisionId,
+          sourceWordbookId: linkedSource.id,
+        };
+      }
+    }
     const source = input.sourceWordbookId
       ? client.wordbooks.find((item) => item.id === input.sourceWordbookId && !item.deletedAt)
       : undefined;
-    if (input.sourceWordbookId && !source) return null;
+    if (input.sourceWordbookId && !source) return { kind: "not-found" };
     const previousWords = clone(catalog.words);
     const previousTitle = catalog.title;
     const previousDescription = catalog.description;
@@ -582,7 +601,7 @@ export abstract class BaseStore implements StudyStore {
       || previousDescription !== catalog.description
       || JSON.stringify(previousExams) !== JSON.stringify(catalog.exams)
       || JSON.stringify(previousGoals) !== JSON.stringify(catalog.goals);
-    const snapshotUpdated = input.sourceWordbookId !== undefined || changes.length > 0 || metadataChanged;
+    const snapshotUpdated = changes.length > 0 || metadataChanged;
     if (snapshotUpdated) {
       const at = this.now().toISOString();
       const revision: CatalogRevision = {
@@ -615,7 +634,7 @@ export abstract class BaseStore implements StudyStore {
         }
       }
     }
-    return this.catalogCard(state, catalog, client, clientId);
+    return { kind: "updated", catalog: this.catalogCard(state, catalog, client, clientId) };
   }); }
   async importShareCode(clientId: string, shareCode: string): Promise<{ wordbook: MyWordbookCard; created: boolean } | null> {
     // This is intentionally one mutation instead of delegating to direct-id add:

@@ -92,6 +92,12 @@ export type CatalogRevisionSummary = Pick<
   CatalogRevision,
   "id" | "kind" | "message" | "author" | "committer" | "createdAt" | "stats" | "contributionId" | "revertsRevisionId"
 >;
+export type CatalogUpdateMutationResult =
+  | { kind: "updated"; catalog: CatalogCard }
+  | { kind: "not-found" }
+  | { kind: "head-required"; headRevisionId: string }
+  | { kind: "stale"; headRevisionId: string }
+  | { kind: "source-mismatch"; headRevisionId: string; sourceWordbookId: string };
 export interface CatalogContribution {
   id: string;
   catalogId: string;
@@ -384,6 +390,8 @@ export interface UploadCatalogWordbookInput extends Partial<CreateMyWordbookInpu
 }
 export interface UpdateCatalogWordbookInput {
   sourceWordbookId?: string; title?: string; description?: string; exams?: CatalogExam[]; goals?: LearningGoal[];
+  /** Required when publishing source content; prevents a stale preview from replacing a newer public commit. */
+  expectedHeadRevisionId?: string;
   /** Optional immutable revision message; defaults to "更新词书" when content changes. */
   message?: string;
   /** Switching TO "public" must be authenticated (enforced by the route), which also stamps the author. */
@@ -466,7 +474,7 @@ export interface StudyStore {
   addCatalogToMine(clientId: string, id: string): Promise<{ wordbook: MyWordbookCard; created: boolean } | null>;
   uploadCatalog(clientId: string, input: UploadCatalogWordbookInput): Promise<CatalogCard | null>;
   upsertSeedCatalog(clientId: string, input: UploadCatalogWordbookInput & { seedKey: string; author: CatalogAuthor }): Promise<CatalogCard>;
-  updateCatalog(clientId: string, id: string, input: UpdateCatalogWordbookInput): Promise<CatalogCard | null>;
+  updateCatalog(clientId: string, id: string, input: UpdateCatalogWordbookInput): Promise<CatalogUpdateMutationResult>;
   importShareCode(clientId: string, shareCode: string): Promise<{ wordbook: MyWordbookCard; created: boolean } | null>;
   getContributionPreview(clientId: string, userId: string, wordbookId: string): Promise<ContributionPreview | null>;
   createContribution(

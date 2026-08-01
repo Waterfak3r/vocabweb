@@ -882,6 +882,15 @@
   color: var(--success);
 }
 
+.dictation-verdict-skipped {
+  color: var(--accent-strong);
+}
+
+.dictation-skip-note {
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
 .dictation-given {
   font-size: var(--text-sm);
   color: var(--muted);

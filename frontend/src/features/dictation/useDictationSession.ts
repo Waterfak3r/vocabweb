@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useState } from 'react'
 import { gradeAnswer, shuffled } from '../../domain/score'
-import type { DictationAnswer, WordbookItem } from '../../domain/types'
+import type { DictationAnswer, DictationGrade, WordbookItem } from '../../domain/types'
 
 export type DictationPhase = 'prompt' | 'feedback' | 'summary'
 export const REQUIRED_DICTATION_STREAK = 3
@@ -21,6 +21,7 @@ export type DictationSession = {
   requiredStreak: number
   attemptCount: number
   incorrectCount: number
+  skippedCount: number
   wrongDeck: WordbookItem[]
   setAnswer: (value: string) => void
   submit: () => void
@@ -37,6 +38,22 @@ export function advanceDictationStreak(current: number, correct: boolean) {
   return { streak, passed: correct && streak === REQUIRED_DICTATION_STREAK }
 }
 
+export function advanceDictationAttempt(current: number, grade: DictationGrade) {
+  if (grade === 'skipped') return { streak: current, passed: false }
+  return advanceDictationStreak(current, grade === 'correct')
+}
+
+export function dictationAttemptCounts(answers: readonly DictationAnswer[]) {
+  return answers.reduce((counts, answer) => {
+    if (answer.grade === 'skipped') counts.skipped += 1
+    else {
+      counts.attempts += 1
+      if (answer.grade === 'incorrect') counts.incorrect += 1
+    }
+    return counts
+  }, { attempts: 0, incorrect: 0, skipped: 0 })
+}
+
 export function skippedDictationAnswer(
   item: Pick<WordbookItem, 'id' | 'word'>,
 ): DictationAnswer {
@@ -44,8 +61,7 @@ export function skippedDictationAnswer(
     itemId: item.id,
     word: item.word,
     given: '',
-    grade: 'incorrect',
-    skipped: true,
+    grade: 'skipped',
   }
 }
 
@@ -77,9 +93,9 @@ export function useDictationSession(
   const finishAttempt = useCallback((attempt: DictationAnswer) => {
     if (!current || phase !== 'prompt') return
     const grade = attempt.grade
-    const { streak: nextStreak, passed } = advanceDictationStreak(
+    const { streak: nextStreak, passed } = advanceDictationAttempt(
       streaks[current.id] ?? 0,
-      grade === 'correct',
+      grade,
     )
     setAnswers((list) => [...list, attempt])
     setStreaks((value) => ({ ...value, [current.id]: nextStreak }))
@@ -144,7 +160,11 @@ export function useDictationSession(
     if (wrongDeck.length) startDeck(wrongDeck)
   }, [startDeck, wrongDeck])
 
-  const incorrectCount = answers.filter((entry) => entry.grade === 'incorrect').length
+  const {
+    attempts: attemptCount,
+    incorrect: incorrectCount,
+    skipped: skippedCount,
+  } = dictationAttemptCounts(answers)
   return useMemo(() => ({
     deck,
     current,
@@ -159,8 +179,9 @@ export function useDictationSession(
     remainingCount: queue.length,
     currentStreak,
     requiredStreak: REQUIRED_DICTATION_STREAK,
-    attemptCount: answers.length,
+    attemptCount,
     incorrectCount,
+    skippedCount,
     wrongDeck,
     setAnswer,
     submit,
@@ -168,5 +189,5 @@ export function useDictationSession(
     next,
     retryAll,
     retryWrong,
-  }), [answer, answers, current, currentStreak, deck, incorrectCount, inputError, isLast, next, passedIds.length, phase, queue.length, retryAll, retryWrong, setAnswer, skip, submit, wrongDeck])
+  }), [answer, answers, attemptCount, current, currentStreak, deck, incorrectCount, inputError, isLast, next, passedIds.length, phase, queue.length, retryAll, retryWrong, setAnswer, skip, skippedCount, submit, wrongDeck])
 }

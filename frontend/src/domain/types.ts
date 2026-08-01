@@ -61,12 +61,11 @@ export type LookupResult =
 export type FlashcardVerdict = 'know' | 'unknown'
 
 /** Dictation session (ephemeral, page-local) */
-export type DictationGrade = 'correct' | 'incorrect'
+export type DictationGrade = 'correct' | 'incorrect' | 'skipped'
 
 export type DictationAnswer = {
   itemId: string
   word: string
   given: string
   grade: DictationGrade
-  skipped?: true
 }

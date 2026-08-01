@@ -21,6 +21,8 @@ export type WordbookWordPatch = {
 
 /** 熟练度档位显示名，索引即档位 0-4。 */
 const LEVEL_NAMES = ['未学习', '初识', '熟悉', '掌握', '精通'] as const
+const WORD_LEVELS: WordLevel[] = [0, 1, 2, 3, 4]
+export type WordManagerLevelFilter = WordLevel | 'all'
 
 /** Same fallback ladder as the wordbook decks: prefer level, else map the legacy status. */
 function levelOf(entry: EditableWordbookItem): WordLevel {
@@ -30,6 +32,7 @@ function levelOf(entry: EditableWordbookItem): WordLevel {
 type Props = {
   title: string
   entries: EditableWordbookItem[]
+  initialLevel?: WordManagerLevelFilter
   saving?: boolean
   onClose: () => void
   onSave: (id: string, patch: WordbookWordPatch) => Promise<void>
@@ -61,10 +64,41 @@ export function parseEditableMeanings(value: string): EditableWordbookItem['mean
     .filter((meaning) => meaning.pos !== 'unknown' || Boolean(meaning.definition) || Boolean(meaning.example))
 }
 
-export function WordManagerDialog({ title, entries, saving = false, onClose, onSave, onMarkKnown, onBatch }: Props) {
+export function filterManagedWords(
+  entries: readonly EditableWordbookItem[],
+  query: string,
+  level: WordManagerLevelFilter,
+) {
+  const normalized = query.trim().toLowerCase()
+  return entries.filter((entry) => {
+    if (level !== 'all' && levelOf(entry) !== level) return false
+    if (!normalized) return true
+    return entry.word.toLowerCase().includes(normalized)
+      || entry.zhMeaning?.includes(query.trim())
+      || entry.meanings.some((meaning) => meaning.definition.toLowerCase().includes(normalized))
+  })
+}
+
+export function WordManagerDialog({
+  title,
+  entries,
+  initialLevel = 'all',
+  saving = false,
+  onClose,
+  onSave,
+  onMarkKnown,
+  onBatch,
+}: Props) {
   const [query, setQuery] = useState('')
-  const [selectedId, setSelectedId] = useState(entries[0]?.id ?? '')
-  const selected = entries.find((entry) => entry.id === selectedId) ?? entries[0]
+  const [levelFilter, setLevelFilter] = useState<WordManagerLevelFilter>(initialLevel)
+  const [selectedId, setSelectedId] = useState(
+    () => entries.find((entry) => initialLevel === 'all' || levelOf(entry) === initialLevel)?.id ?? entries[0]?.id ?? '',
+  )
+  const visible = useMemo(
+    () => filterManagedWords(entries, query, levelFilter),
+    [entries, levelFilter, query],
+  )
+  const selected = visible.find((entry) => entry.id === selectedId) ?? visible[0]
   const [word, setWord] = useState(selected?.word ?? '')
   const [phonetic, setPhonetic] = useState(selected?.phonetic ?? '')
   const [zhMeaning, setZhMeaning] = useState(selected?.zhMeaning ?? '')
@@ -74,15 +108,10 @@ export function WordManagerDialog({ title, entries, saving = false, onClose, onS
   const [batching, setBatching] = useState<BatchWordAction | null>(null)
   const [batchMessage, setBatchMessage] = useState('')
 
-  const visible = useMemo(() => {
-    const normalized = query.trim().toLowerCase()
-    if (!normalized) return entries
-    return entries.filter((entry) =>
-      entry.word.toLowerCase().includes(normalized)
-      || entry.zhMeaning?.includes(query.trim())
-      || entry.meanings.some((meaning) => meaning.definition.toLowerCase().includes(normalized)),
-    )
-  }, [entries, query])
+  const levelCounts = useMemo(
+    () => WORD_LEVELS.map((level) => entries.filter((entry) => levelOf(entry) === level).length),
+    [entries],
+  )
   const visibleIds = visible.map((entry) => entry.id)
   const selectedVisibleCount = visibleIds.filter((id) => selectedIds.has(id)).length
   const allVisibleSelected = visibleIds.length > 0 && selectedVisibleCount === visibleIds.length
@@ -192,8 +221,29 @@ export function WordManagerDialog({ title, entries, saving = false, onClose, onS
           <aside>
             <label>
               <span className="sr-only">搜索词条</span>
-              <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索英文或释义" />
+              <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={`搜索${levelFilter === 'all' ? '' : LEVEL_NAMES[levelFilter]}词条`} />
             </label>
+            <div className="word-manager-level-filters" role="group" aria-label="按熟练度筛选">
+              <button
+                type="button"
+                className={levelFilter === 'all' ? 'active' : ''}
+                aria-pressed={levelFilter === 'all'}
+                onClick={() => setLevelFilter('all')}
+              >
+                <span>全部</span><strong>{entries.length}</strong>
+              </button>
+              {WORD_LEVELS.map((level) => (
+                <button
+                  type="button"
+                  key={level}
+                  className={levelFilter === level ? 'active' : ''}
+                  aria-pressed={levelFilter === level}
+                  onClick={() => setLevelFilter(level)}
+                >
+                  <span>{LEVEL_NAMES[level]}</span><strong>{levelCounts[level]}</strong>
+                </button>
+              ))}
+            </div>
             <div className="word-manager-select-all">
               <label>
                 <input

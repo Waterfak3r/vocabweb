@@ -257,12 +257,13 @@ export function parseUploadCatalog(value: unknown): UploadCatalogWordbookInput |
 export function parseUpdateCatalog(value: unknown): UpdateCatalogWordbookInput | null {
   if (!isJsonObject(value)) return null;
   const sourceWordbookId = value.sourceWordbookId === undefined ? undefined : parseResourceId(value.sourceWordbookId);
+  const expectedHeadRevisionId = value.expectedHeadRevisionId === undefined ? undefined : parseResourceId(value.expectedHeadRevisionId);
   const title = value.title === undefined ? undefined : text(value.title, 100); const description = value.description === undefined ? undefined : text(value.description, 500, true);
   const exams = value.exams === undefined ? undefined : choices(value.exams, EXAMS); const goals = value.goals === undefined ? undefined : choices(value.goals, GOALS);
   const visibility = value.visibility === undefined ? undefined : VISIBILITIES.includes(value.visibility as typeof VISIBILITIES[number]) ? value.visibility as typeof VISIBILITIES[number] : null;
   const message = value.message === undefined ? undefined : text(value.message, 80);
-  if (sourceWordbookId === null || title === null || description === null || exams === null || goals === null || visibility === null || message === null || (sourceWordbookId === undefined && title === undefined && description === undefined && exams === undefined && goals === undefined && visibility === undefined)) return null;
-  return { ...(sourceWordbookId ? { sourceWordbookId } : {}), ...(title !== undefined ? { title } : {}), ...(description !== undefined ? { description } : {}), ...(exams ? { exams } : {}), ...(goals ? { goals } : {}), ...(visibility ? { visibility } : {}), ...(message ? { message } : {}) };
+  if (sourceWordbookId === null || expectedHeadRevisionId === null || title === null || description === null || exams === null || goals === null || visibility === null || message === null || (sourceWordbookId === undefined && title === undefined && description === undefined && exams === undefined && goals === undefined && visibility === undefined)) return null;
+  return { ...(sourceWordbookId ? { sourceWordbookId } : {}), ...(expectedHeadRevisionId ? { expectedHeadRevisionId } : {}), ...(title !== undefined ? { title } : {}), ...(description !== undefined ? { description } : {}), ...(exams ? { exams } : {}), ...(goals ? { goals } : {}), ...(visibility ? { visibility } : {}), ...(message ? { message } : {}) };
 }
 
 export function parseCursorQuery(value: unknown): CursorQuery | null {

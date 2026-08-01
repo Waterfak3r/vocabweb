@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   filterMarketplaceBooks,
+  isSnapshotSourceLocked,
   marketplaceCatalogQuery,
   parseMarketplaceCollection,
   type MarketplaceBook,
@@ -33,6 +34,13 @@ function book(
 }
 
 describe('MarketplacePage catalog filtering', () => {
+  it('locks an existing upload to its active source but allows repairing a missing source', () => {
+    const wordbooks = [{ id: 'source-a' }, { id: 'source-b' }]
+    expect(isSnapshotSourceLocked('source-a', wordbooks)).toBe(true)
+    expect(isSnapshotSourceLocked('deleted-source', wordbooks)).toBe(false)
+    expect(isSnapshotSourceLocked(undefined, wordbooks)).toBe(false)
+  })
+
   it('supports direct favorite/upload collection URLs and safely falls back', () => {
     expect(parseMarketplaceCollection('favorites')).toBe('favorites')
     expect(parseMarketplaceCollection('uploads')).toBe('uploads')

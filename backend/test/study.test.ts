@@ -930,7 +930,7 @@ test("draft conflicts, word edits, and catalog publishing keep stable learner da
     assert.ok(lookedUp.includes("durable"));
 
     const published = await fetch(`${app.baseUrl}/api/catalog/uploads`, { method: "POST", headers: accountHeaders, body: JSON.stringify({ sourceWordbookId: privateBook.id, title: "社区快照" }) });
-    const catalog = await published.json() as { id: string };
+    const catalog = await published.json() as { id: string; headRevisionId: string };
     assert.equal(published.status, 201);
     const changed = await fetch(`${app.baseUrl}/api/my/wordbooks/${privateBook.id}/words/${initial.id}`, { method: "PATCH", headers: accountHeaders, body: JSON.stringify({ zhMeaning: "之后的私有修改" }) });
     assert.equal(changed.status, 200);
@@ -939,7 +939,7 @@ test("draft conflicts, word edits, and catalog publishing keep stable learner da
     const oldBook = (await oldCopy.json() as { wordbook: { id: string } }).wordbook;
     const oldWords = await (await fetch(`${app.baseUrl}/api/my/wordbooks/${oldBook.id}/words`, { headers: otherHeaders })).json() as Array<{ zhMeaning?: string }>;
     assert.equal(oldWords[0]!.zhMeaning, "有韧性");
-    const refreshed = await fetch(`${app.baseUrl}/api/catalog/wordbooks/${catalog.id}`, { method: "PATCH", headers: accountHeaders, body: JSON.stringify({ sourceWordbookId: privateBook.id }) });
+    const refreshed = await fetch(`${app.baseUrl}/api/catalog/wordbooks/${catalog.id}`, { method: "PATCH", headers: accountHeaders, body: JSON.stringify({ sourceWordbookId: privateBook.id, expectedHeadRevisionId: catalog.headRevisionId }) });
     assert.equal(refreshed.status, 200);
     const thirdHeaders = { ...headers, "x-vocab-client-id": "client-00000000" };
     const freshCopy = await fetch(`${app.baseUrl}/api/catalog/wordbooks/${catalog.id}/add`, { method: "POST", headers: thirdHeaders });

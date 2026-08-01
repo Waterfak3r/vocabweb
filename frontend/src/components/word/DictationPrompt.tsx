@@ -16,7 +16,6 @@ export type DictationPromptProps = {
   onPlay: () => void
   phase: 'prompt' | 'feedback'
   grade: DictationGrade | null
-  skipped?: boolean
   error?: string
   isLast: boolean
   currentStreak?: number
@@ -99,7 +98,6 @@ export function DictationPrompt({
   onPlay,
   phase,
   grade,
-  skipped = false,
   error,
   isLast,
   currentStreak = 0,
@@ -177,14 +175,22 @@ export function DictationPrompt({
           <Button type="submit">提交</Button>
         </div>
       ) : (
-        <div className={`dictation-feedback ${grade === 'correct' ? 'edge-success' : 'edge-danger'}`}>
+        <div className={`dictation-feedback ${grade === 'correct' ? 'edge-success' : grade === 'skipped' ? 'edge-accent' : 'edge-danger'}`}>
           {grade === 'correct' ? (
             <p className="dictation-verdict dictation-verdict-correct">{currentStreak >= requiredStreak ? '拼写正确，该词已过关' : `拼写正确，连续 ${currentStreak} / ${requiredStreak}`}</p>
+          ) : grade === 'skipped' ? (
+            <>
+              <p className="dictation-verdict dictation-verdict-skipped">已跳过本题</p>
+              <p className="dictation-skip-note">本次不计错误，也不会中断连续正确；本题稍后会再次出现</p>
+              <p className="dictation-correct">
+                正确拼写 <span className="dictation-correct-word">{item.word}</span>
+              </p>
+            </>
           ) : (
             <>
-              <p className="dictation-verdict">{skipped ? '已跳过本题' : '拼写不对'}</p>
+              <p className="dictation-verdict">拼写不对</p>
               <p className="dictation-streak-reset">连续正确次数已归零</p>
-              {!skipped && <p className="dictation-given">
+              <p className="dictation-given">
                   你写了{' '}
                   <span className={`dictation-given-word${preferences.underlineMistakes ? ' show-mistakes' : ''}`}>
                     {preferences.underlineMistakes
@@ -195,7 +201,7 @@ export function DictationPrompt({
                         ))
                       : answer}
                   </span>
-                </p>}
+                </p>
               <p className="dictation-correct">
                 正确拼写 <span className="dictation-correct-word">{item.word}</span>
               </p>

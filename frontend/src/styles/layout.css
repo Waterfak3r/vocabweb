@@ -65,6 +65,8 @@
 }
 
 .main-nav {
+  --nav-indicator-offset: 0.9rem;
+
   position: relative;
   display: flex;
   align-items: stretch;
@@ -79,10 +81,10 @@
   gap: 0.55rem;
   padding-block: 0.6rem;
   font-size: 1.08rem;
-  font-weight: 500;
+  font-weight: 600;
   color: var(--muted);
   text-decoration: none;
-  transition: color 120ms ease-out;
+  transition: color 220ms var(--ease-paper);
 }
 
 .nav-link:hover {
@@ -92,17 +94,36 @@
 
 .nav-link.active {
   color: var(--ink);
-  font-weight: 600;
 }
 
-.nav-link.active::after {
-  content: '';
+.nav-indicator {
   position: absolute;
+  z-index: 1;
+  top: 0;
   left: 0;
-  right: 0;
-  bottom: -0.9rem;
+  width: 1px;
   height: 3px;
+  border-radius: 3px 3px 0 0;
   background: var(--accent);
+  opacity: 0;
+  pointer-events: none;
+  transform: translate3d(
+    var(--nav-indicator-x, 0),
+    calc(var(--nav-indicator-y, 0) + var(--nav-indicator-offset) - 100%),
+    0
+  ) scaleX(var(--nav-indicator-width, 1));
+  transform-origin: left center;
+  will-change: transform;
+}
+
+.nav-indicator[data-ready='true'] {
+  transition:
+    transform 440ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 160ms ease-out;
+}
+
+.nav-indicator[data-visible='true'] {
+  opacity: 1;
 }
 
 .nav-icon {
@@ -345,6 +366,11 @@
   padding-block: 3.1rem 1.2rem;
 }
 
+/* The home hero already supplies its own vertical composition. */
+.site-main.site-main-home {
+  padding-top: 1rem;
+}
+
 .site-main:focus {
   outline: none;
 }
@@ -394,6 +420,8 @@
   .brand-name { font-size: 1.3rem; }
 
   .main-nav {
+    --nav-indicator-offset: 0.55rem;
+
     align-self: auto;
     width: 100%;
     justify-content: space-between;
@@ -416,7 +444,6 @@
   }
 
   .nav-icon { width: 1.15rem; height: 1.15rem; }
-  .nav-link.active::after { bottom: -0.55rem; }
   .site-main { padding-top: 1.9rem; }
 }
 

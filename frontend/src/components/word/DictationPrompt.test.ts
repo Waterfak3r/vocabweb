@@ -59,4 +59,36 @@ describe('DictationPrompt actions', () => {
       vi.unstubAllGlobals()
     }
   })
+
+  it('describes a skip as neutral feedback', () => {
+    vi.stubGlobal('window', { localStorage: { getItem: () => null } })
+    try {
+      const html = renderToStaticMarkup(createElement(DictationPrompt, {
+        item: {
+          id: 'word-1',
+          word: 'resilient',
+          phonetic: '/rɪˈzɪliənt/',
+          meanings: [{ pos: 'adjective', definition: 'Able to recover.' }],
+          source: 'user',
+          addedAt: '2026-01-01T00:00:00.000Z',
+        },
+        answer: '',
+        onAnswerChange: () => undefined,
+        onSubmit: () => undefined,
+        onSkip: () => undefined,
+        onNext: () => undefined,
+        onPlay: () => undefined,
+        phase: 'feedback',
+        grade: 'skipped',
+        isLast: false,
+        currentStreak: 2,
+      }))
+
+      expect(html).toContain('已跳过本题')
+      expect(html).toContain('本次不计错误，也不会中断连续正确')
+      expect(html).not.toContain('连续正确次数已归零')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
 })

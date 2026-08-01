@@ -45,6 +45,7 @@ describe('dictation scoring', () => {
     const answers: DictationAnswer[] = [
       { itemId: 'mitigate', word: 'mitigate', given: 'mitgate', grade: 'incorrect' },
       { itemId: 'resilient', word: 'resilient', given: 'resilient', grade: 'correct' },
+      { itemId: 'resilient', word: 'resilient', given: '', grade: 'skipped' },
     ]
 
     expect(countCorrect(answers)).toBe(1)

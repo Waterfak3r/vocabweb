@@ -9,6 +9,7 @@ import { ImportWordbookDialog } from '../components/word/ImportWordbookDialog'
 import { ShortcutHint } from '../components/word/ShortcutHint'
 import {
   WordManagerDialog,
+  type WordManagerLevelFilter,
   type WordbookWordPatch,
 } from '../components/wordbook/WordManagerDialog'
 import {
@@ -113,6 +114,14 @@ const WEEK_METRICS = [
   { key: 'new', label: '新词学习', className: 'blue' },
   { key: 'review', label: '复习巩固', className: 'orange' },
   { key: 'dictation', label: '听写训练', className: 'green' },
+] as const
+
+const WORD_LEVEL_STATS = [
+  { level: 0, key: 'l0', label: '未学习' },
+  { level: 1, key: 'l1', label: '初识' },
+  { level: 2, key: 'l2', label: '熟悉' },
+  { level: 3, key: 'l3', label: '掌握' },
+  { level: 4, key: 'l4', label: '精通' },
 ] as const
 
 function formatActivityTime(value: string) {
@@ -262,6 +271,7 @@ export function WordbookPage() {
   const [importTargetId, setImportTargetId] = useState<string | undefined>()
   const [recycleCandidate, setRecycleCandidate] = useState<WorkspaceBook | null>(null)
   const [showWordManager, setShowWordManager] = useState(false)
+  const [wordManagerLevel, setWordManagerLevel] = useState<WordManagerLevelFilter>('all')
   const [contributionBookId, setContributionBookId] = useState<string | null>(null)
   const [wordSaving, setWordSaving] = useState(false)
   const [bookQuery, setBookQuery] = useState(() => readWordbookFilters().query)
@@ -748,6 +758,11 @@ export function WordbookPage() {
   const activeBook = { ...selectedBook, entries: remoteEntries ?? [] }
   const progress = dashboard?.wordbook.progress ?? selectedBook.progress
   const wordCount = dashboard?.wordbook.wordCount ?? selectedBook.wordCount
+  const wordLevelTotal = WORD_LEVEL_STATS.reduce((total, stat) => total + progress.levels[stat.key], 0)
+  const wordLevelStatistics = WORD_LEVEL_STATS.map((stat) => {
+    const count = progress.levels[stat.key]
+    return { ...stat, count, share: wordLevelTotal ? Math.round(count / wordLevelTotal * 100) : 0 }
+  })
   const completedNew = dashboard?.todayPlan.new.completed ?? 0
   const completedReview = dashboard?.todayPlan.review.completed ?? 0
   const completedDictation = dashboard?.todayPlan.dictation.completed ?? 0
@@ -813,6 +828,10 @@ export function WordbookPage() {
       .slice(0, preferences.plan.dictation)
   }
   const entriesLoading = remoteEntries === null
+  const openWordManager = (level: WordManagerLevelFilter = 'all') => {
+    setWordManagerLevel(level)
+    setShowWordManager(true)
+  }
   const openStudy = (nextMode: StudyMode, scope: StudyRoundScope = 'standard') => {
     if (entriesLoading) {
       setNotice('词条正在加载，请稍候再开始学习。')
@@ -860,7 +879,72 @@ export function WordbookPage() {
         {notice && <p className="workspace-notice" role="status">{notice}</p>}
         <section className="workspace-overview">
           <WorkspaceCover tone={selectedBook.tone} label={selectedBook.shortLabel} />
-          <div className="workspace-overview-main"><div className="workspace-title-row"><h1 id="workspace-title">{selectedBook.title}</h1></div><p>{wordCount} 个单词　|　创建于 {new Date(selectedBook.createdAt).toLocaleDateString('zh-CN')}　|　最后更新：{new Date(selectedBook.updatedAt).toLocaleString('zh-CN')}</p><div className={`workspace-category-editor ${categoryEditing ? 'is-editing' : ''}`}><label htmlFor="wordbook-category">分类</label><div className="workspace-category-field"><input ref={categoryInputRef} id="wordbook-category" list={categoryEditing ? 'wordbook-categories' : undefined} value={categoryDraft} maxLength={30} readOnly={!categoryEditing} onChange={(event) => setCategoryDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && categoryEditing) { event.preventDefault(); void saveCategory() } else if (event.key === 'Escape' && categoryEditing) { setCategoryDraft(selectedBook.category ?? ''); setCategoryEditing(false) } }} placeholder="未分类" aria-label={categoryEditing ? '编辑单词本分类' : '单词本分类'} /><button type="button" onClick={toggleCategoryEditing} disabled={categorySaving} aria-label={categoryEditing ? '保存分类' : '修改分类'} title={categoryEditing ? '保存分类（Enter）' : '修改分类'}><WorkspaceIcon name="edit" /></button></div><datalist id="wordbook-categories">{categories.map((category) => <option key={category} value={category} />)}</datalist></div><div className="workspace-progress-label"><span>学习进度</span><strong>{progress.percent}%</strong></div><div className="workspace-progress" role="progressbar" aria-label="词本学习进度" aria-valuenow={progress.percent} aria-valuemin={0} aria-valuemax={100}><i style={{ width: `${progress.percent}%` }} /></div><div className="workspace-summary-stats levels-5"><span>未学习<strong>{progress.levels.l0}</strong></span><span>初识<strong className="blue">{progress.levels.l1}</strong></span><span>熟悉<strong className="orange">{progress.levels.l2}</strong></span><span>掌握<strong className="green">{progress.levels.l3}</strong></span><span>精通<strong className="violet">{progress.levels.l4}</strong></span></div></div><div className="overview-actions"><button type="button" className="overview-plan-settings" onClick={() => setSettingsSection('plan')}><WorkspaceIcon name="settings" />学习计划</button><button type="button" disabled={!wordCount || dashboardLoading} onClick={() => setShowWordManager(true)}><WorkspaceIcon name="edit" />浏览词条</button>{selectedBook.sourceCatalogId && <button type="button" disabled={authLoading} onClick={() => { if (!user) { setNotice('请先通过页头账号入口登录，再提交改进。'); return } setContributionBookId(selectedBook.id) }}><WorkspaceIcon name="edit" />提交改进</button>}<button type="button" disabled={remoteEntries === null} onClick={exportBookFile}><WorkspaceIcon name="book" />导出 CSV</button><button type="button" onClick={importBookFile}><WorkspaceIcon name="plus" />导入文件</button></div><button type="button" className="overview-recycle" onClick={() => moveToRecycle(selectedBook.id)}><WorkspaceIcon name="trash" />移入回收站</button>
+          <div className="workspace-overview-main">
+            <div className="workspace-title-row"><h1 id="workspace-title">{selectedBook.title}</h1></div>
+            <p>{wordCount} 个单词　|　创建于 {new Date(selectedBook.createdAt).toLocaleDateString('zh-CN')}　|　最后更新：{new Date(selectedBook.updatedAt).toLocaleString('zh-CN')}</p>
+            <div className={`workspace-category-editor ${categoryEditing ? 'is-editing' : ''}`}>
+              <label htmlFor="wordbook-category">分类</label>
+              <div className="workspace-category-field">
+                <input
+                  ref={categoryInputRef}
+                  id="wordbook-category"
+                  list={categoryEditing ? 'wordbook-categories' : undefined}
+                  value={categoryDraft}
+                  maxLength={30}
+                  readOnly={!categoryEditing}
+                  onChange={(event) => setCategoryDraft(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' && categoryEditing) {
+                      event.preventDefault()
+                      void saveCategory()
+                    } else if (event.key === 'Escape' && categoryEditing) {
+                      setCategoryDraft(selectedBook.category ?? '')
+                      setCategoryEditing(false)
+                    }
+                  }}
+                  placeholder="未分类"
+                  aria-label={categoryEditing ? '编辑单词本分类' : '单词本分类'}
+                />
+                <button
+                  type="button"
+                  onClick={toggleCategoryEditing}
+                  disabled={categorySaving}
+                  aria-label={categoryEditing ? '保存分类' : '修改分类'}
+                  title={categoryEditing ? '保存分类（Enter）' : '修改分类'}
+                ><WorkspaceIcon name="edit" /></button>
+              </div>
+              <datalist id="wordbook-categories">
+                {categories.map((category) => <option key={category} value={category} />)}
+              </datalist>
+            </div>
+            <div className="workspace-progress-label"><span>学习进度</span><strong>{progress.percent}%</strong></div>
+            <div className="workspace-progress" role="progressbar" aria-label="词本学习进度" aria-valuenow={progress.percent} aria-valuemin={0} aria-valuemax={100}><i style={{ width: `${progress.percent}%` }} /></div>
+            <div className="workspace-summary-stats levels-5" role="group" aria-label="熟练度分布">
+              {wordLevelStatistics.map(({ level, label, count, share }) => (
+                <button
+                  type="button"
+                  key={level}
+                  data-level={level}
+                  disabled={entriesLoading || count === 0}
+                  aria-label={`${label} ${count} 个，占 ${share}%${count ? '，点击浏览' : ''}`}
+                  title={count ? `浏览 ${count} 个${label}词条` : `暂无${label}词条`}
+                  onClick={() => openWordManager(level)}
+                >
+                  <em>{label}<small>{share}%</small></em>
+                  <strong>{count}</strong>
+                  <i aria-hidden="true"><b style={{ width: `${share}%` }} /></i>
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="overview-actions">
+            <button type="button" className="overview-plan-settings" onClick={() => setSettingsSection('plan')}><WorkspaceIcon name="settings" />学习计划</button>
+            <button type="button" disabled={!wordCount || dashboardLoading} onClick={() => openWordManager()}><WorkspaceIcon name="edit" />浏览词条</button>
+            {selectedBook.sourceCatalogId && <button type="button" disabled={authLoading} onClick={() => { if (!user) { setNotice('请先通过页头账号入口登录，再提交改进。'); return } setContributionBookId(selectedBook.id) }}><WorkspaceIcon name="edit" />提交改进</button>}
+            <button type="button" disabled={remoteEntries === null} onClick={exportBookFile}><WorkspaceIcon name="book" />导出 CSV</button>
+            <button type="button" onClick={importBookFile}><WorkspaceIcon name="plus" />导入文件</button>
+          </div>
+          <button type="button" className="overview-recycle" onClick={() => moveToRecycle(selectedBook.id)}><WorkspaceIcon name="trash" />移入回收站</button>
         </section>
 
         <section className="workspace-plan">
@@ -904,8 +988,8 @@ export function WordbookPage() {
                 ...(backlogCount > 0 || activeBacklogReview
                   ? [{ label: activeBacklogReview ? `继续清理积压（${activeBacklogReview.remainingWords}）` : `清理积压（${backlogCount}）`, onClick: () => openStudy('review', 'backlog') }]
                   : []),
-                ...(!reviewPlanComplete && (reviewAheadCount > 0 || activeAheadReview)
-                  ? [{ label: activeAheadReview ? `继续提前复习（${activeAheadReview.remainingWords}）` : `提前复习（${reviewAheadCount}）`, onClick: () => openStudy('review', 'ahead') }]
+                ...(!reviewPlanComplete && activeAheadReview
+                  ? [{ label: `继续提前复习（${activeAheadReview.remainingWords}）`, onClick: () => openStudy('review', 'ahead') }]
                   : []),
               ]}
             />
@@ -982,6 +1066,7 @@ export function WordbookPage() {
       {showWordManager && <WordManagerDialog
         title={selectedBook.title}
         entries={activeBook.entries}
+        initialLevel={wordManagerLevel}
         saving={wordSaving}
         onClose={() => setShowWordManager(false)}
         onSave={saveManagedWord}
@@ -1458,7 +1543,7 @@ function DictationStudyMode({
   if (book.entries.length === 0) return <section className="workspace-study"><StudyHeader book={book} mode="dictation" onExit={() => void exitAfterReports()} /><EmptyState title="暂无可用于听写训练的单词" body="先学习一些单词，学过的单词才会进入听写训练。" action={<Button onClick={() => void exitAfterReports()}>关闭窗口</Button>} /></section>
 
   const lastAnswer = dictation.answers[dictation.answers.length - 1]
-  return <section className="workspace-study"><StudyHeader book={book} mode="dictation" onExit={() => void exitAfterReports()} />{dictation.phase === 'summary' ? <div className="workspace-session-summary"><DictationSummary total={dictation.deck.length} correct={dictation.correctCount} wrong={dictation.wrongDeck} attempts={dictation.attemptCount} incorrect={dictation.incorrectCount} meaningPreference={preferences.meaningPreference} onRetryAll={dictation.retryAll} onRetryWrong={dictation.retryWrong} /><Button variant="secondary" onClick={() => void exitAfterReports()}>关闭窗口</Button></div> : <><div className="workspace-study-progress"><span>听写训练</span><strong>已过关 {dictation.passedCount} / {dictation.deck.length}</strong></div>{dictation.current && <DictationPrompt item={dictation.current} answer={dictation.answer} onAnswerChange={dictation.setAnswer} onSubmit={dictation.submit} onSkip={dictation.skip} onNext={dictation.next} onPlay={pronounce} phase={dictation.phase} grade={dictation.phase === 'feedback' ? lastAnswer?.grade ?? null : null} skipped={dictation.phase === 'feedback' && Boolean(lastAnswer?.skipped)} error={dictation.inputError} isLast={dictation.isLast} currentStreak={dictation.currentStreak} requiredStreak={dictation.requiredStreak} preferences={preferences} />}<ShortcutHint shortcuts={[{ keys: shortcutLabel(shortcuts.dictationPronounce), action: '播放发音' }, { keys: 'Enter', action: dictation.phase === 'prompt' ? '提交' : '继续' }]} /></>}</section>
+  return <section className="workspace-study"><StudyHeader book={book} mode="dictation" onExit={() => void exitAfterReports()} />{dictation.phase === 'summary' ? <div className="workspace-session-summary"><DictationSummary total={dictation.deck.length} correct={dictation.correctCount} wrong={dictation.wrongDeck} attempts={dictation.attemptCount} incorrect={dictation.incorrectCount} skipped={dictation.skippedCount} meaningPreference={preferences.meaningPreference} onRetryAll={dictation.retryAll} onRetryWrong={dictation.retryWrong} /><Button variant="secondary" onClick={() => void exitAfterReports()}>关闭窗口</Button></div> : <><div className="workspace-study-progress"><span>听写训练</span><strong>已过关 {dictation.passedCount} / {dictation.deck.length}</strong></div>{dictation.current && <DictationPrompt item={dictation.current} answer={dictation.answer} onAnswerChange={dictation.setAnswer} onSubmit={dictation.submit} onSkip={dictation.skip} onNext={dictation.next} onPlay={pronounce} phase={dictation.phase} grade={dictation.phase === 'feedback' ? lastAnswer?.grade ?? null : null} error={dictation.inputError} isLast={dictation.isLast} currentStreak={dictation.currentStreak} requiredStreak={dictation.requiredStreak} preferences={preferences} />}<ShortcutHint shortcuts={[{ keys: shortcutLabel(shortcuts.dictationPronounce), action: '播放发音' }, { keys: 'Enter', action: dictation.phase === 'prompt' ? '提交' : '继续' }]} /></>}</section>
 }
 
 function StudyHeader({ book, mode, onExit }: { book: WorkspaceBook; mode: StudyMode; onExit: () => void }) {

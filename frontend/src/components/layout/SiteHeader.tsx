@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { Link, NavLink, useLocation } from 'react-router'
 import { AuthDialog, type AuthMode } from '../account/AuthDialog'
 import { useAuth } from '../../hooks/useAuth'
@@ -80,10 +80,53 @@ export function SiteHeader() {
   const accountTriggerRef = useRef<HTMLButtonElement>(null)
   const donationMenuRef = useRef<HTMLDivElement>(null)
   const donationTriggerRef = useRef<HTMLButtonElement>(null)
+  const mainNavRef = useRef<HTMLElement>(null)
+  const navIndicatorRef = useRef<HTMLSpanElement>(null)
   const { user, loading, login, register, logout } = useAuth()
   const { theme, toggleTheme } = useTheme()
   const { pathname } = useLocation()
   const engagementApi = getEngagementApi()
+
+  useLayoutEffect(() => {
+    const navigation = mainNavRef.current
+    const indicator = navIndicatorRef.current
+    if (!navigation || !indicator) return
+
+    let mounted = true
+
+    const placeIndicator = () => {
+      if (!mounted) return
+      const activeItem = navigation.querySelector<HTMLElement>('.nav-link.active')
+      if (!activeItem) {
+        indicator.dataset.visible = 'false'
+        return
+      }
+
+      const navigationRect = navigation.getBoundingClientRect()
+      const activeRect = activeItem.getBoundingClientRect()
+      indicator.style.setProperty('--nav-indicator-x', `${activeRect.left - navigationRect.left}px`)
+      indicator.style.setProperty('--nav-indicator-y', `${activeRect.bottom - navigationRect.top}px`)
+      indicator.style.setProperty('--nav-indicator-width', `${activeRect.width}`)
+      indicator.dataset.visible = 'true'
+      indicator.dataset.ready = 'true'
+    }
+
+    placeIndicator()
+
+    const resizeObserver = typeof ResizeObserver === 'undefined'
+      ? null
+      : new ResizeObserver(placeIndicator)
+    resizeObserver?.observe(navigation)
+    navigation.querySelectorAll<HTMLElement>('.nav-link').forEach((item) => resizeObserver?.observe(item))
+    window.addEventListener('resize', placeIndicator)
+    void document.fonts?.ready.then(placeIndicator)
+
+    return () => {
+      mounted = false
+      resizeObserver?.disconnect()
+      window.removeEventListener('resize', placeIndicator)
+    }
+  }, [pathname, unreadMessages, pendingContributions])
 
   useEffect(() => {
     if (!engagementApi) return
@@ -265,7 +308,7 @@ export function SiteHeader() {
         <span className="brand-name">WeCreate Vocab</span>
       </NavLink>
 
-      <nav className="main-nav" aria-label="主导航">
+      <nav ref={mainNavRef} className="main-nav" aria-label="主导航">
         {NAVIGATION.map(({ to, label, icon, end }) => (
           <NavLink
             key={to}
@@ -376,6 +419,7 @@ export function SiteHeader() {
             </div>
           )}
         </div>
+        <span ref={navIndicatorRef} className="nav-indicator" aria-hidden="true" />
       </nav>
       {authMode && (
         <AuthDialog

@@ -261,6 +261,31 @@ describe('WorkspaceApi marketplace owner feeds', () => {
     )
   })
 
+  it('sends the previewed head revision with a snapshot update', async () => {
+    const fetch = vi.fn<FetchLike>().mockResolvedValue(
+      new Response(JSON.stringify(catalog({ sourceWordbookId: 'my-source-2', headRevisionId: 'revision-3' }))),
+    )
+    const api = new WorkspaceApi('https://api.example.test/', { fetch, clientId: () => 'learner' })
+
+    await api.updateCatalogSnapshot('catalog-1', {
+      sourceWordbookId: 'my-source-2',
+      expectedHeadRevisionId: 'revision-2',
+      message: '更新快照',
+    })
+
+    expect(fetch).toHaveBeenCalledWith(
+      new URL('https://api.example.test/api/catalog/wordbooks/catalog-1'),
+      expect.objectContaining({
+        method: 'PATCH',
+        body: JSON.stringify({
+          sourceWordbookId: 'my-source-2',
+          expectedHeadRevisionId: 'revision-2',
+          message: '更新快照',
+        }),
+      }),
+    )
+  })
+
   it('loads favorites from the dedicated feed and rejects malformed owner ids', async () => {
     const fetch = vi.fn<FetchLike>()
       .mockResolvedValueOnce(new Response(JSON.stringify([catalog({ uploaded: false })])))
