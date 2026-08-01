@@ -407,7 +407,7 @@ async function main() {
 
     await guest.goto("/messages");
     await guest.getByLabel("昵称").fill("匿名验收者");
-    const contactField = guest.getByLabel(/联系方式/);
+    const contactField = guest.getByRole("textbox", { name: "联系方式 选填，仅站长可见", exact: true });
     await contactField.fill("private-contact@example.test");
     await guest.getByLabel("留言内容").fill("第一条留言用于验证私密联系方式不会残留。");
     const firstMessageRequest = guest.waitForRequest((request) => new URL(request.url()).pathname === "/api/messages" && request.method() === "POST");
