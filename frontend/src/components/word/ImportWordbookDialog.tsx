@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { MyWordbook, ImportConflictResolution, ImportDraft, ImportDraftEntry, ImportDraftLine } from '../../data/workspaceApi'
 import { MAX_IMPORT_ENTRIES, MAX_IMPORT_TOTAL_ENTRIES, parseWordbookText, readImportFile, validateImportEntryCount, validateImportText, type ParsedImport } from '../../data/wordbookImport'
 import { useModalDialog } from '../../hooks/useModalDialog'
@@ -100,12 +100,16 @@ export function ImportWordbookDialog({ open, api, onClose, onCreated, initialTit
   const [problemPage, setProblemPage] = useState(1)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const [creatingDraft, setCreatingDraft] = useState(false)
   const [commitMode, setCommitMode] = useState<'append' | 'overwrite'>('append')
   const [overwriteImpact, setOverwriteImpact] = useState<{ imported: number; removed: number } | null>(null)
   const dialogRef = useModalDialog<HTMLElement>({ open, onClose, canClose: !busy })
+  const wasOpen = useRef(false)
 
   useEffect(() => {
-    if (!open) return
+    const justOpened = open && !wasOpen.current
+    wasOpen.current = open
+    if (!justOpened) return
     setTitle(initialTitle)
     setDescription(initialDescription)
     setCategory(initialCategory)
@@ -132,7 +136,7 @@ export function ImportWordbookDialog({ open, api, onClose, onCreated, initialTit
 
   useEffect(() => {
     if (open) return
-    setStep(targetWordbookId ? 'source' : 'details'); setContent(''); setParsed(null); setDraft(null); setGroupDrafts([]); setSavedDrafts([]); setDecisions({}); setProblemPage(1); setError(''); setBusy(false); setCommitMode('append'); setOverwriteImpact(null)
+    setStep(targetWordbookId ? 'source' : 'details'); setContent(''); setParsed(null); setDraft(null); setGroupDrafts([]); setSavedDrafts([]); setDecisions({}); setProblemPage(1); setError(''); setBusy(false); setCreatingDraft(false); setCommitMode('append'); setOverwriteImpact(null)
     setTitle(initialTitle); setDescription(initialDescription); setCategory(initialCategory)
   }, [initialCategory, initialDescription, initialTitle, open, targetWordbookId])
 
@@ -246,7 +250,7 @@ export function ImportWordbookDialog({ open, api, onClose, onCreated, initialTit
     if (entryCountError) { setError(entryCountError); return }
     if (!api) { setError('当前未连接词本服务，暂时不能保存导入草稿。'); return }
 
-    setBusy(true); setError('')
+    setBusy(true); setCreatingDraft(true); setError(''); setStep('preview')
     try {
       const nextDraft = await api.createImportDraft({
         title: title.trim(), description: description.trim() || undefined,
@@ -261,8 +265,9 @@ export function ImportWordbookDialog({ open, api, onClose, onCreated, initialTit
       setGroupDrafts([nextDraft])
       setStep('preview')
     } catch (cause) {
+      setStep('source')
       setError(cause instanceof Error ? cause.message : '保存导入草稿失败，请重试。')
-    } finally { setBusy(false) }
+    } finally { setBusy(false); setCreatingDraft(false) }
   }
 
   function setDecision(entry: ImportDraftEntry, decision: ImportConflictResolution) {
@@ -356,7 +361,7 @@ export function ImportWordbookDialog({ open, api, onClose, onCreated, initialTit
   const unmatchedCount = entries.filter((entry) => entry.status === 'unmatched').length
   const conflictCount = entries.filter((entry) => entry.status === 'conflict').length
   const continuationCount = draft?.totalBatches ?? parsed?.batchCount ?? 0
-  const isProcessing = Boolean(draft) && (groupDrafts.length !== draft?.totalBatches || groupDrafts.some((item) => item.status === 'processing'))
+  const isProcessing = creatingDraft || (Boolean(draft) && (groupDrafts.length !== draft?.totalBatches || groupDrafts.some((item) => item.status === 'processing')))
   const matchProgress = draftMatchProgress(entries)
   const problems = importProblemEntries(entries)
   const problemPages = Math.max(1, Math.ceil(problems.length / PROBLEM_PAGE_SIZE))
@@ -433,10 +438,12 @@ export function ImportWordbookDialog({ open, api, onClose, onCreated, initialTit
           </>}
 
           {step === 'preview' && isProcessing && <section className={styles.processing} role="status">
-            <strong>正在自动处理全部 {draft?.totalBatches ?? 1} 批词典数据</strong>
-            <p>{matchProgress.completed}/{matchProgress.total} 条记录已完成。全部批次结束后会统一汇总问题，无需逐批确认；关闭窗口也不会丢失草稿进度。</p>
-            <progress value={matchProgress.completed} max={Math.max(1, matchProgress.total)} aria-label="词典匹配进度" />
-            <small>{matchProgress.percent}%</small>
+            <strong>{creatingDraft ? '正在创建导入任务' : `正在自动处理全部 ${draft?.totalBatches ?? 1} 批词典数据`}</strong>
+            <p>{creatingDraft ? `已读取 ${parsed?.entries.length ?? 0} 条记录，正在保存草稿并启动词典匹配。` : `${matchProgress.completed}/${matchProgress.total} 条记录已完成。全部批次结束后会统一汇总问题，无需逐批确认；关闭窗口也不会丢失草稿进度。`}</p>
+            {creatingDraft
+              ? <progress aria-label="正在创建导入任务" />
+              : <progress value={matchProgress.completed} max={Math.max(1, matchProgress.total)} aria-label="词典匹配进度" />}
+            <small>{creatingDraft ? '正在连接服务器…' : `${matchProgress.percent}%`}</small>
           </section>}
 
           {step === 'preview' && !isProcessing && <>

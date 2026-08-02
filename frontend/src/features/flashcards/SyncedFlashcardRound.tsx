@@ -142,7 +142,7 @@ export function SyncedFlashcardRound({
     }
   }, [api])
 
-  const commit = useCallback(async (response: LearningVerdict | 'correct' | 'incorrect') => {
+  const commit = useCallback(async (response: LearningVerdict | 'correct' | 'incorrect' | 'mastered') => {
     if (!api || !round || !task || busy) return
     setBusy(true)
     setError('')
@@ -205,16 +205,23 @@ export function SyncedFlashcardRound({
   const shortcutBindings = useMemo(() => {
     if (!task || resumeDecisionPending || busy) return []
     if (task.exercise === 'meaning-choice') {
-      return [{ key: shortcuts.pronounce, action: pronounce }]
+      return [
+        { key: shortcuts.pronounce, action: pronounce },
+        { key: shortcuts.mastered, action: () => { void commit('mastered') } },
+      ]
     }
     if (pendingVerdict) {
-      return [{ key: shortcuts.pronounce, action: pronounce }]
+      return [
+        { key: shortcuts.pronounce, action: pronounce },
+        { key: shortcuts.mastered, action: () => { void commit('mastered') } },
+      ]
     }
     return [
       { key: shortcuts.unknown, action: () => showUncertainAnswer('unknown') },
       { key: shortcuts.vague, action: () => showUncertainAnswer('vague') },
       { key: shortcuts.pronounce, action: pronounce },
       { key: shortcuts.known, action: () => { void commit('know') } },
+      { key: shortcuts.mastered, action: () => { void commit('mastered') } },
       { key: shortcuts.flip, action: () => setFlipped((value) => !value) },
     ]
   }, [busy, commit, pendingVerdict, pronounce, resumeDecisionPending, shortcuts, showUncertainAnswer, task])
@@ -241,16 +248,15 @@ export function SyncedFlashcardRound({
     </div>
   }
   if (round.queue.length === 0 || round.completedAt) {
+    const summaryDetails = [
+      round.masteredWordIds.length ? `${round.masteredWordIds.length} 个词已直接标熟并进入精通` : '',
+      round.unknownWordIds.length ? `${round.unknownWordIds.length} 个词曾答错，已降低熟练度并安排短期回访` : '',
+      round.vagueWordIds.length ? `${round.vagueWordIds.length} 个词曾感到模糊，熟练度保持不变并缩短复习间隔` : '',
+    ].filter(Boolean)
     return <div className="workspace-session-summary synced-round-summary">
       <p>{scopeLabel(round.scope, round.mode)}完成</p>
-      <h2>已完成 <strong>{round.completedWordIds.length}</strong> 词、两类练习均已过关</h2>
-      <p>
-        {round.unknownWordIds.length
-          ? `${round.unknownWordIds.length} 个词曾答错，已降低熟练度并安排短期回访。`
-          : round.vagueWordIds.length
-            ? `${round.vagueWordIds.length} 个词曾感到模糊，熟练度保持不变并缩短复习间隔。`
-            : '本轮没有模糊或错误记录。'}
-      </p>
+      <h2>已完成 <strong>{round.completedWordIds.length}</strong> 词</h2>
+      <p>{summaryDetails.length ? `${summaryDetails.join('；')}。` : '本轮没有模糊或错误记录。'}</p>
       <div><Button variant="secondary" onClick={onClose}>关闭窗口</Button></div>
     </div>
   }
@@ -276,6 +282,7 @@ export function SyncedFlashcardRound({
         onFlip={() => {
           if (!pendingVerdict) setFlipped((value) => !value)
         }}
+        onMastered={() => { void commit('mastered') }}
         preferences={preferences}
       />
       {pendingVerdict ? <div className={`study-answer-feedback ${pendingVerdict}`}>
@@ -294,6 +301,7 @@ export function SyncedFlashcardRound({
         { keys: shortcutLabel(shortcuts.vague), action: '模糊' },
         { keys: shortcutLabel(shortcuts.pronounce), action: '发音' },
         { keys: shortcutLabel(shortcuts.known), action: '认识' },
+        { keys: shortcutLabel(shortcuts.mastered), action: '标熟' },
         { keys: shortcutLabel(shortcuts.flip), action: '翻面' },
       ]} />
     </> : <div className="meaning-choice-stage">
@@ -301,7 +309,10 @@ export function SyncedFlashcardRound({
         <p className="marginal">选择最符合的释义</p>
         <h2>{current.word}</h2>
         {preferences.showPhonetic && current.phonetic && <span>{current.phonetic}</span>}
-        <button type="button" onClick={pronounce}>播放发音</button>
+        <div className="meaning-choice-tools">
+          <button type="button" onClick={pronounce}>播放发音</button>
+          <button type="button" disabled={busy || Boolean(selectedOption)} onClick={() => { void commit('mastered') }}>标熟</button>
+        </div>
       </header>
       {optionsLoading ? <div className="synced-round-state" role="status">正在准备相近词干扰项…</div> : options.length ? (
         <div className="meaning-choice-options" role="group" aria-label={`${current.word} 的释义选项`}>
@@ -333,7 +344,10 @@ export function SyncedFlashcardRound({
         <span>{selectedCorrect ? '已找到对应释义。' : `正确释义来自 ${correctOption?.word ?? current.word}。本题会在队尾再次出现。`}</span>
         <Button disabled={busy} onClick={continueFeedback}>{busy ? '同步中…' : '继续'}</Button>
       </div>}
-      <ShortcutHint shortcuts={[{ keys: shortcutLabel(shortcuts.pronounce), action: '发音' }]} />
+      <ShortcutHint shortcuts={[
+        { keys: shortcutLabel(shortcuts.pronounce), action: '发音' },
+        { keys: shortcutLabel(shortcuts.mastered), action: '标熟' },
+      ]} />
     </div>}
   </>
 }

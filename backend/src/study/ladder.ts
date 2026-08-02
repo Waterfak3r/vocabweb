@@ -483,10 +483,13 @@ export function migrate(raw: unknown): State {
     client.drafts ??= [];
     client.studyRounds ??= [];
     if (client.studySettings) {
-      const shortcuts = client.studySettings.shortcuts as SyncedStudySettings["shortcuts"] & { vague?: string };
+      const shortcuts = client.studySettings.shortcuts as SyncedStudySettings["shortcuts"] & { vague?: string; mastered?: string };
       shortcuts.vague ??= ["w", "v", "r", "f"].find(
         (key) => ![shortcuts.unknown, shortcuts.pronounce, shortcuts.known, shortcuts.flip].includes(key),
       ) ?? "w";
+      shortcuts.mastered ??= ["r", "f", "x", "c", "z", "1", "2", "3", "4", "5"].find(
+        (key) => ![shortcuts.unknown, shortcuts.vague, shortcuts.pronounce, shortcuts.known, shortcuts.flip].includes(key),
+      ) ?? "r";
     }
     for (const book of client.wordbooks) {
       book.words ??= [];
@@ -523,6 +526,7 @@ export function migrate(raw: unknown): State {
         if (entry.entry) entry.entry.word = foldApostrophes(entry.entry.word);
       }
     }
+    for (const round of client.studyRounds) round.masteredWordIds ??= [];
   }
   // Build a durable adoption ledger from every surviving catalog-derived copy.
   // `legacyUses` preserves adopters whose copies were already purged and therefore

@@ -346,6 +346,7 @@ export abstract class BaseStore implements StudyStore {
         return { ...task, id, wordId: wordIds.get(`${oldBookId}:${task.wordId}`) ?? task.wordId };
       });
       round.completedWordIds = round.completedWordIds.map((wordId) => wordIds.get(`${oldBookId}:${wordId}`) ?? wordId);
+      round.masteredWordIds = round.masteredWordIds.map((wordId) => wordIds.get(`${oldBookId}:${wordId}`) ?? wordId);
       round.vagueWordIds = round.vagueWordIds.map((wordId) => wordIds.get(`${oldBookId}:${wordId}`) ?? wordId);
       round.unknownWordIds = round.unknownWordIds.map((wordId) => wordIds.get(`${oldBookId}:${wordId}`) ?? wordId);
       round.passedTaskKeys = round.passedTaskKeys.map((key) => {
@@ -1025,6 +1026,7 @@ export abstract class BaseStore implements StudyStore {
           vague: "w",
           pronounce: "enter",
           known: "e",
+          mastered: "r",
           flip: " ",
           dictationPronounce: "tab",
         },
@@ -1471,6 +1473,7 @@ export abstract class BaseStore implements StudyStore {
         queue,
         passedTaskKeys: [],
         completedWordIds: [],
+        masteredWordIds: [],
         vagueWordIds: [],
         unknownWordIds: [],
         processedOperationIds: [],
@@ -1577,20 +1580,33 @@ export abstract class BaseStore implements StudyStore {
       if (round.processedOperationIds.includes(input.operationId)) return { kind: "updated", round: clone(round) };
       if (round.revision !== input.revision || round.queue[0]?.id !== input.taskId) return { kind: "conflict", round: clone(round) };
       const task = round.queue[0]!;
-      const responseMatches = task.exercise === "self-rating"
+      const responseMatches = input.response === "mastered" || (task.exercise === "self-rating"
         ? input.response === "know" || input.response === "vague" || input.response === "unknown"
-        : input.response === "correct" || input.response === "incorrect";
+        : input.response === "correct" || input.response === "incorrect");
       if (!responseMatches) return { kind: "conflict", round: clone(round) };
       const book = client.wordbooks.find((item) => item.id === round.wordbookId && !item.deletedAt);
       const target = book?.words.find((word) => word.id === task.wordId);
       if (!book || !target) return { kind: "not-found" };
 
       const passed = input.response === "know" || input.response === "correct";
-      round.queue.shift();
-      if (passed) {
+      if (input.response === "mastered") {
+        this.appendLearningEvent(client, book, target, {
+          kind: "mark", wordbookId: book.id, wordId: target.id, level: 4,
+        });
+        round.queue = round.queue.filter((queuedTask) => queuedTask.wordId !== target.id);
+        for (const exercise of round.exerciseTypes) {
+          const key = roundTaskKey({ wordId: target.id, exercise });
+          if (!round.passedTaskKeys.includes(key)) round.passedTaskKeys.push(key);
+        }
+        if (!round.completedWordIds.includes(target.id)) round.completedWordIds.push(target.id);
+        if (!round.masteredWordIds.includes(target.id)) round.masteredWordIds.push(target.id);
+      } else {
+        round.queue.shift();
+      }
+      if (input.response !== "mastered" && passed) {
         const key = roundTaskKey(task);
         if (!round.passedTaskKeys.includes(key)) round.passedTaskKeys.push(key);
-      } else {
+      } else if (input.response !== "mastered") {
         const verdict = input.response === "vague" ? "vague" : "unknown";
         this.appendLearningEvent(
           client,
@@ -1605,7 +1621,7 @@ export abstract class BaseStore implements StudyStore {
         round.queue.push({ ...task, id: randomUUID() });
       }
 
-      const completed = round.exerciseTypes.every((exercise) =>
+      const completed = input.response !== "mastered" && round.exerciseTypes.every((exercise) =>
         round.passedTaskKeys.includes(roundTaskKey({ wordId: target.id, exercise })),
       );
       if (completed && !round.completedWordIds.includes(target.id)) {

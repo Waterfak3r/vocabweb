@@ -62,12 +62,12 @@ export function Flashcard({
         </span>
       </button>
 
-      {onMastered && flipped && (
+      {onMastered && (
         <button
           type="button"
           className={styles.mastered}
-          aria-label={`将 ${item.word} 标为已熟并移出学习`}
-          title="已熟，移出学习"
+          aria-label={`将 ${item.word} 标熟为精通`}
+          title="标熟为精通"
           onClick={onMastered}
         >
           熟

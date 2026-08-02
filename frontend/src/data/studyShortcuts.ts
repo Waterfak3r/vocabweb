@@ -5,6 +5,7 @@ export type StudyShortcutAction =
   | 'vague'
   | 'pronounce'
   | 'known'
+  | 'mastered'
   | 'flip'
   | 'dictationPronounce'
 
@@ -15,6 +16,7 @@ export const DEFAULT_STUDY_SHORTCUTS: StudyShortcutPreferences = {
   vague: 'w',
   pronounce: 'enter',
   known: 'e',
+  mastered: 'r',
   flip: ' ',
   dictationPronounce: 'tab',
 }
@@ -47,7 +49,11 @@ export function normalizeStudyShortcuts(value: unknown): StudyShortcutPreference
       if (key) next[action] = key
     }
   }
-  const flashcard = [next.unknown, next.vague, next.pronounce, next.known, next.flip]
+  if (typeof source.mastered !== 'string') {
+    const used = [next.unknown, next.vague, next.pronounce, next.known, next.flip]
+    next.mastered = ['r', 'f', 'x', 'c', 'z', '1', '2', '3', '4', '5'].find((key) => !used.includes(key)) ?? 'r'
+  }
+  const flashcard = [next.unknown, next.vague, next.pronounce, next.known, next.mastered, next.flip]
   if (new Set(flashcard).size !== flashcard.length || next.dictationPronounce === 'enter') {
     return { ...DEFAULT_STUDY_SHORTCUTS }
   }

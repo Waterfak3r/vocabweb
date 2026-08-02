@@ -36,4 +36,11 @@ describe('study shortcuts', () => {
     writeStudyShortcuts(custom, storage)
     expect(readStudyShortcuts(storage)).toEqual({ ...custom, unknown: 'arrowleft' })
   })
+
+  it('adds a non-conflicting mastered key to legacy preferences', () => {
+    const legacy = {
+      unknown: 'q', vague: 'r', pronounce: 'enter', known: 'e', flip: ' ', dictationPronounce: 'tab',
+    }
+    expect(normalizeStudyShortcuts(legacy)).toEqual({ ...legacy, mastered: 'f' })
+  })
 })

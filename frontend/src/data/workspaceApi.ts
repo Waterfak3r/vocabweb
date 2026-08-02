@@ -280,6 +280,7 @@ export type StudyRound = {
   queue: StudyRoundTask[]
   passedTaskKeys: string[]
   completedWordIds: string[]
+  masteredWordIds: string[]
   vagueWordIds: string[]
   unknownWordIds: string[]
   processedOperationIds: string[]
@@ -488,18 +489,22 @@ function parseWordbookStudyPreferences(value: unknown): WordbookStudyPreferences
 
 function parseStudyShortcuts(value: unknown): StudyShortcutPreferences | null {
   if (!isRecord(value)) return null
-  const actions: StudyShortcutAction[] = ['unknown', 'vague', 'pronounce', 'known', 'flip', 'dictationPronounce']
+  const actions: StudyShortcutAction[] = ['unknown', 'vague', 'pronounce', 'known', 'mastered', 'flip', 'dictationPronounce']
   const parsed = {} as StudyShortcutPreferences
   for (const action of actions) {
-    const source = action === 'vague' && value[action] === undefined
-      ? DEFAULT_STUDY_SHORTCUTS.vague
+    const source = (action === 'vague' || action === 'mastered') && value[action] === undefined
+      ? DEFAULT_STUDY_SHORTCUTS[action]
       : value[action]
     if (typeof source !== 'string') return null
     const key = normalizeShortcutKey(source)
     if (!key) return null
     parsed[action] = key
   }
-  const flashcard = [parsed.unknown, parsed.vague, parsed.pronounce, parsed.known, parsed.flip]
+  if (value.mastered === undefined) {
+    const used = [parsed.unknown, parsed.vague, parsed.pronounce, parsed.known, parsed.flip]
+    parsed.mastered = ['r', 'f', 'x', 'c', 'z', '1', '2', '3', '4', '5'].find((key) => !used.includes(key)) ?? 'r'
+  }
+  const flashcard = [parsed.unknown, parsed.vague, parsed.pronounce, parsed.known, parsed.mastered, parsed.flip]
   if (new Set(flashcard).size !== flashcard.length || parsed.dictationPronounce === 'enter') return null
   return parsed
 }
@@ -1077,6 +1082,7 @@ function parseStudyRound(value: unknown): StudyRound | null {
     || !Array.isArray(value.queue)
     || !Array.isArray(value.passedTaskKeys)
     || !Array.isArray(value.completedWordIds)
+    || (value.masteredWordIds !== undefined && !Array.isArray(value.masteredWordIds))
     || !Array.isArray(value.vagueWordIds)
     || !Array.isArray(value.unknownWordIds)
     || !Array.isArray(value.processedOperationIds)
@@ -1095,6 +1101,7 @@ function parseStudyRound(value: unknown): StudyRound | null {
     value.wordIds,
     value.passedTaskKeys,
     value.completedWordIds,
+    value.masteredWordIds ?? [],
     value.vagueWordIds,
     value.unknownWordIds,
     value.processedOperationIds,
@@ -1117,6 +1124,7 @@ function parseStudyRound(value: unknown): StudyRound | null {
     queue: queue as StudyRoundTask[],
     passedTaskKeys: value.passedTaskKeys as string[],
     completedWordIds: value.completedWordIds as string[],
+    masteredWordIds: (value.masteredWordIds ?? []) as string[],
     vagueWordIds: value.vagueWordIds as string[],
     unknownWordIds: value.unknownWordIds as string[],
     processedOperationIds: value.processedOperationIds as string[],
@@ -1380,7 +1388,7 @@ export class WorkspaceApi {
   createMyWordbook(input: { title: string; description?: string; category?: string; words?: WordEntry[] }) { return this.json('api/my/wordbooks', { method: 'POST', body: JSON.stringify(input) }, parseMyWordbook) }
   updateMyWordbook(id: string, input: { category?: string | null; reviewSchedule?: ReviewSchedule; studyPreferences?: WordbookStudyPreferences }) { return this.json(`api/my/wordbooks/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(input) }, parseMyWordbook) }
   createImportDraft(input: { title: string; description?: string; targetWordbookId?: string; lines: ImportDraftLine[] }) {
-    return notifyImportDraftsAfter(this.json('api/my/import-drafts', { method: 'POST', body: JSON.stringify(input) }, parseImportDraft))
+    return notifyImportDraftsAfter(this.json('api/my/import-drafts', { method: 'POST', body: JSON.stringify(input) }, parseImportDraft, 30_000))
   }
   listImportDrafts() { return this.list(new URL('api/my/import-drafts', this.baseUrl), parseImportDraft, 'import drafts') }
   listImportDraftTasks() { return this.list(new URL('api/my/import-drafts/status', this.baseUrl), parseImportDraftTaskSummary, 'import draft tasks') }
@@ -1443,7 +1451,7 @@ export class WorkspaceApi {
     id: string,
     input: {
       taskId: string
-      response: LearningVerdict | 'correct' | 'incorrect'
+      response: LearningVerdict | 'correct' | 'incorrect' | 'mastered'
       operationId: string
       revision: number
     },

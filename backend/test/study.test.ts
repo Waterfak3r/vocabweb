@@ -455,6 +455,7 @@ test("wordbook and learning-experience settings persist across account devices",
           vague: "s",
           pronounce: "enter",
           known: "d",
+          mastered: "r",
           flip: " ",
           dictationPronounce: "tab",
         },
@@ -478,6 +479,7 @@ test("wordbook and learning-experience settings persist across account devices",
       vague: "s",
       pronounce: "enter",
       known: "d",
+      mastered: "r",
       flip: " ",
       dictationPronounce: "tab",
     });
@@ -1140,6 +1142,21 @@ test("import processing returns immediately, rejects early commit, and can resum
       (draft) => draft.status === "pending" && draft.entries[0]?.status === "ready",
     );
     assert.equal(recovered.status, "pending");
+
+    available = false;
+    const fallbackResponse = await fetch(`${app.baseUrl}/api/my/import-drafts`, { method: "POST", headers, body: JSON.stringify({ title: "降级匹配", lines: [{ line: 1, word: "keep-raw" }] }) });
+    const fallback = await fallbackResponse.json() as { id: string };
+    await eventually(
+      async () => await (await fetch(`${app.baseUrl}/api/my/import-drafts/${fallback.id}`, { headers })).json() as { status: string; entries: Array<{ status: string; reason?: string }> },
+      (draft) => draft.status === "processing" && Boolean(draft.entries[0]?.reason),
+    );
+    const finalized = await fetch(`${app.baseUrl}/api/my/import-drafts/${fallback.id}/process`, { method: "POST", headers, body: "{}" });
+    assert.equal(finalized.status, 202);
+    const degraded = await eventually(
+      async () => await (await fetch(`${app.baseUrl}/api/my/import-drafts/${fallback.id}`, { headers })).json() as { status: string; entries: Array<{ status: string; reason?: string }> },
+      (draft) => draft.status === "pending" && draft.entries[0]?.status === "unmatched",
+    );
+    assert.match(degraded.entries[0]!.reason!, /保留原始词条/);
   } finally { await app.close(); }
 });
 

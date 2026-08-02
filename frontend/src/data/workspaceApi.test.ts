@@ -459,6 +459,30 @@ describe('WorkspaceApi meaning-choice language', () => {
       'https://api.example.test/api/study/rounds/round-1/tasks/task-1/options?meaningPreference=en',
     ])
   })
+
+  it('posts the direct mastered action without requiring a card flip', async () => {
+    const round = {
+      id: 'round-1', wordbookId: 'my-book', mode: 'new', scope: 'standard', meaningPreference: 'zh',
+      exerciseTypes: ['self-rating'], wordIds: ['word-1'], queue: [], passedTaskKeys: ['word-1:self-rating'],
+      completedWordIds: ['word-1'], masteredWordIds: ['word-1'], vagueWordIds: [], unknownWordIds: [],
+      processedOperationIds: ['operation-1'], revision: 1,
+      createdAt: '2026-08-02T00:00:00.000Z', updatedAt: '2026-08-02T00:01:00.000Z',
+      expiresAt: '2026-08-03T00:01:00.000Z', completedAt: '2026-08-02T00:01:00.000Z',
+    }
+    const fetch = vi.fn<FetchLike>().mockResolvedValue(new Response(JSON.stringify(round)))
+    const api = new WorkspaceApi('https://api.example.test/', { fetch, clientId: () => 'learner' })
+
+    await expect(api.answerStudyRound('round-1', {
+      taskId: 'task-1', response: 'mastered', operationId: 'operation-1', revision: 0,
+    })).resolves.toEqual(expect.objectContaining({ masteredWordIds: ['word-1'] }))
+    expect(fetch).toHaveBeenCalledWith(
+      new URL('https://api.example.test/api/study/rounds/round-1/answers'),
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ taskId: 'task-1', response: 'mastered', operationId: 'operation-1', revision: 0 }),
+      }),
+    )
+  })
 })
 
 describe('WorkspaceApi adaptive review schedule', () => {
@@ -533,6 +557,7 @@ describe('WorkspaceApi synchronized study settings', () => {
       vague: 's',
       pronounce: 'enter',
       known: 'd',
+      mastered: 'r',
       flip: ' ',
       dictationPronounce: 'tab',
     }

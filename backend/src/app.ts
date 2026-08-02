@@ -493,8 +493,13 @@ export function createApp(options: CreateAppOptions = {}) {
       entry,
     };
   };
-  const processImportDraft = (clientId: string, id: string): Promise<void> => {
-    const key = `${clientId}:${id}`; const existing = backgroundDraftTasks.get(key); if (existing) return existing;
+  const processImportDraft = (clientId: string, id: string, finalizeLookupFailures = false): Promise<void> => {
+    const key = `${clientId}:${id}`; const existing = backgroundDraftTasks.get(key);
+    if (existing) {
+      return finalizeLookupFailures
+        ? existing.then(() => processImportDraft(clientId, id, true))
+        : existing;
+    }
     const queued = backgroundDraftQueue.then(async () => {
       const draft = await studyStore.getImportDraft(clientId, id);
       if (!draft || draft.status === "committed") return;
@@ -509,11 +514,15 @@ export function createApp(options: CreateAppOptions = {}) {
             ...(entry.zhMeaning ? { zhMeaning: entry.zhMeaning } : {}), ...(entry.example ? { example: entry.example } : {}),
             ...(entry.meanings !== undefined ? { meanings: entry.meanings } : {}),
           });
-          const status: ResolvedImportDraftEntry["status"] =
-            result.status === "ready" || result.status === "unmatched" || result.status === "invalid"
+          const status: ResolvedImportDraftEntry["status"] = result.status === "processing" && finalizeLookupFailures
+            ? "unmatched"
+            : result.status === "ready" || result.status === "unmatched" || result.status === "invalid"
               ? result.status
               : "processing";
-          return { id: entry.id, status, ...(result.reason ? { reason: result.reason } : {}), ...(result.entry ? { entry: result.entry } : {}) };
+          const reason = result.status === "processing" && finalizeLookupFailures
+            ? "词典服务暂不可用，已保留原始词条供确认"
+            : result.reason;
+          return { id: entry.id, status, ...(reason ? { reason } : {}), ...(result.entry ? { entry: result.entry } : {}) };
         }));
         await studyStore.resolveImportDraftEntries(clientId, id, resolved);
       }
@@ -1742,7 +1751,9 @@ export function createApp(options: CreateAppOptions = {}) {
         response.status(503).json(apiError("IMPORT_QUEUE_FULL", "Import processing is busy; retry shortly"));
         return;
       }
-      void processImportDraft(clientId, id);
+      // A manual/browser resume is the second attempt. If the dictionary is still
+      // unavailable, keep the user's raw entry and let the import reach confirmation.
+      void processImportDraft(clientId, id, true);
       response.status(202).json(draft);
     } catch (error) { next(error); }
   });

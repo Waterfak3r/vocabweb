@@ -393,3 +393,79 @@ test("a vague judgment keeps the rung, shortens the checkpoint, and requeues the
   assert.equal(afterVague.nextReviewAt, "2026-04-03T08:00:00.000Z");
   assert.equal(review.queue.length, 1);
 });
+
+test("marking a visible round word mastered skips every remaining exercise and records L4", async () => {
+  const store = new InMemoryStudyStore();
+  const book = await store.createMyWordbook(CLIENT, {
+    title: "Direct mastery",
+    words: [entry("obvious"), entry("remaining")],
+  });
+  const words = (await store.listWords(CLIENT, book.id))!;
+  const started = await store.startStudyRound(CLIENT, { wordbookId: book.id, mode: "new" });
+  assert.ok(started);
+  const initial = started!.round;
+  const task = initial.queue[0]!;
+  assert.equal(initial.queue.filter((item) => item.wordId === task.wordId).length, 2);
+
+  const operationId = randomUUID();
+  const result = await store.answerStudyRound(CLIENT, initial.id, {
+    taskId: task.id,
+    response: "mastered",
+    operationId,
+    revision: initial.revision,
+  });
+  assert.equal(result.kind, "updated");
+  const updated = result.kind === "updated" ? result.round : initial;
+  assert.equal(updated.queue.some((item) => item.wordId === task.wordId), false);
+  assert.deepEqual(updated.masteredWordIds, [task.wordId]);
+  assert.ok(updated.completedWordIds.includes(task.wordId));
+  assert.equal(updated.queue[0]?.wordId === task.wordId, false);
+  assert.equal(words.find((word) => word.id === task.wordId)?.level, 0);
+  assert.equal((await store.listWords(CLIENT, book.id))!.find((word) => word.id === task.wordId)?.level, 4);
+
+  const repeated = await store.answerStudyRound(CLIENT, initial.id, {
+    taskId: task.id,
+    response: "mastered",
+    operationId,
+    revision: initial.revision,
+  });
+  assert.equal(repeated.kind, "updated");
+  assert.deepEqual(repeated.kind === "updated" ? repeated.round.masteredWordIds : [], [task.wordId]);
+});
+
+test("the study answer endpoint accepts mastered and returns the next visible word", async () => {
+  const app = await server();
+  try {
+    const requestHeaders = await register(app.baseUrl);
+    const created = await (await fetch(`${app.baseUrl}/api/my/wordbooks`, {
+      method: "POST",
+      headers: requestHeaders,
+      body: JSON.stringify({ title: "HTTP mastery", words: [entry("first"), entry("second")] }),
+    })).json() as { id: string };
+    const started = await (await fetch(`${app.baseUrl}/api/study/rounds`, {
+      method: "POST",
+      headers: requestHeaders,
+      body: JSON.stringify({ wordbookId: created.id, mode: "new" }),
+    })).json() as { round: StudyRound };
+    const task = started.round.queue[0]!;
+    const response = await fetch(`${app.baseUrl}/api/study/rounds/${started.round.id}/answers`, {
+      method: "POST",
+      headers: requestHeaders,
+      body: JSON.stringify({
+        taskId: task.id,
+        response: "mastered",
+        operationId: randomUUID(),
+        revision: started.round.revision,
+      }),
+    });
+    assert.equal(response.status, 200);
+    const updated = await response.json() as StudyRound;
+    assert.deepEqual(updated.masteredWordIds, [task.wordId]);
+    assert.equal(updated.queue.some((item) => item.wordId === task.wordId), false);
+    assert.equal(updated.queue[0]?.wordId === task.wordId, false);
+    const words = await (await fetch(`${app.baseUrl}/api/my/wordbooks/${created.id}/words`, { headers: requestHeaders })).json() as Array<{ id: string; level: number }>;
+    assert.equal(words.find((word) => word.id === task.wordId)?.level, 4);
+  } finally {
+    await app.close();
+  }
+});

@@ -111,7 +111,7 @@ test("SQLite durably reloads synchronized wordbook and global study settings", a
   await store.updateMyWordbook(CLIENT, book.id, { studyPreferences: preferences });
   await store.updateStudySettings(CLIENT, {
     pronunciation: { accent: "us" },
-    shortcuts: { unknown: "a", vague: "s", pronounce: "enter", known: "d", flip: " ", dictationPronounce: "tab" },
+    shortcuts: { unknown: "a", vague: "s", pronounce: "enter", known: "d", mastered: "r", flip: " ", dictationPronounce: "tab" },
   });
   store.close();
 

@@ -178,7 +178,7 @@ function parseStudyShortcuts(value: unknown): StudyShortcutPreferences | null {
   if (!isJsonObject(value)) return null;
   const actions = ["unknown", "pronounce", "known", "flip", "dictationPronounce"] as const;
   const special = new Set(["enter", " ", "tab", "arrowup", "arrowdown", "arrowleft", "arrowright"]);
-  const parsed = {} as Omit<StudyShortcutPreferences, "vague"> & { vague?: string };
+  const parsed = {} as Omit<StudyShortcutPreferences, "vague" | "mastered"> & { vague?: string; mastered?: string };
   for (const action of actions) {
     if (typeof value[action] !== "string") return null;
     const key = value[action].toLocaleLowerCase();
@@ -193,7 +193,16 @@ function parseStudyShortcuts(value: unknown): StudyShortcutPreferences | null {
   } else {
     parsed.vague = ["w", "v", "r", "f"].find((key) => ![parsed.unknown, parsed.pronounce, parsed.known, parsed.flip].includes(key)) ?? "w";
   }
-  const flashcard = [parsed.unknown, parsed.vague, parsed.pronounce, parsed.known, parsed.flip];
+  if (value.mastered !== undefined) {
+    if (typeof value.mastered !== "string") return null;
+    const key = value.mastered.toLocaleLowerCase();
+    if (!special.has(key) && !/^[a-z0-9]$/.test(key)) return null;
+    parsed.mastered = key;
+  } else {
+    const used = [parsed.unknown, parsed.vague, parsed.pronounce, parsed.known, parsed.flip];
+    parsed.mastered = ["r", "f", "x", "c", "z", "1", "2", "3", "4", "5"].find((key) => !used.includes(key)) ?? "r";
+  }
+  const flashcard = [parsed.unknown, parsed.vague, parsed.pronounce, parsed.known, parsed.mastered, parsed.flip];
   if (new Set(flashcard).size !== flashcard.length || parsed.dictationPronounce === "enter") return null;
   return parsed as StudyShortcutPreferences;
 }
@@ -351,7 +360,7 @@ export function parseStudyRoundAnswer(value: unknown): StudyRoundAnswerInput | n
   const taskId = parseWordId(value.taskId);
   const operationId = parseWordId(value.operationId);
   const response = value.response === "know" || value.response === "vague" || value.response === "unknown"
-    || value.response === "correct" || value.response === "incorrect"
+    || value.response === "correct" || value.response === "incorrect" || value.response === "mastered"
     ? value.response
     : null;
   const revision = typeof value.revision === "number" && Number.isInteger(value.revision) && value.revision >= 0

@@ -50,6 +50,34 @@ test("remote fallback runs only when local English is missing and keeps local Ch
   local.close();
 });
 
+test("remote fallback opens a short circuit after an outage", async () => {
+  let calls = 0;
+  let now = 1_000;
+  let available = false;
+  const remote: WordProvider = {
+    async lookup(word) {
+      calls += 1;
+      if (!available) throw new Error("remote unavailable");
+      return { word, phonetic: "/x/", meanings: [{ pos: "noun", definition: "remote definition" }], source: "backend" };
+    },
+  };
+  const local = new SqliteLocalDictionaryProvider(file);
+  const provider = new FallbackDictionaryProvider(local, remote, true, {
+    remoteFailureCooldownMs: 500,
+    now: () => now,
+  });
+
+  await assert.rejects(provider.lookup("missing-one"), /remote unavailable/);
+  await assert.rejects(provider.lookup("missing-two"), /remote unavailable/);
+  assert.equal(calls, 1);
+
+  now += 500;
+  available = true;
+  assert.equal((await provider.lookup("missing-three"))?.meanings[0]?.definition, "remote definition");
+  assert.equal(calls, 2);
+  local.close();
+});
+
 test("local dictionary looks up phrases and ranks exact, prefix, then contains suggestions", async () => {
   const provider = new SqliteLocalDictionaryProvider(file);
   const phrase = await provider.lookup("  A   LOT OF ");

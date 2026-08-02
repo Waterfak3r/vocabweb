@@ -862,6 +862,7 @@ export function WordbookPage() {
         <div ref={workspaceMainRef} className="workspace-main"><section className="workspace-empty-page"><EmptyState title="还没有可用的学习词本" body={notice || '你仍可浏览左侧收藏和上传；选择“加入词本”后即可开始学习。'} action={<Button onClick={createBook}>创建单词本</Button>} /></section></div>
       </section>
       <ImportWordbookDialog
+        key="wordbook-importer"
         open={showImporter}
         api={api}
         onClose={closeImporter}
@@ -1154,6 +1155,7 @@ export function WordbookPage() {
         onClose={() => void exitStudy()}
       />}
       <ImportWordbookDialog
+        key="wordbook-importer"
         open={showImporter}
         api={api}
         onClose={closeImporter}
@@ -1473,6 +1475,7 @@ const SHORTCUT_ROWS: Array<{ action: StudyShortcutAction; label: string; group: 
   { action: 'vague', label: '模糊', group: 'card' },
   { action: 'pronounce', label: '播放发音', group: 'card' },
   { action: 'known', label: '认识', group: 'card' },
+  { action: 'mastered', label: '标熟', group: 'card' },
   { action: 'flip', label: '翻面', group: 'card' },
   { action: 'dictationPronounce', label: '听写播放发音', group: 'dictation' },
 ]

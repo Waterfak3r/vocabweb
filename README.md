@@ -77,8 +77,9 @@ REGISTRATION_ENABLED=false
 | `MAX_WORDS_PER_CLIENT` | `50000` | 单个客户端或账号的单词总数 |
 | `MAX_DRAFTS_PER_CLIENT` | `20` | 单个客户端或账号保留的导入草稿总数 |
 | `WIKTAPI_BASE_URL` | `https://api.wiktapi.dev/v1/en/word` | 词典查询上游地址 |
+| `WIKTAPI_TIMEOUT_MS` | `5000` | 在线词典请求超时（毫秒，最大 5000） |
 | `DICTIONARY_FILE` | `../resources/dictionaries/generated/vocab.sqlite` | 构建生成的本地双语词典 |
-| `DICTIONARY_REMOTE_FALLBACK` | `true` | 本地英文未命中时是否启用在线补充 |
+| `DICTIONARY_REMOTE_FALLBACK` | `true` | 本地英文未命中时是否启用在线补充；服务器无法访问 WiktApi 时可设为 `false` |
 
 ### 管理员初始化
 

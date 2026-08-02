@@ -283,7 +283,7 @@ export interface WordbookStudyPreferences {
     dictation: DictationDisplayPreferences;
   };
 }
-export type StudyShortcutAction = "unknown" | "vague" | "pronounce" | "known" | "flip" | "dictationPronounce";
+export type StudyShortcutAction = "unknown" | "vague" | "pronounce" | "known" | "mastered" | "flip" | "dictationPronounce";
 export type StudyShortcutPreferences = Record<StudyShortcutAction, string>;
 export interface PronunciationPreferences { accent: "gb" | "us"; }
 /** Account/client-wide settings shared by every wordbook and browser. */
@@ -354,6 +354,8 @@ export interface StudyRound {
   queue: StudyRoundTask[];
   passedTaskKeys: string[];
   completedWordIds: string[];
+  /** Words manually promoted to L4 from inside this round. */
+  masteredWordIds: string[];
   vagueWordIds: string[];
   unknownWordIds: string[];
   processedOperationIds: string[];
@@ -370,7 +372,7 @@ export interface StartStudyRoundInput {
 }
 export interface StudyRoundAnswerInput {
   taskId: string;
-  response: LearningVerdict | "correct" | "incorrect";
+  response: LearningVerdict | "correct" | "incorrect" | "mastered";
   operationId: string;
   revision: number;
 }
