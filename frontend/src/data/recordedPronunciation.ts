@@ -10,6 +10,20 @@ type FetchLike = typeof globalThis.fetch
 
 const cache = new Map<string, Promise<RecordedPronunciation | null>>()
 
+/**
+ * Build the same-origin audio route used for user-initiated playback.
+ * Calling Audio.play() with this URL directly from the click handler keeps the
+ * mobile browser's user activation alive while the server resolves the clip.
+ */
+export function recordedPronunciationAudioUrl(
+  word: string,
+  accent: EnglishAccent = 'gb',
+): string | null {
+  const query = normalizeWord(word)
+  if (!isValidWordQuery(query)) return null
+  return `/api/pronunciations/${encodeURIComponent(query)}/audio?accent=${accent}`
+}
+
 function parsePronunciation(value: unknown): RecordedPronunciation | null {
   if (!value || typeof value !== 'object') return null
   const candidate = value as { phonetic?: unknown; audioUrl?: unknown }

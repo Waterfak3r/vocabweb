@@ -46,6 +46,43 @@ describe('WorkspaceApi import drafts', () => {
     }))
   })
 
+  it('keeps invalid rows without a normalized word in the persisted problem summary', async () => {
+    const fetch = vi.fn<FetchLike>().mockResolvedValue(new Response(JSON.stringify({
+      ...draft('pending'),
+      entries: [{ id: 'entry-invalid', line: 7, status: 'invalid', reason: '英文单词格式无效' }],
+    })))
+    const api = new WorkspaceApi('https://api.example.test/', { fetch, clientId: () => 'learner' })
+
+    await expect(api.createImportDraft({ title: '导入测试', lines: [{ line: 7, word: '' }] })).resolves.toMatchObject({
+      entries: [{ line: 7, word: undefined, status: 'invalid' }],
+    })
+  })
+
+  it('reads lightweight whole-group status without downloading draft entries', async () => {
+    const summary = {
+      groupId: 'group-1',
+      anchorId: 'draft-1',
+      title: '四千词导入',
+      status: 'processing',
+      batchCount: 8,
+      totalBatches: 8,
+      completedBatches: 2,
+      totalEntries: 4_000,
+      completedEntries: 1_000,
+      problemCount: 3,
+      nextProcessingDraftId: 'draft-3',
+      updatedAt: '2026-08-02T08:00:00.000Z',
+    }
+    const fetch = vi.fn<FetchLike>().mockResolvedValue(new Response(JSON.stringify([summary])))
+    const api = new WorkspaceApi('https://api.example.test/', { fetch, clientId: () => 'learner' })
+
+    await expect(api.listImportDraftTasks()).resolves.toEqual([summary])
+    expect(fetch).toHaveBeenCalledWith(
+      new URL('https://api.example.test/api/my/import-drafts/status'),
+      expect.any(Object),
+    )
+  })
+
   it('sends the explicit whole-wordbook overwrite mode', async () => {
     const fetch = vi.fn<FetchLike>().mockResolvedValue(new Response(JSON.stringify({
       id: 'my-existing',
@@ -237,6 +274,34 @@ describe('WorkspaceApi marketplace owner feeds', () => {
       favoriteCount: 3,
       words: [{ word: 'resilient' }],
     })
+  })
+
+  it('loads lightweight catalog metadata and a server-filtered word page separately', async () => {
+    const word = { word: 'resilient', phonetic: '/rɪˈzɪliənt/', source: 'user', meanings: [{ pos: 'adjective', definition: 'Able to recover.' }] }
+    const fetch = vi.fn<FetchLike>()
+      .mockResolvedValueOnce(new Response(JSON.stringify(catalog())))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        items: [word],
+        total: 1,
+        page: 1,
+        pageSize: 50,
+        totalPages: 1,
+      })))
+    const api = new WorkspaceApi('https://api.example.test/', { fetch, clientId: () => 'learner' })
+
+    const summary = await api.getCatalogSummary('catalog-1')
+    expect(summary).toMatchObject({ id: 'catalog-1', wordCount: 20 })
+    expect(summary).not.toHaveProperty('words')
+    await expect(api.listCatalogWords('catalog-1', { page: 1, pageSize: 50, q: ' resilient ' })).resolves.toMatchObject({
+      items: [{ word: 'resilient' }],
+      total: 1,
+      page: 1,
+      totalPages: 1,
+    })
+    expect(fetch.mock.calls.map(([url]) => url.toString())).toEqual([
+      'https://api.example.test/api/catalog/wordbooks/catalog-1/summary',
+      'https://api.example.test/api/catalog/wordbooks/catalog-1/words?page=1&pageSize=50&q=resilient',
+    ])
   })
 
   it('keeps the owner-only source wordbook id needed for an exact snapshot update', async () => {

@@ -10,6 +10,12 @@ import {
   type LearningGoal,
   type MyWordbook,
 } from '../data/workspaceApi'
+import {
+  loadMarketplaceCatalogSnapshot,
+  marketplaceCatalogCacheKey,
+  readMarketplaceCatalogCache,
+} from '../data/marketplaceCatalogCache'
+import { getStudyClientId } from '../data/studyApi'
 import { useAuth } from '../hooks/useAuth'
 import { useDocumentTitle } from '../hooks/useDocumentTitle'
 
@@ -257,11 +263,16 @@ export function MarketplacePage() {
   const { user: authUser, loading: authLoading } = useAuth()
   const isLoggedIn = authUser !== null
   const api = getWorkspaceApi()
-  const [remoteCatalog, setRemoteCatalog] = useState<CatalogWordbook[] | null>(null)
+  const cacheClientId = authUser?.clientId ?? getStudyClientId()
+  const [initialCatalogSnapshot] = useState(() => readMarketplaceCatalogCache(marketplaceCatalogCacheKey(
+    getStudyClientId(),
+    marketplaceCatalogQuery(initialUrlState.examFilters, initialUrlState.goalFilters, initialUrlState.sort),
+  )))
+  const [remoteCatalog, setRemoteCatalog] = useState<CatalogWordbook[] | null>(() => initialCatalogSnapshot?.catalog ?? null)
   // Owner's uploads across every visibility (public catalog omits unlisted/private);
   // null means the endpoint was unavailable and we fall back to the public list.
-  const [uploadsCatalog, setUploadsCatalog] = useState<CatalogWordbook[] | null>(null)
-  const [favoritesCatalog, setFavoritesCatalog] = useState<CatalogWordbook[] | null>(null)
+  const [uploadsCatalog, setUploadsCatalog] = useState<CatalogWordbook[] | null>(() => initialCatalogSnapshot?.uploads ?? null)
+  const [favoritesCatalog, setFavoritesCatalog] = useState<CatalogWordbook[] | null>(() => initialCatalogSnapshot?.favorites ?? null)
   const [visibilityUpdatingIds, setVisibilityUpdatingIds] = useState<Set<string>>(() => new Set())
   const [syncMessage, setSyncMessage] = useState('')
   const [loadError, setLoadError] = useState('')
@@ -294,7 +305,7 @@ export function MarketplacePage() {
   const refreshSeq = useRef(0)
   // The text query filters client-side (see `filtered`), so it is deliberately
   // not part of the server request — no per-keystroke network traffic.
-  const refreshRemote = useCallback(async () => {
+  const refreshRemote = useCallback(async (allowCached = false) => {
     if (!api) {
       setRemoteCatalog([])
       setUploadsCatalog([])
@@ -303,20 +314,25 @@ export function MarketplacePage() {
       return
     }
     const seq = ++refreshSeq.current
+    const catalogQuery = marketplaceCatalogQuery(examFilters, goalFilters, sort)
+    const cacheKey = marketplaceCatalogCacheKey(cacheClientId, catalogQuery)
     try {
-      const [catalog, uploads, favorites] = await Promise.all([
-        api.listCatalog(marketplaceCatalogQuery(examFilters, goalFilters, sort)),
-        // The 我的上传 rail needs every own visibility; a missing/erroring endpoint
-        // (older server) yields null and the rail falls back to the public list.
-        api.listUploads().catch(() => null),
-        // Favorites need their dedicated feed: an item can remain favorited after
-        // its owner changes it from public to unlisted.
-        api.listFavorites().catch(() => null),
-      ])
+      const snapshot = await loadMarketplaceCatalogSnapshot(cacheKey, async () => {
+        const [catalog, uploads, favorites] = await Promise.all([
+          api.listCatalog(catalogQuery),
+          // The 我的上传 rail needs every own visibility; a missing/erroring endpoint
+          // (older server) yields null and the rail falls back to the public list.
+          api.listUploads().catch(() => null),
+          // Favorites need their dedicated feed: an item can remain favorited after
+          // its owner changes it from public to unlisted.
+          api.listFavorites().catch(() => null),
+        ])
+        return { catalog, uploads, favorites }
+      }, !allowCached)
       if (seq !== refreshSeq.current) return
-      setRemoteCatalog(catalog)
-      setUploadsCatalog(uploads)
-      setFavoritesCatalog(favorites)
+      setRemoteCatalog(snapshot.catalog)
+      setUploadsCatalog(snapshot.uploads)
+      setFavoritesCatalog(snapshot.favorites)
       setLoadError('')
     } catch {
       if (seq !== refreshSeq.current) return
@@ -325,9 +341,11 @@ export function MarketplacePage() {
       setFavoritesCatalog([])
       setLoadError('单词广场加载失败，请确认后端服务可用后重试。')
     }
-  }, [api, examFilters, goalFilters, sort])
+  }, [api, cacheClientId, examFilters, goalFilters, sort])
 
-  useEffect(() => { void refreshRemote() }, [refreshRemote])
+  // Route remounts reuse a fresh catalog snapshot; explicit refreshes and all
+  // mutations call refreshRemote() without this flag and bypass the cache.
+  useEffect(() => { void refreshRemote(true) }, [refreshRemote])
 
   useEffect(() => {
     if (!showPublish) return

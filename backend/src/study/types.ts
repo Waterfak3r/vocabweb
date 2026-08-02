@@ -44,6 +44,14 @@ export type CatalogCard = Omit<CatalogWordbook, "words" | "ownerClientId" | "sou
   sourceWordbookId?: string;
 };
 export type CatalogDetail = CatalogCard & { words: StudyWordEntry[]; };
+export interface CatalogWordsQuery { page: number; pageSize: number; q?: string; }
+export interface CatalogWordsPage {
+  items: StudyWordEntry[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+}
 export interface MyWordbook {
   id: string; title: string; description: string; sourceCatalogId?: string;
   /** Immutable public version copied when this wordbook was joined. */
@@ -402,7 +410,7 @@ export type ImportEntryStatus = "processing" | "ready" | "invalid" | "duplicate"
 export type ImportResolution = "keep" | "replace" | "merge" | "discard";
 export type ImportCommitMode = "append" | "overwrite";
 export interface ImportLineInput {
-  line: number; word: string; phonetic?: string; pos?: string; enDefinition?: string; zhMeaning?: string; example?: string; meanings?: StudyMeaning[];
+  line: number; word: string; phonetic?: string; pos?: string; enDefinition?: string; zhMeaning?: string; example?: string; meanings?: StudyMeaning[]; sourceReason?: string;
 }
 export interface ImportDraftEntry {
   id: string; line: number; word?: string; phonetic?: string; pos?: string; enDefinition?: string; zhMeaning?: string; example?: string; meanings?: StudyMeaning[];
@@ -470,6 +478,10 @@ export interface StudyStore {
   listFavorites(clientId: string): Promise<CatalogCard[]>;
   listUploads(clientId: string): Promise<CatalogCard[]>;
   getCatalog(clientId: string, id: string): Promise<CatalogDetail | null>;
+  /** Lightweight detail metadata for clients that load the word list separately. */
+  getCatalogSummary(clientId: string, id: string): Promise<CatalogCard | null>;
+  /** Server-filtered catalog words; search is applied before the requested page is sliced. */
+  listCatalogWords(clientId: string, id: string, query: CatalogWordsQuery): Promise<CatalogWordsPage | null>;
   toggleFavorite(clientId: string, id: string): Promise<{ favorited: boolean; favoriteCount: number } | null>;
   addCatalogToMine(clientId: string, id: string): Promise<{ wordbook: MyWordbookCard; created: boolean } | null>;
   uploadCatalog(clientId: string, input: UploadCatalogWordbookInput): Promise<CatalogCard | null>;

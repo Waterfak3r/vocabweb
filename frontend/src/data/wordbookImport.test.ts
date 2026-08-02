@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest'
-import { MAX_IMPORT_ENTRIES, parseWordbookText, validateImportFile, validateImportText } from './wordbookImport'
+import { MAX_IMPORT_ENTRIES, MAX_IMPORT_TOTAL_ENTRIES, parseWordbookText, validateImportEntryCount, validateImportFile, validateImportText } from './wordbookImport'
+
+function alphabeticWord(index: number) {
+  let value = index
+  let suffix = ''
+  do {
+    suffix = String.fromCharCode(97 + (value % 26)) + suffix
+    value = Math.floor(value / 26) - 1
+  } while (value >= 0)
+  return `word${suffix}`
+}
 
 describe('wordbook import parser', () => {
   it('parses one-to-five CSV columns and preserves phrases', () => {
@@ -65,8 +75,16 @@ describe('wordbook import parser', () => {
     const content = Array.from({ length: MAX_IMPORT_ENTRIES + 1 }, (_, index) => `word${index}`).join('\n')
     // Digits make the entries intentionally invalid; valid words verify the batching contract below.
     expect(parseWordbookText(content).batchCount).toBe(0)
-    const words = Array.from({ length: MAX_IMPORT_ENTRIES + 1 }, (_, index) => `word${String.fromCharCode(97 + Math.floor(index / 26))}${String.fromCharCode(97 + (index % 26))}`).join('\n')
+    const words = Array.from({ length: MAX_IMPORT_ENTRIES + 1 }, (_, index) => alphabeticWord(index)).join('\n')
     expect(parseWordbookText(words).batchCount).toBe(2)
+    const largeWordbook = Array.from({ length: 4_000 }, (_, index) => alphabeticWord(index)).join('\n')
+    expect(parseWordbookText(largeWordbook).batchCount).toBe(8)
+  })
+
+  it('keeps queued imports bounded without restoring the old 500-word block', () => {
+    expect(validateImportEntryCount(MAX_IMPORT_ENTRIES + 1)).toBeNull()
+    expect(validateImportEntryCount(MAX_IMPORT_TOTAL_ENTRIES)).toBeNull()
+    expect(validateImportEntryCount(MAX_IMPORT_TOTAL_ENTRIES + 1)).toContain('10,000')
   })
 
   it('enforces the allowed extensions and one megabyte cap', () => {

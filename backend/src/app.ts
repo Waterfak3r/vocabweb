@@ -11,9 +11,10 @@ import { FixedWindowRateLimiter, type RateLimiter } from "./http/rate-limit.js";
 import { isChineseSuggestionQuery, type WordSuggestionLookup } from "./providers/local-dictionary.js";
 import { WiktApiProvider } from "./providers/wiktapi.js";
 import { CsvLocalChineseDictionary, type LocalChineseLookup } from "./study/local-dictionary.js";
+import { BATCH_SIZE } from "./study/ladder.js";
 import { JsonFileStudyStore, StudyResourceLimitError } from "./study/store.js";
 import {
-  parseAddWord, parseBatchWords, parseCatalogQuery, parseClientId, parseCommitImportDraft, parseCreateCatalogContribution, parseCreateImportDraft,
+  parseAddWord, parseBatchWords, parseCatalogQuery, parseCatalogWordsQuery, parseClientId, parseCommitImportDraft, parseCreateCatalogContribution, parseCreateImportDraft,
   parseCursorQuery,
   parseCreateMyWordbook, parseLearningEvent, parseResourceId, parseShareCode, parseStartStudyRound, parseStatus,
   parseResolveCatalogContribution, parseRevertRevision, parseStudyRoundAnswer, parseStudyRoundRevision, parseUpdateCatalog, parseUpdateMyWordbook, parseUpdateStudySettings,
@@ -22,6 +23,7 @@ import {
 import type {
   AccountUser,
   ContributionMutationResult,
+  ImportDraft,
   ImportLineInput,
   PreparedImportLine,
   ResolvedImportDraftEntry,
@@ -206,6 +208,60 @@ function parseDonationImageUrl(value: unknown): string | null | undefined {
   return undefined;
 }
 
+interface ImportDraftTaskSummary {
+  groupId: string;
+  anchorId: string;
+  title: string;
+  targetWordbookId?: string;
+  status: "processing" | "pending";
+  batchCount: number;
+  totalBatches: number;
+  completedBatches: number;
+  totalEntries: number;
+  completedEntries: number;
+  problemCount: number;
+  nextProcessingDraftId?: string;
+  updatedAt: string;
+}
+
+function summarizeImportDraftTasks(drafts: ImportDraft[]): ImportDraftTaskSummary[] {
+  const grouped = new Map<string, ImportDraft[]>();
+  for (const draft of drafts) {
+    const group = grouped.get(draft.groupId) ?? [];
+    group.push(draft);
+    grouped.set(draft.groupId, group);
+  }
+
+  return [...grouped.entries()].flatMap(([groupId, items]) => {
+    const group = items.sort((left, right) => left.batchIndex - right.batchIndex);
+    const anchor = group.find((draft) => draft.status !== "committed");
+    if (!anchor) return [];
+    const totalBatches = Math.max(anchor.totalBatches, group.length);
+    const processing = group.length < totalBatches || group.some((draft) => draft.status === "processing");
+    const entries = group.flatMap((draft) => draft.entries);
+    const completedEntries = entries.filter((entry) => entry.status !== "processing"
+      && ((entry.status !== "conflict" && entry.status !== "duplicate") || Boolean(entry.entry))).length;
+    const problemCount = entries.filter((entry) => entry.status === "invalid" || entry.status === "duplicate" || entry.status === "unmatched" || entry.status === "conflict").length;
+    const nextProcessingDraftId = group.find((draft) => draft.status === "processing")?.id;
+    const updatedAt = group.reduce((latest, draft) => draft.updatedAt > latest ? draft.updatedAt : latest, anchor.updatedAt);
+    return [{
+      groupId,
+      anchorId: anchor.id,
+      title: anchor.title,
+      ...(anchor.targetWordbookId ? { targetWordbookId: anchor.targetWordbookId } : {}),
+      status: processing ? "processing" as const : "pending" as const,
+      batchCount: group.length,
+      totalBatches,
+      completedBatches: group.filter((draft) => draft.status !== "processing").length,
+      totalEntries: entries.length,
+      completedEntries,
+      problemCount,
+      ...(nextProcessingDraftId ? { nextProcessingDraftId } : {}),
+      updatedAt,
+    }];
+  }).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+}
+
 type RequestIdentity = {
   user: AccountUser | null;
   clientId: string | null;
@@ -306,6 +362,10 @@ export function createApp(options: CreateAppOptions = {}) {
     lookupJobs.push({ word, resolve: resolveLookup, reject: rejectLookup }); drainLookupQueue();
   });
   const backgroundDraftTasks = new Map<string, Promise<void>>();
+  const maxBackgroundDraftTasks = 20;
+  // A 500-entry draft can fill the bounded lookup queue by itself. Keep later
+  // drafts in FIFO order so capacity pressure delays them instead of failing them.
+  let backgroundDraftQueue = Promise.resolve();
 
   const enforceWordRateLimit: RequestHandler = (request, response, next) => {
     const clientKey = request.ip || request.socket.remoteAddress || "unknown";
@@ -435,10 +495,10 @@ export function createApp(options: CreateAppOptions = {}) {
   };
   const processImportDraft = (clientId: string, id: string): Promise<void> => {
     const key = `${clientId}:${id}`; const existing = backgroundDraftTasks.get(key); if (existing) return existing;
-    const task = (async () => {
+    const queued = backgroundDraftQueue.then(async () => {
       const draft = await studyStore.getImportDraft(clientId, id);
       if (!draft || draft.status === "committed") return;
-      const processable = draft.entries.filter((entry) => entry.word && (entry.status === "processing" || (entry.status === "conflict" && !entry.entry)));
+      const processable = draft.entries.filter((entry) => entry.word && (entry.status === "processing" || ((entry.status === "conflict" || entry.status === "duplicate") && !entry.entry)));
       if (!processable.length) return;
       for (let offset = 0; offset < processable.length; offset += 100) {
         const batch = processable.slice(offset, offset + 100);
@@ -457,8 +517,13 @@ export function createApp(options: CreateAppOptions = {}) {
         }));
         await studyStore.resolveImportDraftEntries(clientId, id, resolved);
       }
-    })().catch((error) => { console.error("Import draft processing failed", error); }).finally(() => { backgroundDraftTasks.delete(key); });
-    backgroundDraftTasks.set(key, task); return task;
+    });
+    const task = queued
+      .catch((error) => { console.error("Import draft processing failed", error); })
+      .finally(() => { backgroundDraftTasks.delete(key); });
+    backgroundDraftTasks.set(key, task);
+    backgroundDraftQueue = task;
+    return task;
   };
 
   app.disable("x-powered-by");
@@ -1002,6 +1067,48 @@ export function createApp(options: CreateAppOptions = {}) {
   });
 
   app.get(
+    "/api/pronunciations/:word/audio",
+    enforceWordSuggestionRateLimit,
+    async (request, response, next) => {
+      const rawWord = request.params.word;
+      const word = typeof rawWord === "string" ? normalizeWord(rawWord) : "";
+      if (!isValidWordQuery(word)) {
+        response.status(400).json(apiError("INVALID_WORD", "Word query is invalid"));
+        return;
+      }
+      const rawAccent = request.query.accent;
+      if (rawAccent !== undefined && rawAccent !== "gb" && rawAccent !== "us") {
+        response.status(400).json(apiError("INVALID_ACCENT", "Accent must be gb or us"));
+        return;
+      }
+      const accent = rawAccent === "us" ? "us" : "gb";
+      const pronunciationLookup = accent === "us" ? pronunciationLookupUs : pronunciationLookupGb;
+      try {
+        const entry = await pronunciationLookup.lookup(dictionaryHeadword(word));
+        if (!entry?.audioUrl) {
+          response.status(404).json(apiError("PRONUNCIATION_NOT_FOUND", "Recorded pronunciation was not found"));
+          return;
+        }
+        let audioUrl: URL;
+        try {
+          audioUrl = new URL(entry.audioUrl);
+        } catch {
+          response.status(404).json(apiError("PRONUNCIATION_NOT_FOUND", "Recorded pronunciation was not found"));
+          return;
+        }
+        if (audioUrl.protocol !== "https:") {
+          response.status(404).json(apiError("PRONUNCIATION_NOT_FOUND", "Recorded pronunciation was not found"));
+          return;
+        }
+        response.setHeader("Cache-Control", "public, max-age=86400");
+        response.redirect(302, audioUrl.toString());
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  app.get(
     "/api/pronunciations/:word",
     enforceWordSuggestionRateLimit,
     async (request, response, next) => {
@@ -1100,6 +1207,18 @@ export function createApp(options: CreateAppOptions = {}) {
       return;
     }
     try { response.status(200).json(await studyStore.listUploads(clientId)); } catch (error) { next(error); }
+  });
+  app.get("/api/catalog/wordbooks/:id/summary", async (request, response, next) => {
+    const clientId = readClientId(request, response); const id = parseResourceId(request.params.id);
+    if (!clientId) return;
+    if (!id) { response.status(400).json(apiError("INVALID_RESOURCE_ID", "Resource id is invalid")); return; }
+    try { const book = await studyStore.getCatalogSummary(clientId, id); if (!book) response.status(404).json(apiError("CATALOG_NOT_FOUND", "Catalog wordbook was not found")); else response.status(200).json(book); } catch (error) { next(error); }
+  });
+  app.get("/api/catalog/wordbooks/:id/words", async (request, response, next) => {
+    const clientId = readClientId(request, response); const id = parseResourceId(request.params.id); const query = parseCatalogWordsQuery(request.query);
+    if (!clientId) return;
+    if (!id || !query) { response.status(400).json(apiError("INVALID_CATALOG_WORDS_QUERY", "Catalog words query is invalid")); return; }
+    try { const page = await studyStore.listCatalogWords(clientId, id, query); if (!page) response.status(404).json(apiError("CATALOG_NOT_FOUND", "Catalog wordbook was not found")); else response.status(200).json(page); } catch (error) { next(error); }
   });
   app.get("/api/catalog/wordbooks/:id", async (request, response, next) => {
     const clientId = readClientId(request, response); const id = parseResourceId(request.params.id);
@@ -1554,11 +1673,16 @@ export function createApp(options: CreateAppOptions = {}) {
     const clientId = readClientId(request, response); if (!clientId) return;
     try { response.status(200).json(await studyStore.listImportDrafts(clientId)); } catch (error) { next(error); }
   });
+  app.get("/api/my/import-drafts/status", async (request, response, next) => {
+    const clientId = readClientId(request, response); if (!clientId) return;
+    try { response.status(200).json(summarizeImportDraftTasks(await studyStore.listImportDrafts(clientId))); } catch (error) { next(error); }
+  });
   app.post("/api/my/import-drafts", async (request, response, next) => {
     const clientId = readClientId(request, response); const input = parseCreateImportDraft(request.body);
     if (!clientId) return;
-    if (!input) { response.status(400).json(apiError("INVALID_IMPORT_DRAFT", "Import draft is invalid or exceeds the file limit")); return; }
-    if (backgroundDraftTasks.size >= 20) {
+    if (!input) { response.status(400).json(apiError("INVALID_IMPORT_DRAFT", "Import draft is invalid or exceeds the 10,000-row limit")); return; }
+    const requiredTasks = Math.ceil(input.lines.length / BATCH_SIZE);
+    if (backgroundDraftTasks.size + requiredTasks > maxBackgroundDraftTasks) {
       response.setHeader("Retry-After", "5");
       response.status(503).json(apiError("IMPORT_QUEUE_FULL", "Import processing is busy; retry shortly"));
       return;
@@ -1589,11 +1713,8 @@ export function createApp(options: CreateAppOptions = {}) {
     try {
       const draft = await studyStore.getImportDraft(clientId, id);
       if (!draft) { response.status(404).json(apiError("IMPORT_DRAFT_NOT_FOUND", "Import draft or target wordbook was not found")); return; }
-      const mode = input.mode ?? "append";
-      const group = mode === "overwrite"
-        ? (await studyStore.listImportDrafts(clientId)).filter((item) => item.groupId === draft.groupId)
-        : [draft];
-      if (mode === "overwrite" && group.length !== draft.totalBatches) {
+      const group = (await studyStore.listImportDrafts(clientId)).filter((item) => item.groupId === draft.groupId);
+      if (group.length !== draft.totalBatches) {
         response.status(409).json(apiError("IMPORT_DRAFT_GROUP_INCOMPLETE", "One or more import batches are missing"));
         return;
       }
@@ -1610,7 +1731,7 @@ export function createApp(options: CreateAppOptions = {}) {
       if (!draft) { response.status(404).json(apiError("IMPORT_DRAFT_NOT_FOUND", "Import draft was not found")); return; }
       if (draft.status === "committed") { response.status(409).json(apiError("IMPORT_DRAFT_COMMITTED", "Committed drafts cannot be processed")); return; }
       const key = `${clientId}:${id}`;
-      if (!backgroundDraftTasks.has(key) && backgroundDraftTasks.size >= 20) {
+      if (!backgroundDraftTasks.has(key) && backgroundDraftTasks.size >= maxBackgroundDraftTasks) {
         response.setHeader("Retry-After", "5");
         response.status(503).json(apiError("IMPORT_QUEUE_FULL", "Import processing is busy; retry shortly"));
         return;

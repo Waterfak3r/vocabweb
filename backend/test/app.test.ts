@@ -272,6 +272,37 @@ test("GET /api/pronunciations/:word returns recorded audio from its dedicated lo
   }
 });
 
+test("GET /api/pronunciations/:word/audio redirects media playback to the selected recording", async () => {
+  const lookedUp: string[] = [];
+  const server = await startServer({
+    pronunciationLookups: {
+      gb: { async lookup() { return null; } },
+      us: {
+        async lookup(word) {
+          lookedUp.push(word);
+          return {
+            word, phonetic: "/steɪt/", audioUrl: "https://audio.example/en-us/state.mp3",
+            meanings: [{ pos: "noun", definition: "A condition." }], source: "backend",
+          };
+        },
+      },
+    },
+  });
+  try {
+    const response = await fetch(`${server.baseUrl}/api/pronunciations/STATE/audio?accent=us`, {
+      redirect: "manual",
+    });
+    assert.equal(response.status, 302);
+    assert.equal(response.headers.get("location"), "https://audio.example/en-us/state.mp3");
+    assert.equal(response.headers.get("cache-control"), "public, max-age=86400");
+    assert.deepEqual(lookedUp, ["state"]);
+    assert.equal((await fetch(`${server.baseUrl}/api/pronunciations/state/audio?accent=gb`)).status, 404);
+    assert.equal((await fetch(`${server.baseUrl}/api/pronunciations/state/audio?accent=au`)).status, 400);
+  } finally {
+    await server.close();
+  }
+});
+
 test("CORS rejects origins outside the configured allowlist", async () => {
   const server = await startServer({
     frontendOrigins: ["https://frontend.example"],

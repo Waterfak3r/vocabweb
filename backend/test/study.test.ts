@@ -106,6 +106,57 @@ test("new clients start with an empty collection and catalog; uploaded wordbooks
   } finally { await app.close(); }
 });
 
+test("catalog word pages limit payloads and search across the whole catalog", async () => {
+  const app = await server();
+  try {
+    const accountHeaders = await register(app.baseUrl, CLIENT, "catalogpager");
+    const words = Array.from({ length: 123 }, (_, index) => {
+      const suffix = `${String.fromCharCode(97 + Math.floor(index / 26))}${String.fromCharCode(97 + (index % 26))}`;
+      return {
+        word: index === 87 ? "needle" : `term${suffix}`,
+        phonetic: "",
+        source: "user",
+        meanings: [{ pos: "noun", definition: `Definition ${index}` }],
+        ...(index === 87 ? { zhMeaning: "跨页命中" } : {}),
+      };
+    });
+    const upload = await fetch(`${app.baseUrl}/api/catalog/uploads`, {
+      method: "POST",
+      headers: accountHeaders,
+      body: JSON.stringify({ title: "分页词本", words }),
+    });
+    assert.equal(upload.status, 201);
+    const catalog = await upload.json() as { id: string };
+
+    const summaryResponse = await fetch(`${app.baseUrl}/api/catalog/wordbooks/${catalog.id}/summary`, { headers: accountHeaders });
+    assert.equal(summaryResponse.status, 200);
+    const summary = await summaryResponse.json() as Record<string, unknown>;
+    assert.equal(summary.wordCount, 123);
+    assert.equal(Object.hasOwn(summary, "words"), false);
+
+    const secondPageResponse = await fetch(`${app.baseUrl}/api/catalog/wordbooks/${catalog.id}/words?page=2&pageSize=50`, { headers: accountHeaders });
+    assert.equal(secondPageResponse.status, 200);
+    const secondPage = await secondPageResponse.json() as { items: Array<{ word: string }>; total: number; page: number; pageSize: number; totalPages: number };
+    assert.equal(secondPage.items.length, 50);
+    assert.equal(secondPage.items[0]?.word, words[50]!.word);
+    assert.deepEqual({ total: secondPage.total, page: secondPage.page, pageSize: secondPage.pageSize, totalPages: secondPage.totalPages }, { total: 123, page: 2, pageSize: 50, totalPages: 3 });
+
+    const searchResponse = await fetch(`${app.baseUrl}/api/catalog/wordbooks/${catalog.id}/words?page=1&pageSize=50&q=needle`, { headers: accountHeaders });
+    const search = await searchResponse.json() as { items: Array<{ word: string }>; total: number; page: number; pageSize: number; totalPages: number };
+    assert.equal(searchResponse.status, 200);
+    assert.deepEqual(search, { items: [{ ...words[87] }], total: 1, page: 1, pageSize: 50, totalPages: 1 });
+    const meaningSearch = await (await fetch(`${app.baseUrl}/api/catalog/wordbooks/${catalog.id}/words?q=${encodeURIComponent("跨页")}`, { headers: accountHeaders })).json() as { items: Array<{ word: string }> };
+    assert.deepEqual(meaningSearch.items.map((word) => word.word), ["needle"]);
+
+    const clampedResponse = await fetch(`${app.baseUrl}/api/catalog/wordbooks/${catalog.id}/words?page=999&pageSize=50`, { headers: accountHeaders });
+    const clamped = await clampedResponse.json() as { items: unknown[]; page: number };
+    assert.equal(clamped.page, 3);
+    assert.equal(clamped.items.length, 23);
+    assert.equal((await fetch(`${app.baseUrl}/api/catalog/wordbooks/${catalog.id}/words?page=0`, { headers: accountHeaders })).status, 400);
+    assert.equal((await fetch(`${app.baseUrl}/api/catalog/wordbooks/${catalog.id}/words?pageSize=101`, { headers: accountHeaders })).status, 400);
+  } finally { await app.close(); }
+});
+
 test("a new anonymous client can create a wordbook and starts with no learning activity", async () => {
   const app = await server();
   try {
@@ -174,6 +225,27 @@ test("resource limits reject growth while still allowing an over-limit client to
   );
   assert.equal(await store.deleteMyWordbook(CLIENT, first.id), true);
   assert.equal(await store.purgeMyWordbook(CLIENT, first.id), true);
+});
+
+test("new import groups reclaim completed draft history without evicting unfinished recovery drafts", async () => {
+  const store = new InMemoryStudyStore({
+    limits: { maxWordbooksPerClient: 10, maxWordsPerClient: 100, maxDraftsPerClient: 2 },
+  });
+  const createAndCommit = async (word: string) => {
+    const draft = (await store.createImportDrafts(CLIENT, { title: word, lines: [{ line: 1, word }] }))[0]!;
+    await store.resolveImportDraftEntries(CLIENT, draft.id, [{ id: draft.entries[0]!.id, status: "ready", entry: dictionaryEntry(word) }]);
+    await store.commitImportDraft(CLIENT, draft.id, {});
+    return draft.id;
+  };
+  const oldest = await createAndCommit("alpha");
+  const newest = await createAndCommit("beta");
+  const unfinished = (await store.createImportDrafts(CLIENT, { title: "gamma", lines: [{ line: 1, word: "gamma" }] }))[0]!;
+
+  const drafts = await store.listImportDrafts(CLIENT);
+  assert.equal(drafts.length, 2);
+  assert.equal(drafts.some((draft) => draft.id === oldest), false);
+  assert.equal(drafts.some((draft) => draft.id === newest && draft.status === "committed"), true);
+  assert.equal(drafts.some((draft) => draft.id === unfinished.id && draft.status === "processing"), true);
 });
 
 test("personal wordbook categories trim, clear, validate, and remain client-scoped", async () => {
@@ -530,7 +602,7 @@ async function eventually<T>(read: () => Promise<T>, matches: (value: T) => bool
   assert.fail("Timed out waiting for asynchronous import processing");
 }
 
-test("import drafts preserve Chinese input, enforce the 500-line boundary, and append later drafts", async () => {
+test("import drafts preserve Chinese input, queue batches above 500 words, and append later drafts", async () => {
   const app = await server({
     wordLookup: { async lookup(word) { return word === "missing" ? null : dictionaryEntry(word); } },
     localChineseLookup: { async lookup(word) { return word === "fallback" ? "本地中文释义" : undefined; } },
@@ -564,11 +636,63 @@ test("import drafts preserve Chinese input, enforce the 500-line boundary, and a
     const firstBook = await firstCommit.json() as { id: string; wordCount: number };
     assert.equal(firstBook.wordCount, 500);
 
+    const queuedResponse = await fetch(`${app.baseUrl}/api/my/import-drafts`, {
+      method: "POST", headers,
+      body: JSON.stringify({
+        title: "自动分批",
+        lines: Array.from({ length: 1_001 }, (_, index) => ({ line: index + 1, word: alphabeticWord(index) })),
+      }),
+    });
+    assert.equal(queuedResponse.status, 201);
+    const queuedFirst = await queuedResponse.json() as { id: string; groupId: string; entries: unknown[]; batchIndex: number; totalBatches: number };
+    assert.equal(queuedFirst.batchIndex, 1);
+    assert.equal(queuedFirst.totalBatches, 3);
+    assert.equal(queuedFirst.entries.length, 500);
+    const queuedDrafts = await eventually(
+      async () => {
+        const items = await (await fetch(`${app.baseUrl}/api/my/import-drafts`, { headers })).json() as Array<{
+          id: string; groupId: string; batchIndex: number; totalBatches: number; status: string; entries: unknown[];
+        }>;
+        return items.filter((item) => item.groupId === queuedFirst.groupId).sort((left, right) => left.batchIndex - right.batchIndex);
+      },
+      (items) => items.length === 3 && items.every((item) => item.status === "pending"),
+    );
+    assert.deepEqual(queuedDrafts.map((draft) => [draft.batchIndex, draft.totalBatches, draft.entries.length]), [
+      [1, 3, 500],
+      [2, 3, 500],
+      [3, 3, 1],
+    ]);
+    const taskStatus = await (await fetch(`${app.baseUrl}/api/my/import-drafts/status`, { headers })).json() as Array<{
+      groupId: string; anchorId: string; status: string; batchCount: number; totalBatches: number;
+      completedBatches: number; totalEntries: number; completedEntries: number; problemCount: number; updatedAt: string; entries?: unknown[];
+    }>;
+    assert.deepEqual(taskStatus, [{
+      groupId: queuedFirst.groupId,
+      anchorId: queuedFirst.id,
+      title: "自动分批",
+      status: "pending",
+      batchCount: 3,
+      totalBatches: 3,
+      completedBatches: 3,
+      totalEntries: 1_001,
+      completedEntries: 1_001,
+      problemCount: 0,
+      updatedAt: taskStatus[0]!.updatedAt,
+    }]);
+    assert.equal("entries" in taskStatus[0]!, false);
+    const queuedCommit = await fetch(`${app.baseUrl}/api/my/import-drafts/${queuedFirst.id}/commit`, { method: "POST", headers, body: "{}" });
+    assert.equal(queuedCommit.status, 200);
+    assert.equal((await queuedCommit.json() as { wordCount: number }).wordCount, 1_001);
+    assert.deepEqual(await (await fetch(`${app.baseUrl}/api/my/import-drafts/status`, { headers })).json(), []);
+    const committedGroup = (await (await fetch(`${app.baseUrl}/api/my/import-drafts`, { headers })).json() as Array<{ groupId: string; status: string }>).filter((item) => item.groupId === queuedFirst.groupId);
+    assert.equal(committedGroup.length, 3);
+    assert.ok(committedGroup.every((item) => item.status === "committed"));
+
     const oversized = await fetch(`${app.baseUrl}/api/my/import-drafts`, {
       method: "POST", headers,
       body: JSON.stringify({
         title: "超限",
-        lines: Array.from({ length: 501 }, (_, index) => ({ line: index + 1, word: alphabeticWord(index) })),
+        lines: Array.from({ length: 10_001 }, (_, index) => ({ line: index + 1, word: alphabeticWord(index) })),
       }),
     });
     assert.equal(oversized.status, 400);
@@ -593,6 +717,50 @@ test("import drafts preserve Chinese input, enforce the 500-line boundary, and a
     assert.equal(complete.wordCount, 503);
     const linked = await (await fetch(`${app.baseUrl}/api/my/import-drafts/${next.id}`, { headers })).json() as { targetWordbookId: string };
     assert.equal(linked.targetWordbookId, firstBook.id);
+  } finally { await app.close(); }
+});
+
+test("duplicate import rows stay in the final group summary and can replace the earlier row", async () => {
+  const app = await server({ wordLookup: { async lookup(word) { return dictionaryEntry(word); } } });
+  try {
+    const response = await fetch(`${app.baseUrl}/api/my/import-drafts`, {
+      method: "POST", headers,
+      body: JSON.stringify({
+        title: "重复项汇总",
+        lines: [
+          { line: 1, word: "alpha", enDefinition: "First definition." },
+          { line: 2, word: "alpha", enDefinition: "Replacement definition." },
+          { line: 3, word: "beta" },
+          { line: 4, word: "", sourceReason: "双引号字段没有正确结束。" },
+        ],
+      }),
+    });
+    assert.equal(response.status, 201);
+    const created = await response.json() as { id: string };
+    const draft = await eventually(
+      async () => await (await fetch(`${app.baseUrl}/api/my/import-drafts/${created.id}`, { headers })).json() as {
+        status: string;
+        entries: Array<{ id: string; status: string; reason?: string; conflictWith?: string; entry?: { meanings: Array<{ definition: string }> } }>;
+      },
+      (item) => item.status === "pending",
+    );
+    const first = draft.entries[0]!;
+    const duplicate = draft.entries[1]!;
+    assert.equal(duplicate.status, "duplicate");
+    assert.equal(duplicate.conflictWith, first.id);
+    assert.equal(duplicate.entry?.meanings[0]?.definition, "Replacement definition.");
+    assert.equal(draft.entries[3]?.status, "invalid");
+    assert.equal(draft.entries[3]?.reason, "双引号字段没有正确结束。");
+
+    const committed = await fetch(`${app.baseUrl}/api/my/import-drafts/${created.id}/commit`, {
+      method: "POST", headers,
+      body: JSON.stringify({ resolutions: { [duplicate.id]: "replace" } }),
+    });
+    assert.equal(committed.status, 200);
+    const book = await committed.json() as { id: string; wordCount: number };
+    assert.equal(book.wordCount, 2);
+    const words = await (await fetch(`${app.baseUrl}/api/my/wordbooks/${book.id}/words`, { headers })).json() as Array<{ word: string; meanings: Array<{ definition: string }> }>;
+    assert.equal(words.find((word) => word.word === "alpha")?.meanings[0]?.definition, "Replacement definition.");
   } finally { await app.close(); }
 });
 

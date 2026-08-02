@@ -1,7 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
-import { getRecordedPronunciation } from './recordedPronunciation'
+import { getRecordedPronunciation, recordedPronunciationAudioUrl } from './recordedPronunciation'
 
 describe('recorded pronunciation lookup', () => {
+  it('builds a same-origin playback URL for the selected accent', () => {
+    expect(recordedPronunciationAudioUrl('STATE', 'us')).toBe('/api/pronunciations/state/audio?accent=us')
+    expect(recordedPronunciationAudioUrl('state?', 'gb')).toBeNull()
+  })
+
   it('loads and caches an HTTPS recording', async () => {
     const fetchFn = vi.fn(async () => new Response(JSON.stringify({
       phonetic: '/steɪt/',

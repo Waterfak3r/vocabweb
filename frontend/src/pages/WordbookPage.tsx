@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
-import { Link } from 'react-router'
+import { Link, useSearchParams } from 'react-router'
 import { Button } from '../components/ui/Button'
 import { EmptyState } from '../components/ui/EmptyState'
 import { ContributionSubmitDialog } from '../components/marketplace/ContributionSubmitDialog'
@@ -53,6 +53,7 @@ import {
   type PronunciationPreferences,
 } from '../data/pronunciationPreferences'
 import { wordbookCsvFilename, wordbookToCsv } from '../data/wordbookExport'
+import { IMPORT_DRAFT_QUERY_PARAM } from '../data/importDraftStatus'
 import { useModalDialog } from '../hooks/useModalDialog'
 import {
   DEFAULT_REVIEW_SCHEDULE,
@@ -251,6 +252,8 @@ function remoteToWorkspaceBook(book: MyWordbook, index: number): WorkspaceBook {
 
 export function WordbookPage() {
   useDocumentTitle('我的单词本')
+  const [searchParams, setSearchParams] = useSearchParams()
+  const resumeImportDraftId = searchParams.get(IMPORT_DRAFT_QUERY_PARAM)?.trim() || undefined
   const { user, loading: authLoading } = useAuth()
   const [books, setBooks] = useState<WorkspaceBook[]>([])
   const [favoriteCatalog, setFavoriteCatalog] = useState<CatalogWordbook[]>([])
@@ -303,6 +306,12 @@ export function WordbookPage() {
     open: recycleCandidate !== null,
     onClose: () => setRecycleCandidate(null),
   })
+
+  useEffect(() => {
+    if (!resumeImportDraftId) return
+    setImportTargetId(undefined)
+    setShowImporter(true)
+  }, [resumeImportDraftId])
 
   useEffect(() => {
     if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return
@@ -590,6 +599,17 @@ export function WordbookPage() {
     setShowImporter(true)
   }
 
+  function closeImporter() {
+    setShowImporter(false)
+    setImportTargetId(undefined)
+    if (!resumeImportDraftId) return
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current)
+      next.delete(IMPORT_DRAFT_QUERY_PARAM)
+      return next
+    }, { replace: true })
+  }
+
   function importBookFile() {
     if (!selectedBook) return
     setImportTargetId(selectedBook.id)
@@ -785,8 +805,9 @@ export function WordbookPage() {
       <ImportWordbookDialog
         open={showImporter}
         api={api}
-        onClose={() => setShowImporter(false)}
+        onClose={closeImporter}
         onCreated={(created) => { void finishImport(created) }}
+        initialDraftId={resumeImportDraftId}
       />
     </>
   }
@@ -1076,8 +1097,9 @@ export function WordbookPage() {
       <ImportWordbookDialog
         open={showImporter}
         api={api}
-        onClose={() => { setShowImporter(false); setImportTargetId(undefined) }}
+        onClose={closeImporter}
         onCreated={(created) => { void finishImport(created) }}
+        initialDraftId={resumeImportDraftId}
         initialTitle={importTargetId ? selectedBook.title : ''}
         initialDescription={importTargetId ? selectedBook.description : ''}
         initialCategory={importTargetId ? selectedBook.category : ''}

@@ -60,6 +60,13 @@ backend/
 - 非所有者更新或删除统一返回 `404`，避免资源枚举。
 - 所有者上传 DTO 可返回 `sourceWordbookId`，公共卡片不暴露私有源词本。
 
+## 广场词表读取
+
+- `GET /api/catalog/wordbooks/:id/summary` 只返回词本元数据与计数，不携带 `words`；广场详情页使用该接口快速绘制首屏。
+- `GET /api/catalog/wordbooks/:id/words?page=1&pageSize=50&q=...` 返回 `{ items, total, page, pageSize, totalPages }`。`pageSize` 最大 100；服务端先在整本词书中匹配单词、音标、中英文释义和例句，再截取当前页，因此搜索不受已加载页限制。
+- 旧的 `GET /api/catalog/wordbooks/:id` 完整快照响应暂时保留，供旧客户端和内部协作测试兼容；新页面不得用它渲染词表。
+- 前端广场目录按用户与筛选条件缓存 5 分钟并合并并发请求；收藏、加入、发布、协作、删除/恢复个人副本等会影响目录卡片的成功写操作会立即清空缓存。
+
 ## SQLite 持久化
 
 - 默认路径：`DATABASE_FILE=./data/study-state.sqlite`。

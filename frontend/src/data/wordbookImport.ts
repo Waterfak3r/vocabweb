@@ -1,5 +1,6 @@
 export const MAX_IMPORT_FILE_BYTES = 1024 * 1024
 export const MAX_IMPORT_ENTRIES = 500
+export const MAX_IMPORT_TOTAL_ENTRIES = MAX_IMPORT_ENTRIES * 20
 
 export type ImportEntryStatus = 'ready' | 'invalid' | 'duplicate' | 'unmatched' | 'conflict'
 
@@ -251,6 +252,12 @@ export function validateImportFile(file: Pick<File, 'name' | 'size'>): string | 
 export function validateImportText(content: string): string | null {
   return new TextEncoder().encode(content).byteLength > MAX_IMPORT_FILE_BYTES
     ? '单次导入文本不能超过 1MB；请拆分后再导入。'
+    : null
+}
+
+export function validateImportEntryCount(count: number): string | null {
+  return count > MAX_IMPORT_TOTAL_ENTRIES
+    ? `单次最多导入 ${MAX_IMPORT_TOTAL_ENTRIES.toLocaleString('en-US')} 条记录，请拆分后重试。`
     : null
 }
 

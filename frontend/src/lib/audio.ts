@@ -1,10 +1,18 @@
 /**
- * Play a recorded pronunciation (dictionaryapi.dev mp3).
+ * Play a recorded pronunciation URL.
  * Returns a cleanup function that stops playback.
  */
+export type AudioPlaybackFailure = 'blocked' | 'failed'
+
+function playbackFailure(error: unknown): AudioPlaybackFailure {
+  return typeof error === 'object' && error !== null && 'name' in error && error.name === 'NotAllowedError'
+    ? 'blocked'
+    : 'failed'
+}
+
 export function playAudioUrl(
   url: string,
-  onError: () => void,
+  onError: (failure: AudioPlaybackFailure) => void,
   onEnded?: () => void,
 ): () => void {
   const audio = new Audio(url)
@@ -13,7 +21,7 @@ export function playAudioUrl(
   let stopped = false
   audio.preload = 'auto'
   audio.onerror = () => {
-    if (!stopped) onError()
+    if (!stopped) onError('failed')
   }
   audio.onended = () => {
     if (!stopped) onEnded?.()
@@ -21,8 +29,8 @@ export function playAudioUrl(
 
   const playAttempt = audio.play()
   if (playAttempt) {
-    playAttempt.catch(() => {
-      if (!stopped) onError()
+    playAttempt.catch((error: unknown) => {
+      if (!stopped) onError(playbackFailure(error))
     })
   }
 

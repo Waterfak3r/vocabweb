@@ -23,10 +23,24 @@ import type {
   WordbookStudyPreferences,
 } from './studyPreferences'
 import type { PronunciationPreferences } from './pronunciationPreferences'
+import { invalidateMarketplaceCatalogCache } from './marketplaceCatalogCache'
+import { notifyImportDraftsChanged } from './importDraftStatus'
 
 export type { ReviewSchedule, WordLevel, WordStatus } from './reviewSchedule'
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
+
+async function invalidateMarketplaceAfter<T>(operation: Promise<T>): Promise<T> {
+  const result = await operation
+  invalidateMarketplaceCatalogCache()
+  return result
+}
+
+async function notifyImportDraftsAfter<T>(operation: Promise<T>): Promise<T> {
+  const result = await operation
+  notifyImportDraftsChanged()
+  return result
+}
 
 export type CatalogSort = 'recommended' | 'hot' | 'newest' | 'rating'
 /** 公开=进广场列表；邀请码=仅凭分享码导入；私密=仅自己可见。 */
@@ -73,6 +87,14 @@ export type CatalogWordbook = {
   sourceWordbookId?: string
 }
 export type CatalogDetail = CatalogWordbook & { words: WordEntry[] }
+export type CatalogWordsQuery = { page?: number; pageSize?: number; q?: string }
+export type CatalogWordsPage = {
+  items: WordEntry[]
+  total: number
+  page: number
+  pageSize: number
+  totalPages: number
+}
 
 export type CatalogRevisionKind = 'initial' | 'update' | 'merge' | 'revert'
 export type CatalogContributionStatus = 'open' | 'merged' | 'closed'
@@ -262,6 +284,7 @@ export type StudyRoundTaskOptions = {
 export type ImportDraftLine = {
   line: number
   word: string
+  sourceReason?: string
   phonetic?: string
   pos?: string
   enDefinition?: string
@@ -273,7 +296,8 @@ export type ImportDraftLine = {
 export type ImportDraftStatus = 'processing' | 'ready' | 'invalid' | 'duplicate' | 'unmatched' | 'conflict'
 export type ImportConflictResolution = 'keep' | 'replace' | 'merge' | 'discard'
 
-export type ImportDraftEntry = ImportDraftLine & {
+export type ImportDraftEntry = Omit<ImportDraftLine, 'word'> & {
+  word?: string
   id?: string
   status: ImportDraftStatus
   reason?: string
@@ -294,6 +318,22 @@ export type ImportDraft = {
   status: 'processing' | 'pending' | 'committed'
   createdAt?: string
   updatedAt?: string
+}
+
+export type ImportDraftTaskSummary = {
+  groupId: string
+  anchorId: string
+  title: string
+  targetWordbookId?: string
+  status: 'processing' | 'pending'
+  batchCount: number
+  totalBatches: number
+  completedBatches: number
+  totalEntries: number
+  completedEntries: number
+  problemCount: number
+  nextProcessingDraftId?: string
+  updatedAt: string
 }
 
 export type UpdateWordInput = {
@@ -625,6 +665,35 @@ function parseCatalogDetail(value: unknown): CatalogDetail | null {
   if (!card || !isRecord(value) || !Array.isArray(value.words)) return null
   const words = value.words.map(parseCatalogEntry)
   return words.some((word) => word === null) ? null : { ...card, words: words as WordEntry[] }
+}
+
+function parseCatalogWordsPage(value: unknown): CatalogWordsPage | null {
+  if (
+    !isRecord(value)
+    || !Array.isArray(value.items)
+    || !isCount(value.total)
+    || !isCount(value.page)
+    || !isCount(value.pageSize)
+    || !isCount(value.totalPages)
+    || !Number.isInteger(value.total)
+    || !Number.isInteger(value.page)
+    || !Number.isInteger(value.pageSize)
+    || !Number.isInteger(value.totalPages)
+    || value.page < 1
+    || value.pageSize < 1
+    || value.pageSize > 100
+    || value.totalPages < 1
+    || value.page > value.totalPages
+  ) return null
+  const items = value.items.map(parseCatalogEntry)
+  if (items.some((word) => word === null) || items.length > value.pageSize) return null
+  return {
+    items: items as WordEntry[],
+    total: value.total,
+    page: value.page,
+    pageSize: value.pageSize,
+    totalPages: value.totalPages,
+  }
 }
 
 export function parseCatalogWordChange(value: unknown): CatalogWordChange | null {
@@ -1021,10 +1090,11 @@ function parseImportStatus(value: unknown): ImportDraftStatus | null {
 }
 
 function parseImportDraftEntry(value: unknown): ImportDraftEntry | null {
-  if (!isRecord(value) || !isCount(value.line) || !isText(value.word)) return null
+  if (!isRecord(value) || !isCount(value.line) || (value.word !== undefined && !isText(value.word))) return null
   const status = parseImportStatus(value.status) ?? 'ready'
   if (
     (value.id !== undefined && !isText(value.id)) ||
+    (value.sourceReason !== undefined && !isText(value.sourceReason)) ||
     (value.phonetic !== undefined && !isText(value.phonetic)) ||
     (value.pos !== undefined && !isText(value.pos)) ||
     (value.enDefinition !== undefined && !isText(value.enDefinition)) ||
@@ -1039,6 +1109,7 @@ function parseImportDraftEntry(value: unknown): ImportDraftEntry | null {
   return {
     line: value.line,
     word: value.word,
+    sourceReason: value.sourceReason,
     phonetic: value.phonetic,
     pos: value.pos,
     enDefinition: value.enDefinition,
@@ -1083,6 +1154,40 @@ function parseImportDraft(value: unknown): ImportDraft | null {
   }
 }
 
+function parseImportDraftTaskSummary(value: unknown): ImportDraftTaskSummary | null {
+  if (
+    !isRecord(value)
+    || !isText(value.groupId)
+    || !isText(value.anchorId)
+    || !isText(value.title)
+    || (value.targetWordbookId !== undefined && !isText(value.targetWordbookId))
+    || (value.status !== 'processing' && value.status !== 'pending')
+    || !isCount(value.batchCount)
+    || !isCount(value.totalBatches)
+    || !isCount(value.completedBatches)
+    || !isCount(value.totalEntries)
+    || !isCount(value.completedEntries)
+    || !isCount(value.problemCount)
+    || (value.nextProcessingDraftId !== undefined && !isText(value.nextProcessingDraftId))
+    || !isText(value.updatedAt)
+  ) return null
+  return {
+    groupId: value.groupId,
+    anchorId: value.anchorId,
+    title: value.title,
+    targetWordbookId: value.targetWordbookId,
+    status: value.status,
+    batchCount: value.batchCount,
+    totalBatches: value.totalBatches,
+    completedBatches: value.completedBatches,
+    totalEntries: value.totalEntries,
+    completedEntries: value.completedEntries,
+    problemCount: value.problemCount,
+    nextProcessingDraftId: value.nextProcessingDraftId,
+    updatedAt: value.updatedAt,
+  }
+}
+
 /** Optional remote repository for catalog, personal wordbooks, and study data. */
 export class WorkspaceApi {
   private readonly baseUrl: URL
@@ -1108,12 +1213,20 @@ export class WorkspaceApi {
   listFavorites() { return this.list(new URL('api/catalog/favorites', this.baseUrl), parseCatalog, 'favorites') }
   listUploads() { return this.list(new URL('api/catalog/uploads/mine', this.baseUrl), parseCatalog, 'uploads') }
   getCatalog(id: string) { return this.json(`api/catalog/wordbooks/${encodeURIComponent(id)}`, {}, parseCatalogDetail) }
-  async toggleFavorite(id: string) { return this.json<{ favorited: boolean; favoriteCount: number }>(`api/catalog/wordbooks/${encodeURIComponent(id)}/favorite`, { method: 'POST' }, (value) => isRecord(value) && typeof value.favorited === 'boolean' && isCount(value.favoriteCount) ? { favorited: value.favorited, favoriteCount: value.favoriteCount } : null) }
-  async addCatalog(id: string) { return this.json<{ wordbook: MyWordbook; created: boolean }>(`api/catalog/wordbooks/${encodeURIComponent(id)}/add`, { method: 'POST' }, (value) => isRecord(value) && typeof value.created === 'boolean' && parseMyWordbook(value.wordbook) ? { wordbook: parseMyWordbook(value.wordbook)!, created: value.created } : null) }
-  async upload(input: { title: string; description?: string; exams?: string[]; goals?: string[]; words: WordEntry[]; visibility?: CatalogVisibility; message?: string }) { return this.json('api/catalog/uploads', { method: 'POST', body: JSON.stringify(input) }, parseCatalog) }
-  uploadWordbook(input: { sourceWordbookId: string; title?: string; description?: string; exams?: string[]; goals?: string[]; visibility?: CatalogVisibility; message?: string }) { return this.json('api/catalog/uploads', { method: 'POST', body: JSON.stringify(input) }, parseCatalog) }
-  updateCatalogSnapshot(catalogId: string, input: { sourceWordbookId?: string; expectedHeadRevisionId?: string; title?: string; description?: string; exams?: string[]; goals?: string[]; visibility?: CatalogVisibility; message?: string }) { return this.json(`api/catalog/wordbooks/${encodeURIComponent(catalogId)}`, { method: 'PATCH', body: JSON.stringify(input) }, parseCatalog) }
-  async importShareCode(shareCode: string) { return this.json<{ wordbook: MyWordbook; created: boolean }>('api/catalog/imports', { method: 'POST', body: JSON.stringify({ shareCode }) }, (value) => isRecord(value) && typeof value.created === 'boolean' && parseMyWordbook(value.wordbook) ? { wordbook: parseMyWordbook(value.wordbook)!, created: value.created } : null) }
+  getCatalogSummary(id: string) { return this.json(`api/catalog/wordbooks/${encodeURIComponent(id)}/summary`, {}, parseCatalog) }
+  listCatalogWords(id: string, query: CatalogWordsQuery = {}) {
+    const url = new URL(`api/catalog/wordbooks/${encodeURIComponent(id)}/words`, this.baseUrl)
+    if (query.page !== undefined) url.searchParams.set('page', String(query.page))
+    if (query.pageSize !== undefined) url.searchParams.set('pageSize', String(query.pageSize))
+    if (query.q?.trim()) url.searchParams.set('q', query.q.trim())
+    return this.jsonUrl(url, {}, parseCatalogWordsPage)
+  }
+  async toggleFavorite(id: string) { return invalidateMarketplaceAfter(this.json<{ favorited: boolean; favoriteCount: number }>(`api/catalog/wordbooks/${encodeURIComponent(id)}/favorite`, { method: 'POST' }, (value) => isRecord(value) && typeof value.favorited === 'boolean' && isCount(value.favoriteCount) ? { favorited: value.favorited, favoriteCount: value.favoriteCount } : null)) }
+  async addCatalog(id: string) { return invalidateMarketplaceAfter(this.json<{ wordbook: MyWordbook; created: boolean }>(`api/catalog/wordbooks/${encodeURIComponent(id)}/add`, { method: 'POST' }, (value) => isRecord(value) && typeof value.created === 'boolean' && parseMyWordbook(value.wordbook) ? { wordbook: parseMyWordbook(value.wordbook)!, created: value.created } : null)) }
+  async upload(input: { title: string; description?: string; exams?: string[]; goals?: string[]; words: WordEntry[]; visibility?: CatalogVisibility; message?: string }) { return invalidateMarketplaceAfter(this.json('api/catalog/uploads', { method: 'POST', body: JSON.stringify(input) }, parseCatalog)) }
+  uploadWordbook(input: { sourceWordbookId: string; title?: string; description?: string; exams?: string[]; goals?: string[]; visibility?: CatalogVisibility; message?: string }) { return invalidateMarketplaceAfter(this.json('api/catalog/uploads', { method: 'POST', body: JSON.stringify(input) }, parseCatalog)) }
+  updateCatalogSnapshot(catalogId: string, input: { sourceWordbookId?: string; expectedHeadRevisionId?: string; title?: string; description?: string; exams?: string[]; goals?: string[]; visibility?: CatalogVisibility; message?: string }) { return invalidateMarketplaceAfter(this.json(`api/catalog/wordbooks/${encodeURIComponent(catalogId)}`, { method: 'PATCH', body: JSON.stringify(input) }, parseCatalog)) }
+  async importShareCode(shareCode: string) { return invalidateMarketplaceAfter(this.json<{ wordbook: MyWordbook; created: boolean }>('api/catalog/imports', { method: 'POST', body: JSON.stringify({ shareCode }) }, (value) => isRecord(value) && typeof value.created === 'boolean' && parseMyWordbook(value.wordbook) ? { wordbook: parseMyWordbook(value.wordbook)!, created: value.created } : null)) }
   getContributionPreview(wordbookId: string) {
     return this.json(`api/my/wordbooks/${encodeURIComponent(wordbookId)}/contribution-preview`, {}, parseContributionPreview)
   }
@@ -1123,11 +1236,11 @@ export class WorkspaceApi {
     expectedSourceUpdatedAt: string
     expectedHeadRevisionId: string
   }) {
-    return this.json(
+    return invalidateMarketplaceAfter(this.json(
       `api/catalog/wordbooks/${encodeURIComponent(catalogId)}/contributions`,
       { method: 'POST', body: JSON.stringify(input) },
       parseCatalogContribution,
-    )
+    ))
   }
   listCatalogContributions(catalogId: string, cursor?: string, limit = 20) {
     const url = new URL(`api/catalog/wordbooks/${encodeURIComponent(catalogId)}/contributions`, this.baseUrl)
@@ -1143,18 +1256,18 @@ export class WorkspaceApi {
     )
   }
   mergeContribution(catalogId: string, contributionId: string, input: { expectedHeadRevisionId?: string; resolutionNote?: string } = {}) {
-    return this.json(
+    return invalidateMarketplaceAfter(this.json(
       `api/catalog/wordbooks/${encodeURIComponent(catalogId)}/contributions/${encodeURIComponent(contributionId)}/merge`,
       { method: 'POST', body: JSON.stringify(input) },
       parseCatalogContribution,
-    )
+    ))
   }
   closeContribution(catalogId: string, contributionId: string, resolutionNote?: string) {
-    return this.json(
+    return invalidateMarketplaceAfter(this.json(
       `api/catalog/wordbooks/${encodeURIComponent(catalogId)}/contributions/${encodeURIComponent(contributionId)}/close`,
       { method: 'POST', body: JSON.stringify({ ...(resolutionNote !== undefined ? { resolutionNote } : {}) }) },
       parseCatalogContribution,
-    )
+    ))
   }
   listCatalogRevisions(catalogId: string, cursor?: string, limit = 20) {
     const url = new URL(`api/catalog/wordbooks/${encodeURIComponent(catalogId)}/revisions`, this.baseUrl)
@@ -1177,11 +1290,11 @@ export class WorkspaceApi {
     )
   }
   revertRevision(catalogId: string, revisionId: string, input: { expectedHeadRevisionId: string; message?: string }) {
-    return this.json(
+    return invalidateMarketplaceAfter(this.json(
       `api/catalog/wordbooks/${encodeURIComponent(catalogId)}/revisions/${encodeURIComponent(revisionId)}/revert`,
       { method: 'POST', body: JSON.stringify(input) },
       parseCatalogRevision,
-    )
+    ))
   }
   listAccountContributions(scope: 'review' | 'authored', cursor?: string, limit = 20) {
     const url = new URL('api/account/contributions', this.baseUrl)
@@ -1202,15 +1315,16 @@ export class WorkspaceApi {
   createMyWordbook(input: { title: string; description?: string; category?: string; words?: WordEntry[] }) { return this.json('api/my/wordbooks', { method: 'POST', body: JSON.stringify(input) }, parseMyWordbook) }
   updateMyWordbook(id: string, input: { category?: string | null; reviewSchedule?: ReviewSchedule; studyPreferences?: WordbookStudyPreferences }) { return this.json(`api/my/wordbooks/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(input) }, parseMyWordbook) }
   createImportDraft(input: { title: string; description?: string; targetWordbookId?: string; lines: ImportDraftLine[] }) {
-    return this.json('api/my/import-drafts', { method: 'POST', body: JSON.stringify(input) }, parseImportDraft)
+    return notifyImportDraftsAfter(this.json('api/my/import-drafts', { method: 'POST', body: JSON.stringify(input) }, parseImportDraft))
   }
   listImportDrafts() { return this.list(new URL('api/my/import-drafts', this.baseUrl), parseImportDraft, 'import drafts') }
+  listImportDraftTasks() { return this.list(new URL('api/my/import-drafts/status', this.baseUrl), parseImportDraftTaskSummary, 'import draft tasks') }
   getImportDraft(id: string) { return this.json(`api/my/import-drafts/${encodeURIComponent(id)}`, {}, parseImportDraft) }
   processImportDraft(id: string) { return this.json(`api/my/import-drafts/${encodeURIComponent(id)}/process`, { method: 'POST' }, parseImportDraft) }
-  deleteImportDraft(id: string) { return this.empty(`api/my/import-drafts/${encodeURIComponent(id)}`, { method: 'DELETE' }) }
-  commitImportDraft(id: string, resolutions: Record<string, ImportConflictResolution> = {}, mode: 'append' | 'overwrite' = 'append') { return this.json(`api/my/import-drafts/${encodeURIComponent(id)}/commit`, { method: 'POST', body: JSON.stringify({ mode, resolutions }) }, parseMyWordbook) }
-  deleteMyWordbook(id: string) { return this.empty(`api/my/wordbooks/${encodeURIComponent(id)}`, { method: 'DELETE' }) }
-  restoreMyWordbook(id: string) { return this.json(`api/my/wordbooks/${encodeURIComponent(id)}/restore`, { method: 'POST' }, parseMyWordbook) }
+  deleteImportDraft(id: string) { return notifyImportDraftsAfter(this.empty(`api/my/import-drafts/${encodeURIComponent(id)}`, { method: 'DELETE' })) }
+  commitImportDraft(id: string, resolutions: Record<string, ImportConflictResolution> = {}, mode: 'append' | 'overwrite' = 'append') { return notifyImportDraftsAfter(this.json(`api/my/import-drafts/${encodeURIComponent(id)}/commit`, { method: 'POST', body: JSON.stringify({ mode, resolutions }) }, parseMyWordbook)) }
+  deleteMyWordbook(id: string) { return invalidateMarketplaceAfter(this.empty(`api/my/wordbooks/${encodeURIComponent(id)}`, { method: 'DELETE' })) }
+  restoreMyWordbook(id: string) { return invalidateMarketplaceAfter(this.json(`api/my/wordbooks/${encodeURIComponent(id)}/restore`, { method: 'POST' }, parseMyWordbook)) }
   listWords(id: string, status?: WordStatus) { const url = new URL(`api/my/wordbooks/${encodeURIComponent(id)}/words`, this.baseUrl); if (status) url.searchParams.set('status', status); return this.list(url, parseWord, 'word list') }
   updateWord(wordbookId: string, wordId: string, input: UpdateWordInput) { return this.json(`api/my/wordbooks/${encodeURIComponent(wordbookId)}/words/${encodeURIComponent(wordId)}`, { method: 'PATCH', body: JSON.stringify(input) }, parseWord) }
   batchWords(wordbookId: string, action: BatchWordAction, wordIds: string[]) {
@@ -1283,7 +1397,7 @@ export class WorkspaceApi {
   /** Permanently deletes a trashed wordbook and its study events. */
   purgeMyWordbook(id: string) { return this.empty(`api/my/wordbooks/${encodeURIComponent(id)}/purge`, { method: 'DELETE' }) }
   /** Removes one of the client's own catalog uploads from the marketplace. */
-  deleteCatalogUpload(id: string) { return this.empty(`api/catalog/wordbooks/${encodeURIComponent(id)}`, { method: 'DELETE' }) }
+  deleteCatalogUpload(id: string) { return invalidateMarketplaceAfter(this.empty(`api/catalog/wordbooks/${encodeURIComponent(id)}`, { method: 'DELETE' })) }
 
   /* ── Accounts (session cookie; the server binds the account's data clientId) ── */
   register(username: string, password: string) { return this.json('api/auth/register', { method: 'POST', body: JSON.stringify({ username, password }) }, parseAuthUser) }

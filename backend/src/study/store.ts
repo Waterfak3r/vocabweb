@@ -22,7 +22,7 @@ import {
 import type { ClientData, State } from "./ladder.js";
 import type {
   AccountUser, BatchWordInput, BatchWordResult, CatalogAuthor, CatalogCard, CatalogConflict, CatalogContribution, CatalogContributionView,
-  CatalogQuery, CatalogRevision, CatalogRevisionSummary, CatalogRevisionView, CatalogWordChange, CatalogWordbook,
+  CatalogQuery, CatalogRevision, CatalogRevisionSummary, CatalogRevisionView, CatalogWordChange, CatalogWordbook, CatalogWordsPage, CatalogWordsQuery,
   CatalogUpdateMutationResult, CommitImportDraftInput, ContributionMutationResult, ContributionPreview, CreateCatalogContributionInput, CreateImportDraftInput, CreateMyWordbookInput,
   CursorPage, CursorQuery,
   ImportDraft, ImportDraftEntry, LearningEvent, LearningEventInput, LearningQueueItem, MyWordbook, MyWordbookCard,
@@ -411,6 +411,35 @@ export abstract class BaseStore implements StudyStore {
     const found = state.catalog.find((book) => book.id === id);
     if (!found || !visibleTo(found, clientId)) return null;
     return { ...this.catalogCard(state, found, this.clientView(state, clientId), clientId), words: clone(found.words) };
+  }); }
+  async getCatalogSummary(clientId: string, id: string): Promise<CatalogCard | null> { return await this.read((state) => {
+    const found = state.catalog.find((book) => book.id === id);
+    if (!found || !visibleTo(found, clientId)) return null;
+    return this.catalogCard(state, found, this.clientView(state, clientId), clientId);
+  }); }
+  async listCatalogWords(clientId: string, id: string, query: CatalogWordsQuery): Promise<CatalogWordsPage | null> { return await this.read((state) => {
+    const found = state.catalog.find((book) => book.id === id);
+    if (!found || !visibleTo(found, clientId)) return null;
+    const normalized = query.q?.toLowerCase();
+    const matching = normalized
+      ? found.words.filter((entry) => [
+        entry.word,
+        entry.phonetic,
+        entry.zhMeaning,
+        ...entry.meanings.flatMap((meaning) => [meaning.pos, meaning.definition, meaning.example]),
+      ].filter(Boolean).join(" ").toLowerCase().includes(normalized))
+      : found.words;
+    const total = matching.length;
+    const totalPages = Math.max(1, Math.ceil(total / query.pageSize));
+    const page = Math.min(query.page, totalPages);
+    const start = (page - 1) * query.pageSize;
+    return {
+      items: clone(matching.slice(start, start + query.pageSize)),
+      total,
+      page,
+      pageSize: query.pageSize,
+      totalPages,
+    };
   }); }
   async toggleFavorite(clientId: string, id: string): Promise<{ favorited: boolean; favoriteCount: number } | null> { return await this.mutate((state) => {
     const book = state.catalog.find((item) => item.id === id);
@@ -1165,7 +1194,7 @@ export abstract class BaseStore implements StudyStore {
     const cutoff = this.now().getTime() - RETENTION_MS;
     client.drafts = client.drafts.filter((draft) => draft.status !== "committed" || Date.parse(draft.committedAt ?? draft.updatedAt) >= cutoff);
     if (input.targetWordbookId && !client.wordbooks.some((book) => book.id === input.targetWordbookId && !book.deletedAt)) return [];
-    const seen = new Set<string>();
+    const seen = new Map<string, string>();
     const target = input.targetWordbookId ? client.wordbooks.find((book) => book.id === input.targetWordbookId && !book.deletedAt) : undefined;
     const entries = input.lines.map((line): ImportDraftEntry => {
       const normalized = normalizeWord(line.word);
@@ -1176,36 +1205,49 @@ export abstract class BaseStore implements StudyStore {
         ...(line.meanings !== undefined ? { meanings: clone(line.meanings) } : {}),
         status: "processing",
       };
-      if (!isValidWordQuery(normalized)) { entry.status = "invalid"; entry.reason = "英文单词格式无效"; return entry; }
-      if (seen.has(normalized)) { entry.status = "duplicate"; entry.reason = "重复单词"; return entry; }
-      seen.add(normalized);
+      if (!isValidWordQuery(normalized)) { entry.status = "invalid"; entry.reason = line.sourceReason || "英文单词格式无效"; return entry; }
+      const duplicateOf = seen.get(normalized);
+      if (duplicateOf) { entry.status = "duplicate"; entry.conflictWith = duplicateOf; entry.reason = "本次导入中存在重复词条"; return entry; }
+      seen.set(normalized, entry.id);
       const existing = target?.words.find((word) => word.word === normalized);
       if (existing) { entry.status = "conflict"; entry.conflictWith = existing.id; entry.reason = "词本中已存在该单词"; }
       return entry;
     });
     const groups: ImportDraftEntry[][] = []; let current: ImportDraftEntry[] = []; let valid = 0;
     for (const entry of entries) {
-      const countable = entry.status === "processing" || entry.status === "conflict";
+      const countable = entry.status === "processing" || entry.status === "conflict" || entry.status === "duplicate";
       if (countable && valid >= BATCH_SIZE) { groups.push(current); current = []; valid = 0; }
       current.push(entry); if (countable) valid += 1;
     }
     if (current.length || !groups.length) groups.push(current);
     const at = this.now().toISOString(); const groupId = `group-${randomUUID()}`;
-    const drafts = groups.map((batch, index): ImportDraft => ({ id: `draft-${randomUUID()}`, groupId, title: input.title, description: input.description ?? "", ...(input.targetWordbookId ? { targetWordbookId: input.targetWordbookId } : {}), batchIndex: index + 1, totalBatches: groups.length, status: batch.some((entry) => entry.status === "processing" || entry.status === "conflict") ? "processing" : "pending", createdAt: at, updatedAt: at, entries: batch }));
+    const drafts = groups.map((batch, index): ImportDraft => ({ id: `draft-${randomUUID()}`, groupId, title: input.title, description: input.description ?? "", ...(input.targetWordbookId ? { targetWordbookId: input.targetWordbookId } : {}), batchIndex: index + 1, totalBatches: groups.length, status: batch.some((entry) => entry.status === "processing" || entry.status === "conflict" || entry.status === "duplicate") ? "processing" : "pending", createdAt: at, updatedAt: at, entries: batch }));
+    // Completed drafts are hidden from the learner and retained only as
+    // best-effort history. Reclaim the oldest ones before rejecting a new
+    // multi-batch import; unfinished recovery drafts are never evicted.
+    const overflow = Math.max(0, client.drafts.length + drafts.length - this.limits.maxDraftsPerClient);
+    if (overflow) {
+      const removable = new Set(client.drafts
+        .filter((draft) => draft.status === "committed")
+        .sort((left, right) => (left.committedAt ?? left.updatedAt).localeCompare(right.committedAt ?? right.updatedAt))
+        .slice(0, overflow)
+        .map((draft) => draft.id));
+      client.drafts = client.drafts.filter((draft) => !removable.has(draft.id));
+    }
     client.drafts.push(...drafts); return clone(drafts);
   }); }
   async resolveImportDraftEntries(clientId: string, id: string, entries: ResolvedImportDraftEntry[]): Promise<ImportDraft | null> { return await this.mutate((state) => {
     const client = this.client(state, clientId); const draft = client.drafts.find((item) => item.id === id); if (!draft || draft.status === "committed") return null;
     const byId = new Map(entries.map((entry) => [entry.id, entry]));
     for (const entry of draft.entries) {
-      const resolved = byId.get(entry.id); if (!resolved || (entry.status !== "processing" && entry.status !== "conflict")) continue;
+      const resolved = byId.get(entry.id); if (!resolved || (entry.status !== "processing" && entry.status !== "conflict" && entry.status !== "duplicate")) continue;
       if (resolved.entry) entry.entry = clone(resolved.entry);
       if (entry.status === "processing") {
         entry.status = resolved.status;
         if (resolved.reason) entry.reason = resolved.reason; else delete entry.reason;
       } else if (resolved.reason && !entry.reason) entry.reason = resolved.reason;
     }
-    draft.status = draft.entries.some((entry) => entry.status === "processing" || (entry.status === "conflict" && !entry.entry)) ? "processing" : "pending";
+    draft.status = draft.entries.some((entry) => entry.status === "processing" || ((entry.status === "conflict" || entry.status === "duplicate") && !entry.entry)) ? "processing" : "pending";
     draft.updatedAt = this.now().toISOString(); return clone(draft);
   }); }
   async listImportDrafts(clientId: string): Promise<ImportDraft[]> { return await this.read((state) => clone([...this.clientView(state, clientId).drafts].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)))); }
@@ -1216,6 +1258,8 @@ export abstract class BaseStore implements StudyStore {
   }); }
   async commitImportDraft(clientId: string, id: string, input: CommitImportDraftInput): Promise<MyWordbookCard | null> { return await this.mutate((state) => {
     const client = this.client(state, clientId); const draft = client.drafts.find((item) => item.id === id); if (!draft) return null;
+    const siblings = client.drafts.filter((item) => item.groupId === draft.groupId).sort((left, right) => left.batchIndex - right.batchIndex);
+    if (siblings.length !== draft.totalBatches || siblings.some((item) => item.status === "processing")) return null;
     let book = draft.targetWordbookId ? client.wordbooks.find((item) => item.id === draft.targetWordbookId && !item.deletedAt) : undefined;
     const at = this.now().toISOString();
     if (!book) {
@@ -1224,22 +1268,40 @@ export abstract class BaseStore implements StudyStore {
       client.wordbooks.push(book);
       for (const sibling of client.drafts) if (sibling.groupId === draft.groupId) sibling.targetWordbookId = book.id;
     }
+    const mergeInto = (existing: WordbookWord, incoming: StudyWordEntry) => {
+      if (incoming.zhMeaning && incoming.zhMeaning !== existing.zhMeaning) {
+        existing.zhMeaning = existing.zhMeaning ? `${existing.zhMeaning}；${incoming.zhMeaning}` : incoming.zhMeaning;
+        existing.zhMeaningSource = incoming.zhMeaningSource ?? existing.zhMeaningSource;
+      }
+      existing.meanings = sameMeanings(existing.meanings, incoming.meanings);
+      if (!existing.phonetic) existing.phonetic = incoming.phonetic;
+      if (!existing.audioUrl) existing.audioUrl = incoming.audioUrl;
+    };
     if ((input.mode ?? "append") === "overwrite") {
       if (!draft.targetWordbookId || !book) return null;
-      const siblings = client.drafts.filter((item) => item.groupId === draft.groupId);
-      if (siblings.length !== draft.totalBatches || siblings.some((item) => item.status === "processing")) return null;
       const previousByWord = new Map(book.words.map((word) => [word.word, word]));
       const replacement: WordbookWord[] = [];
-      for (const sibling of siblings.sort((left, right) => left.batchIndex - right.batchIndex)) {
+      const replacementIndex = new Map<string, number>();
+      for (const sibling of siblings) {
         for (const item of sibling.entries) {
-          if (!item.word || !item.entry || (item.status !== "ready" && item.status !== "unmatched" && item.status !== "conflict")) continue;
-          const resolution = input.resolutions?.[item.id] ?? "replace";
+          if (!item.word || !item.entry || (item.status !== "ready" && item.status !== "unmatched" && item.status !== "conflict" && item.status !== "duplicate")) continue;
+          const resolution = input.resolutions?.[item.id] ?? (item.status === "duplicate" ? "keep" : "replace");
           item.resolution = resolution;
-          if (resolution === "discard") continue;
+          if (resolution === "discard" || (item.status === "duplicate" && resolution === "keep")) continue;
+          const accumulatedIndex = replacementIndex.get(item.word);
+          const accumulated = accumulatedIndex === undefined ? undefined : replacement[accumulatedIndex];
+          if (item.status === "duplicate" && resolution === "merge" && accumulated) {
+            mergeInto(accumulated, item.entry);
+            continue;
+          }
           const previous = previousByWord.get(item.word);
-          replacement.push(previous
-            ? { ...clone(item.entry), id: previous.id, addedAt: previous.addedAt }
-            : { ...clone(item.entry), id: randomUUID(), addedAt: at });
+          const next = { ...clone(item.entry), id: (previous ?? accumulated)?.id ?? randomUUID(), addedAt: (previous ?? accumulated)?.addedAt ?? at };
+          if (accumulatedIndex === undefined) {
+            replacementIndex.set(item.word, replacement.length);
+            replacement.push(next);
+          } else {
+            replacement[accumulatedIndex] = next;
+          }
         }
       }
       const liveIds = new Set(replacement.map((word) => word.id));
@@ -1252,25 +1314,25 @@ export abstract class BaseStore implements StudyStore {
         sibling.committedAt = at;
         sibling.updatedAt = at;
       }
-    } else if (draft.status !== "committed") {
-      for (const item of draft.entries) {
-        if (!item.word || !item.entry || (item.status !== "ready" && item.status !== "unmatched" && item.status !== "conflict")) continue;
-        const existing = book.words.find((word) => word.word === item.word); const resolution = input.resolutions?.[item.id] ?? "keep";
-        item.resolution = resolution;
-        if (resolution === "discard") continue;
-        if (!existing) { book.words.push({ ...clone(item.entry), id: randomUUID(), addedAt: at }); continue; }
-        if (resolution === "replace") { Object.assign(existing, clone(item.entry)); }
-        if (resolution === "merge") {
-          if (item.entry.zhMeaning && item.entry.zhMeaning !== existing.zhMeaning) {
-            existing.zhMeaning = existing.zhMeaning ? `${existing.zhMeaning}；${item.entry.zhMeaning}` : item.entry.zhMeaning;
-            existing.zhMeaningSource = item.entry.zhMeaningSource ?? existing.zhMeaningSource;
-          }
-          existing.meanings = sameMeanings(existing.meanings, item.entry.meanings);
-          if (!existing.phonetic) existing.phonetic = item.entry.phonetic;
-          if (!existing.audioUrl) existing.audioUrl = item.entry.audioUrl;
+    } else {
+      const pendingSiblings = siblings.filter((sibling) => sibling.status !== "committed");
+      for (const sibling of pendingSiblings) {
+        for (const item of sibling.entries) {
+          if (!item.word || !item.entry || (item.status !== "ready" && item.status !== "unmatched" && item.status !== "conflict" && item.status !== "duplicate")) continue;
+          const existing = book.words.find((word) => word.word === item.word); const resolution = input.resolutions?.[item.id] ?? "keep";
+          item.resolution = resolution;
+          if (resolution === "discard" || (item.status === "duplicate" && resolution === "keep")) continue;
+          if (!existing) { book.words.push({ ...clone(item.entry), id: randomUUID(), addedAt: at }); continue; }
+          if (resolution === "replace") { Object.assign(existing, clone(item.entry)); }
+          if (resolution === "merge") mergeInto(existing, item.entry);
         }
       }
-      book.updatedAt = at; draft.status = "committed"; draft.committedAt = at; draft.updatedAt = at;
+      if (pendingSiblings.length) book.updatedAt = at;
+      for (const sibling of pendingSiblings) {
+        sibling.status = "committed";
+        sibling.committedAt = at;
+        sibling.updatedAt = at;
+      }
     }
     return card(book, client.events);
   }); }

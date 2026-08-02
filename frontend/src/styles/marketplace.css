@@ -86,11 +86,18 @@
 .market-detail-words input { width: min(22rem, 70vw); min-height: 2.6rem; padding: .6rem .8rem; border: 1px solid var(--rule); border-radius: .4rem; background: var(--paper); color: var(--ink); }
 .market-detail-result { margin: .8rem 0; color: var(--muted); font-size: .85rem; }
 .market-detail-word-list { max-height: 60vh; overflow: auto; border-block: 1px solid var(--rule); }
+.market-detail-word-list[aria-busy='true'] { opacity: .55; }
 .market-detail-word-list > article { display: grid; grid-template-columns: minmax(10rem, .7fr) minmax(12rem, 1fr) minmax(15rem, 1.5fr); gap: 1rem; padding: .9rem .25rem; border-bottom: 1px solid var(--rule); }
 .market-detail-word-list strong { display: block; font-family: var(--font-serif); font-size: 1.15rem; }
 .market-detail-word-list small { color: var(--muted); line-height: 1.45; }
 .market-detail-word-list p { line-height: 1.5; }
 .market-detail-empty { padding: 2rem; color: var(--muted); text-align: center; }
+.market-detail-word-error { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: .8rem; padding: .7rem .8rem; border: 1px solid var(--danger-border, var(--rule)); border-radius: .4rem; color: var(--danger, var(--ink)); }
+.market-detail-word-error button, .market-detail-pagination button { min-height: 2.35rem; padding: .45rem .8rem; border: 1px solid var(--rule); border-radius: .35rem; background: var(--paper); color: var(--ink); font-weight: 650; }
+.market-detail-word-error button:hover, .market-detail-pagination button:not(:disabled):hover { border-color: var(--accent); color: var(--accent-strong); }
+.market-detail-pagination { display: flex; align-items: center; justify-content: center; gap: .8rem; padding-top: 1rem; }
+.market-detail-pagination span { min-width: 7rem; color: var(--muted); text-align: center; font-size: .9rem; }
+.market-detail-pagination button:disabled { cursor: not-allowed; opacity: .45; }
 .market-detail-state { width: min(760px, calc(100% - 2rem)); margin: 4rem auto; }
 @media (max-width: 720px) {
   .market-detail-hero { grid-template-columns: 1fr; }

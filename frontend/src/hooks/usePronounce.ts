@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { getRecordedPronunciation } from '../data/recordedPronunciation'
+import { recordedPronunciationAudioUrl } from '../data/recordedPronunciation'
 import { readPronunciationPreferences, type EnglishAccent } from '../data/pronunciationPreferences'
 import { playAudioUrl } from '../lib/audio'
 import { normalizeSpokenEnglish, speakEnglishWord } from '../lib/speech'
@@ -7,8 +7,8 @@ import { normalizeSpokenEnglish, speakEnglishWord } from '../lib/speech'
 export type PronounceState = 'idle' | 'playing' | 'unavailable'
 
 /**
- * Pronounce a word: prefer the recorded audioUrl, fall back to
- * Web Speech (en-GB). `statusText` is meant for an aria-live region.
+ * Pronounce a word: prefer the selected-accent recording, then fall back to
+ * Web Speech in the same accent. `statusText` is meant for an aria-live region.
  */
 export function usePronounce(word: string, rate = 0.85, requestedAccent?: EnglishAccent) {
   const accent = requestedAccent ?? readPronunciationPreferences().accent
@@ -48,9 +48,17 @@ export function usePronounce(word: string, rate = 0.85, requestedAccent?: Englis
       let timer = 0
       const stopAudio = playAudioUrl(
         recordingUrl,
-        () => {
+        (failure) => {
           window.clearTimeout(timer)
           stopAudio()
+          if (failure === 'blocked') {
+            // Autoplay without a fresh gesture is restricted on mobile. Do not
+            // replace the recording with an OS-specific voice; leave playback
+            // ready for the learner's next tap instead.
+            setState('idle')
+            setStatusText('浏览器阻止了自动播放，请点击发音按钮。')
+            return
+          }
           fallbackToSpeech()
           // Speech can be cancelled without a terminal callback (another player
           // calls the global cancel); keep a watchdog so state cannot stick at
@@ -75,16 +83,13 @@ export function usePronounce(word: string, rate = 0.85, requestedAccent?: Englis
       }
     }
 
-    // Stored wordbook audio predates the accent preference and has no reliable
-    // accent metadata. Resolve the selected accent through the dedicated route
-    // so changing the setting cannot keep playing a stale opposite-accent clip.
-    let cancelled = false
-    cleanupRef.current = () => { cancelled = true }
-    void getRecordedPronunciation(normalizeSpokenEnglish(word), accent).then((pronunciation) => {
-      if (cancelled) return
-      if (pronunciation?.audioUrl) playRecording(pronunciation.audioUrl)
-      else fallbackToSpeech()
-    })
+    // Start the media request synchronously inside the user's click/shortcut.
+    // Awaiting the pronunciation metadata first loses transient user activation
+    // on mobile Safari/Chrome, which rejects the recording and falls back to a
+    // device-specific system voice.
+    const recordingUrl = recordedPronunciationAudioUrl(normalizeSpokenEnglish(word), accent)
+    if (recordingUrl) playRecording(recordingUrl)
+    else fallbackToSpeech()
   }, [word, rate, accent, stop])
 
   useEffect(() => stop, [stop])

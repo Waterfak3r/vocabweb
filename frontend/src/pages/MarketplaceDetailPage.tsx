@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router'
 import { Button } from '../components/ui/Button'
 import { EmptyState } from '../components/ui/EmptyState'
@@ -6,13 +6,17 @@ import { ContributionSubmitDialog } from '../components/marketplace/Contribution
 import {
   getWorkspaceApi,
   type CatalogContribution,
-  type CatalogDetail,
   type CatalogRevision,
+  type CatalogWordbook,
+  type CatalogWordsPage,
 } from '../data/workspaceApi'
 import { useDocumentTitle } from '../hooks/useDocumentTitle'
 import { useAuth } from '../hooks/useAuth'
 
 type DetailTab = 'words' | 'contributions' | 'revisions'
+
+export const CATALOG_WORDS_PAGE_SIZE = 50
+const WORD_SEARCH_DEBOUNCE_MS = 250
 
 const REVISION_KIND: Record<CatalogRevision['kind'], string> = {
   initial: '首次发布',
@@ -51,7 +55,7 @@ export function MarketplaceDetailPage() {
     : 'words'
   const api = getWorkspaceApi()
   const { user, loading: authLoading } = useAuth()
-  const [book, setBook] = useState<CatalogDetail | null>(null)
+  const [book, setBook] = useState<CatalogWordbook | null>(null)
   const [contributions, setContributions] = useState<CatalogContribution[]>([])
   const [revisions, setRevisions] = useState<CatalogRevision[]>([])
   const [contributionsNextCursor, setContributionsNextCursor] = useState<string>()
@@ -62,31 +66,90 @@ export function MarketplaceDetailPage() {
   const [error, setError] = useState('')
   const [tabError, setTabError] = useState('')
   const [query, setQuery] = useState('')
+  const [debouncedQuery, setDebouncedQuery] = useState('')
+  const [words, setWords] = useState<CatalogWordsPage['items']>([])
+  const [wordPage, setWordPage] = useState(1)
+  const [wordTotal, setWordTotal] = useState(0)
+  const [wordTotalPages, setWordTotalPages] = useState(1)
+  const [wordsLoading, setWordsLoading] = useState(true)
+  const [wordsError, setWordsError] = useState('')
+  const [wordsReload, setWordsReload] = useState(0)
   const [message, setMessage] = useState('')
   const [preparingContribution, setPreparingContribution] = useState(false)
   const [contributionBookId, setContributionBookId] = useState<string | null>(null)
   const contributionTriggerRef = useRef<HTMLElement | null>(null)
+  const wordListRef = useRef<HTMLDivElement | null>(null)
+  const wordRequestSeq = useRef(0)
   useDocumentTitle(book?.title ? `${book.title} · 单词广场` : '词本概况')
 
-  const load = async () => {
+  useEffect(() => {
+    let active = true
     if (!api || !id) {
       setError('无法读取该词本。')
       setLoading(false)
-      return
+      return () => { active = false }
     }
     setLoading(true)
-    try {
-      setBook(await api.getCatalog(id))
+    void api.getCatalogSummary(id).then((summary) => {
+      if (!active) return
+      setBook(summary)
       setError('')
-    } catch {
+    }).catch(() => {
+      if (!active) return
       setBook(null)
       setError('该词本不存在、不可见或暂时无法加载。')
-    } finally {
-      setLoading(false)
-    }
-  }
+    }).finally(() => {
+      if (active) setLoading(false)
+    })
+    return () => { active = false }
+  }, [api, id])
 
-  useEffect(() => { void load() }, [id])
+  useEffect(() => {
+    setQuery('')
+    setDebouncedQuery('')
+    setWords([])
+    setWordPage(1)
+    setWordTotal(0)
+    setWordTotalPages(1)
+    setWordsError('')
+  }, [id])
+
+  useEffect(() => {
+    const timeout = window.setTimeout(() => {
+      setWordPage(1)
+      setDebouncedQuery(query.trim())
+    }, WORD_SEARCH_DEBOUNCE_MS)
+    return () => window.clearTimeout(timeout)
+  }, [query])
+
+  useEffect(() => {
+    if (!api || !id || activeTab !== 'words') return
+    let active = true
+    const seq = ++wordRequestSeq.current
+    setWordsLoading(true)
+    setWordsError('')
+    void api.listCatalogWords(id, {
+      page: wordPage,
+      pageSize: CATALOG_WORDS_PAGE_SIZE,
+      ...(debouncedQuery ? { q: debouncedQuery } : {}),
+    }).then((result) => {
+      if (!active || seq !== wordRequestSeq.current) return
+      setWords(result.items)
+      setWordTotal(result.total)
+      setWordTotalPages(result.totalPages)
+      if (result.page !== wordPage) setWordPage(result.page)
+      if (wordListRef.current) wordListRef.current.scrollTop = 0
+    }).catch(() => {
+      if (!active || seq !== wordRequestSeq.current) return
+      setWords([])
+      setWordTotal(0)
+      setWordTotalPages(1)
+      setWordsError('词表加载失败，请稍后重试。')
+    }).finally(() => {
+      if (active && seq === wordRequestSeq.current) setWordsLoading(false)
+    })
+    return () => { active = false }
+  }, [activeTab, api, debouncedQuery, id, wordPage, wordsReload])
 
   useEffect(() => {
     if (!api || !id || activeTab === 'words') return
@@ -120,19 +183,11 @@ export function MarketplaceDetailPage() {
     return () => { active = false }
   }, [activeTab, api, id])
 
-  const words = useMemo(() => {
-    const normalized = query.trim().toLowerCase()
-    if (!normalized) return book?.words ?? []
-    return (book?.words ?? []).filter((entry) =>
-      [entry.word, entry.phonetic, entry.zhMeaning, ...entry.meanings.flatMap((meaning) => [meaning.pos, meaning.definition])]
-        .filter(Boolean).join(' ').toLowerCase().includes(normalized))
-  }, [book?.words, query])
-
   async function toggleFavorite() {
     if (!api || !book) return
     try {
       const result = await api.toggleFavorite(book.id)
-      setBook({ ...book, ...result })
+      setBook((current) => current?.id === book.id ? { ...current, ...result } : current)
     } catch {
       setMessage('收藏操作失败，请稍后重试。')
     }
@@ -142,7 +197,11 @@ export function MarketplaceDetailPage() {
     if (!api || !book || book.added) return
     try {
       const result = await api.addCatalog(book.id)
-      setBook(await api.getCatalog(book.id))
+      setBook((current) => current?.id === book.id ? {
+        ...current,
+        added: true,
+        uses: result.created ? current.uses + 1 : current.uses,
+      } : current)
       setMessage(result.created ? `已加入「${book.title}」。` : '该词本已在你的学习词本中。')
     } catch {
       setMessage('加入词本失败，请稍后重试。')
@@ -206,8 +265,12 @@ export function MarketplaceDetailPage() {
   const canonicalMarketplaceSearch = marketplaceFrom ? new URLSearchParams(marketplaceFrom).toString() : ''
   const marketplaceBackHref = canonicalMarketplaceSearch ? `/marketplace?${canonicalMarketplaceSearch}` : '/marketplace'
   const nestedSearch = marketplaceFrom ? `?${new URLSearchParams({ from: marketplaceFrom }).toString()}` : ''
+  const normalizedQuery = query.trim()
+  const wordBusy = wordsLoading || normalizedQuery !== debouncedQuery
+  const firstVisibleWord = wordTotal ? (wordPage - 1) * CATALOG_WORDS_PAGE_SIZE + 1 : 0
+  const lastVisibleWord = wordTotal ? firstVisibleWord + words.length - 1 : 0
 
-  if (loading) return <section className="market-detail-state"><EmptyState title="正在加载词本概况" body="正在读取作者和单词列表。" /></section>
+  if (loading) return <section className="market-detail-state"><EmptyState title="正在加载词本概况" body="正在读取作者和词本信息。" /></section>
   if (!book) return <section className="market-detail-state"><EmptyState title="无法打开词本" body={error} action={<Link to={marketplaceBackHref}>返回单词广场</Link>} /></section>
 
   return (
@@ -247,10 +310,17 @@ export function MarketplaceDetailPage() {
         <section className="market-detail-words">
           <header>
             <div><p className="marginal">词表概览</p><h2>全部单词</h2></div>
-            <label><span className="sr-only">搜索词表</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索单词或释义" /></label>
+            <label><span className="sr-only">搜索整本词表</span><input value={query} maxLength={100} onChange={(event) => setQuery(event.target.value)} placeholder="搜索整本词书的单词或释义" /></label>
           </header>
-          <p className="market-detail-result">显示 {words.length} / {book.wordCount} 词</p>
-          <div className="market-detail-word-list">
+          <p className="market-detail-result" aria-live="polite">
+            {wordBusy
+              ? (normalizedQuery ? '正在搜索整本词表…' : `正在加载第 ${wordPage} 页…`)
+              : debouncedQuery
+                ? `整本 ${book.wordCount} 词中找到 ${wordTotal} 个匹配词${wordTotal ? `，显示 ${firstVisibleWord}–${lastVisibleWord}` : ''}`
+                : `显示 ${firstVisibleWord}–${lastVisibleWord} / ${wordTotal || book.wordCount} 词`}
+          </p>
+          {wordsError && <div className="market-detail-word-error" role="alert"><span>{wordsError}</span><button type="button" onClick={() => setWordsReload((value) => value + 1)}>重试</button></div>}
+          <div className="market-detail-word-list" ref={wordListRef} aria-busy={wordBusy}>
             {words.map((entry) => (
               <article key={entry.word}>
                 <div><strong>{entry.word}</strong><small>{entry.phonetic || '暂无音标'}</small></div>
@@ -258,8 +328,13 @@ export function MarketplaceDetailPage() {
                 <small>{entry.meanings.slice(0, 2).map((meaning) => `${meaning.pos} ${meaning.definition}`).join('；')}</small>
               </article>
             ))}
-            {!words.length && <p className="market-detail-empty">没有匹配的单词。</p>}
+            {!wordBusy && !wordsError && !words.length && <p className="market-detail-empty">没有匹配的单词。</p>}
           </div>
+          {!wordsError && wordTotalPages > 1 && <nav className="market-detail-pagination" aria-label="词表分页">
+            <button type="button" disabled={wordBusy || wordPage <= 1} onClick={() => setWordPage((page) => Math.max(1, page - 1))}>上一页</button>
+            <span>第 {wordPage} / {wordTotalPages} 页</span>
+            <button type="button" disabled={wordBusy || wordPage >= wordTotalPages} onClick={() => setWordPage((page) => Math.min(wordTotalPages, page + 1))}>下一页</button>
+          </nav>}
         </section>
       )}
 

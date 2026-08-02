@@ -1,6 +1,6 @@
 import { isValidWordQuery, normalizeWord } from "../words/normalize.js";
 import {
-  WORD_SOURCES, type CatalogExam, type CatalogQuery, type CatalogSort, type CommitImportDraftInput, type CreateCatalogContributionInput, type CreateImportDraftInput,
+  WORD_SOURCES, type CatalogExam, type CatalogQuery, type CatalogSort, type CatalogWordsQuery, type CommitImportDraftInput, type CreateCatalogContributionInput, type CreateImportDraftInput,
   type CursorQuery,
   type CreateMyWordbookInput, type ImportLineInput, type ImportResolution, type LearningEventInput, type LearningGoal,
   type BatchWordAction, type DictationDisplayPreferences, type FlashcardDisplayPreferences, type PronunciationPreferences, type ReviewSchedule, type StartStudyRoundInput, type StudyDisplayPreferences, type StudyExerciseType, type StudyMeaning, type StudyRoundAnswerInput, type StudyShortcutPreferences, type StudyWordEntry,
@@ -15,6 +15,7 @@ const SORTS = ["recommended", "hot", "newest", "rating"] as const;
 const RESOLUTIONS = ["keep", "replace", "merge", "discard"] as const;
 const VISIBILITIES = ["public", "unlisted", "private"] as const;
 export const CATALOG_TITLE_MAX_LENGTH = 40;
+export const MAX_IMPORT_LINES = 10_000;
 
 export function isJsonObject(value: unknown): value is JsonObject { return typeof value === "object" && value !== null && !Array.isArray(value); }
 export function parseClientId(value: unknown): string | null {
@@ -378,12 +379,25 @@ export function parseCatalogQuery(query: Record<string, unknown>): CatalogQuery 
   return q !== null && exam !== null && goal !== null && sort !== null ? { q, exam, goal, sort } : null;
 }
 
+export function parseCatalogWordsQuery(query: Record<string, unknown>): CatalogWordsQuery | null {
+  const positiveInteger = (value: unknown, fallback: number, maximum: number): number | null => {
+    if (value === undefined) return fallback;
+    if (typeof value !== "string" || !/^\d+$/.test(value)) return null;
+    const parsed = Number(value);
+    return Number.isSafeInteger(parsed) && parsed >= 1 && parsed <= maximum ? parsed : null;
+  };
+  const page = positiveInteger(query.page, 1, 100_000);
+  const pageSize = positiveInteger(query.pageSize, 50, 100);
+  const q = query.q === undefined ? undefined : text(query.q, 100);
+  return page !== null && pageSize !== null && q !== null ? { page, pageSize, ...(q ? { q } : {}) } : null;
+}
+
 export function parseCreateImportDraft(value: unknown): CreateImportDraftInput | null {
   if (!isJsonObject(value)) return null;
   const title = text(value.title, 100); const description = value.description === undefined ? undefined : text(value.description, 500, true); const targetWordbookId = value.targetWordbookId === undefined ? undefined : parseResourceId(value.targetWordbookId);
   if (!title || description === null || targetWordbookId === null) return null;
   let lines: ImportLineInput[];
-  if (Array.isArray(value.lines) && value.lines.length <= 500) {
+  if (Array.isArray(value.lines) && value.lines.length <= MAX_IMPORT_LINES) {
     let total = 0;
     const parsed = value.lines.map((item): ImportLineInput | null => {
       if (!isJsonObject(item) || !Number.isInteger(item.line) || typeof item.line !== "number" || item.line < 1 || item.line > 1_000_000) return null;
@@ -393,15 +407,18 @@ export function parseCreateImportDraft(value: unknown): CreateImportDraftInput |
       const enDefinition = item.enDefinition === undefined ? undefined : text(item.enDefinition, 1500, true);
       const zhMeaning = item.zhMeaning === undefined ? undefined : text(item.zhMeaning, 1000, true);
       const example = item.example === undefined ? undefined : text(item.example, 1500, true);
+      const sourceReason = item.sourceReason === undefined ? undefined : text(item.sourceReason, 240, true);
       const parsedMeanings = item.meanings === undefined ? undefined : meanings(item.meanings);
-      if (rawWord === null || phonetic === null || pos === null || enDefinition === null || zhMeaning === null || example === null || parsedMeanings === null) return null;
+      if (rawWord === null || phonetic === null || pos === null || enDefinition === null || zhMeaning === null || example === null || sourceReason === null || parsedMeanings === null) return null;
       total += rawWord.length + (phonetic?.length ?? 0) + (pos?.length ?? 0) + (enDefinition?.length ?? 0) + (zhMeaning?.length ?? 0) + (example?.length ?? 0)
+        + (sourceReason?.length ?? 0)
         + (parsedMeanings?.reduce((sum, meaning) => sum + meaning.pos.length + meaning.definition.length + (meaning.example?.length ?? 0), 0) ?? 0);
       return {
         line: item.line, word: rawWord,
         ...(phonetic ? { phonetic } : {}), ...(pos ? { pos } : {}), ...(enDefinition ? { enDefinition } : {}),
         ...(zhMeaning ? { zhMeaning } : {}), ...(example ? { example } : {}),
         ...(parsedMeanings !== undefined ? { meanings: parsedMeanings } : {}),
+        ...(sourceReason ? { sourceReason } : {}),
       };
     });
     if (parsed.some((item) => item === null) || total > 1_000_000) return null; lines = parsed as ImportLineInput[];
@@ -415,7 +432,7 @@ export function parseCommitImportDraft(value: unknown): CommitImportDraftInput |
   const mode = value.mode === undefined ? undefined : value.mode === "append" || value.mode === "overwrite" ? value.mode : null;
   if (mode === null) return null;
   if (value.resolutions === undefined) return mode ? { mode } : {};
-  const pairs = Object.entries(value.resolutions); if (pairs.length > 500) return null;
+  const pairs = Object.entries(value.resolutions); if (pairs.length > MAX_IMPORT_LINES) return null;
   const resolutions: Record<string, ImportResolution> = {};
   for (const [key, resolution] of pairs) { if (!parseWordId(key) || !RESOLUTIONS.includes(resolution as ImportResolution)) return null; resolutions[key] = resolution as ImportResolution; }
   return { ...(mode ? { mode } : {}), resolutions };

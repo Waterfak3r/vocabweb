@@ -1,11 +1,13 @@
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
-import { Link, NavLink, useLocation } from 'react-router'
+import { Link, NavLink, useLocation, useNavigate } from 'react-router'
 import { AuthDialog, type AuthMode } from '../account/AuthDialog'
 import { useAuth } from '../../hooks/useAuth'
 import { useTheme } from '../../hooks/useTheme'
 import { useModalDialog } from '../../hooks/useModalDialog'
 import { getEngagementApi } from '../../data/engagementApi'
 import { getWorkspaceApi } from '../../data/workspaceApi'
+import { IMPORT_DRAFT_QUERY_PARAM } from '../../data/importDraftStatus'
+import { useImportDraftBadge } from '../../hooks/useImportDraftBadge'
 
 const NAVIGATION = [
   { to: '/', label: '查词', icon: 'search', end: true },
@@ -86,6 +88,8 @@ export function SiteHeader() {
   const { user, loading, login, register, logout } = useAuth()
   const { theme, toggleTheme } = useTheme()
   const { pathname } = useLocation()
+  const navigate = useNavigate()
+  const importDraftBadge = useImportDraftBadge(user?.clientId)
   const engagementApi = getEngagementApi()
   const donationSettingsDialogRef = useModalDialog<HTMLElement>({
     open: donationSettingsOpen,
@@ -133,7 +137,7 @@ export function SiteHeader() {
       resizeObserver?.disconnect()
       window.removeEventListener('resize', placeIndicator)
     }
-  }, [pathname, unreadMessages, pendingContributions])
+  }, [pathname, unreadMessages, pendingContributions, importDraftBadge?.anchorId, importDraftBadge?.kind])
 
   useEffect(() => {
     if (!engagementApi) return
@@ -306,6 +310,13 @@ export function SiteHeader() {
     }
   }
 
+  const importStatusLabel = importDraftBadge?.kind === 'processing'
+    ? `导入处理中 ${importDraftBadge.percent}%`
+    : importDraftBadge ? `导入待确认${importDraftBadge.problemCount ? ` ${importDraftBadge.problemCount}` : ''}` : ''
+  const importStatusDetail = importDraftBadge
+    ? `${importDraftBadge.title} · ${importDraftBadge.completedBatches}/${importDraftBadge.totalBatches} 批 · ${importDraftBadge.completedEntries}/${importDraftBadge.totalEntries} 条${importDraftBadge.problemCount ? ` · ${importDraftBadge.problemCount} 条待处理` : ''}${importDraftBadge.taskCount > 1 ? ` · 共 ${importDraftBadge.taskCount} 个任务` : ''}`
+    : ''
+
   return (
     <header className="site-header">
       <NavLink className="brand" to="/" aria-label="WeCreate Vocab 首页">
@@ -330,6 +341,21 @@ export function SiteHeader() {
             {to === '/messages' && unreadMessages > 0 && <span className="nav-unread" aria-label={`${unreadMessages} 条未读回复`}>{unreadMessages > 99 ? '99+' : unreadMessages}</span>}
           </NavLink>
         ))}
+        {importDraftBadge && <button
+          type="button"
+          className={`import-status-badge is-${importDraftBadge.kind}`}
+          aria-label={`${importStatusLabel}，${importStatusDetail}，点击查看`}
+          title={`${importStatusDetail}，点击查看`}
+          onClick={() => navigate(`/wordbook?${IMPORT_DRAFT_QUERY_PARAM}=${encodeURIComponent(importDraftBadge.anchorId)}`)}
+        >
+          {importDraftBadge.kind === 'processing' ? (
+            <span className="import-status-spinner" aria-hidden="true" />
+          ) : (
+            <svg className="import-status-ready-icon" viewBox="0 0 20 20" aria-hidden="true"><path d="m5 10.2 3.1 3.1L15.4 6" /></svg>
+          )}
+          <span className="import-status-label" aria-live="polite">{importStatusLabel}</span>
+          {importDraftBadge.taskCount > 1 && <span className="import-status-count" aria-hidden="true">{importDraftBadge.taskCount}</span>}
+        </button>}
         <div ref={donationMenuRef} className={`donation-menu${donationOpen ? ' open' : ''}`}>
           <button
             ref={donationTriggerRef}

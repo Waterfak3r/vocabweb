@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { MyWordbook, ImportConflictResolution, ImportDraft, ImportDraftEntry, ImportDraftLine } from '../../data/workspaceApi'
-import { MAX_IMPORT_ENTRIES, parseWordbookText, readImportFile, validateImportText, type ParsedImport } from '../../data/wordbookImport'
+import { MAX_IMPORT_ENTRIES, MAX_IMPORT_TOTAL_ENTRIES, parseWordbookText, readImportFile, validateImportEntryCount, validateImportText, type ParsedImport } from '../../data/wordbookImport'
 import { useModalDialog } from '../../hooks/useModalDialog'
 import { Button } from '../ui/Button'
 import styles from './ImportWordbookDialog.module.css'
@@ -23,6 +23,7 @@ export type ImportWordbookDialogProps = {
   initialTitle?: string
   initialDescription?: string
   initialCategory?: string
+  initialDraftId?: string
   targetWordbookId?: string
   targetWords?: string[]
 }
@@ -38,10 +39,12 @@ const statusLabel: Record<ImportDraftEntry['status'], string> = {
   processing: '匹配中',
   ready: '待导入',
   invalid: '格式无效',
-  duplicate: '本次重复',
+  duplicate: '文件内重复',
   unmatched: '未匹配',
   conflict: '词本冲突',
 }
+
+const PROBLEM_PAGE_SIZE = 100
 
 function decisionKey(entry: ImportDraftEntry) {
   return entry.id ?? `${entry.line}:${entry.word}`
@@ -56,16 +59,26 @@ function statusClass(status: ImportDraftEntry['status']) {
           : styles.statusConflict
 }
 
-export function draftMatchProgress(entries: readonly Pick<ImportDraftEntry, 'status'>[]) {
+export function draftMatchProgress(entries: readonly Pick<ImportDraftEntry, 'status' | 'entry'>[]) {
   const total = entries.length
-  const completed = entries.filter((entry) => entry.status !== 'processing').length
+  const completed = entries.filter((entry) => entry.status !== 'processing'
+    && ((entry.status !== 'conflict' && entry.status !== 'duplicate') || Boolean(entry.entry))).length
   return { total, completed, percent: total ? Math.round((completed / total) * 100) : 0 }
 }
 
-export function nextImportDraft(drafts: readonly ImportDraft[], current: Pick<ImportDraft, 'id' | 'groupId'>) {
+function draftGroupKey(draft: Pick<ImportDraft, 'id' | 'groupId'>) {
+  return draft.groupId ?? draft.id
+}
+
+export function importDraftGroup(drafts: readonly ImportDraft[], current: Pick<ImportDraft, 'id' | 'groupId'>) {
+  const key = draftGroupKey(current)
   return drafts
-    .filter((item) => item.groupId === current.groupId && item.status !== 'committed' && item.id !== current.id)
-    .sort((left, right) => left.batchIndex - right.batchIndex)[0]
+    .filter((item) => draftGroupKey(item) === key)
+    .sort((left, right) => left.batchIndex - right.batchIndex)
+}
+
+export function importProblemEntries(entries: readonly ImportDraftEntry[]) {
+  return entries.filter((entry) => entry.status === 'invalid' || entry.status === 'duplicate' || entry.status === 'unmatched' || entry.status === 'conflict')
 }
 
 /**
@@ -73,7 +86,7 @@ export function nextImportDraft(drafts: readonly ImportDraft[], current: Pick<Im
  * after onCreated; all file reading, preview, draft creation and conflict
  * decisions remain here so creation and future community flows stay identical.
  */
-export function ImportWordbookDialog({ open, api, onClose, onCreated, initialTitle = '', initialDescription = '', initialCategory = '', targetWordbookId, targetWords = [] }: ImportWordbookDialogProps) {
+export function ImportWordbookDialog({ open, api, onClose, onCreated, initialTitle = '', initialDescription = '', initialCategory = '', initialDraftId, targetWordbookId, targetWords = [] }: ImportWordbookDialogProps) {
   const [step, setStep] = useState<Step>(targetWordbookId ? 'source' : 'details')
   const [title, setTitle] = useState(initialTitle)
   const [description, setDescription] = useState(initialDescription)
@@ -81,8 +94,10 @@ export function ImportWordbookDialog({ open, api, onClose, onCreated, initialTit
   const [content, setContent] = useState('')
   const [parsed, setParsed] = useState<ParsedImport | null>(null)
   const [draft, setDraft] = useState<ImportDraft | null>(null)
+  const [groupDrafts, setGroupDrafts] = useState<ImportDraft[]>([])
   const [savedDrafts, setSavedDrafts] = useState<ImportDraft[]>([])
   const [decisions, setDecisions] = useState<Record<string, ImportConflictResolution>>({})
+  const [problemPage, setProblemPage] = useState(1)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const [commitMode, setCommitMode] = useState<'append' | 'overwrite'>('append')
@@ -102,57 +117,105 @@ export function ImportWordbookDialog({ open, api, onClose, onCreated, initialTit
     let active = true
     void api.listImportDrafts()
       .then((items) => {
-        if (active) setSavedDrafts(items.filter((item) => item.status !== 'committed'))
+        if (!active) return
+        setSavedDrafts(items.filter((item) => item.status !== 'committed'))
+        if (!initialDraftId) return
+        const requested = items.find((item) => item.id === initialDraftId && item.status !== 'committed')
+        if (requested) continueDraft(requested)
+        else setError('该导入任务已经完成、已删除或不属于当前账号。')
       })
       .catch(() => {
         if (active) setSavedDrafts([])
       })
     return () => { active = false }
-  }, [api, open])
+  }, [api, initialDraftId, open])
 
   useEffect(() => {
     if (open) return
-    setStep(targetWordbookId ? 'source' : 'details'); setContent(''); setParsed(null); setDraft(null); setSavedDrafts([]); setDecisions({}); setError(''); setBusy(false); setCommitMode('append'); setOverwriteImpact(null)
+    setStep(targetWordbookId ? 'source' : 'details'); setContent(''); setParsed(null); setDraft(null); setGroupDrafts([]); setSavedDrafts([]); setDecisions({}); setProblemPage(1); setError(''); setBusy(false); setCommitMode('append'); setOverwriteImpact(null)
     setTitle(initialTitle); setDescription(initialDescription); setCategory(initialCategory)
   }, [initialCategory, initialDescription, initialTitle, open, targetWordbookId])
 
   useEffect(() => {
-    if (!open || !api || draft?.status !== 'processing') return
+    if (!open || !api || !draft) return
 
     let cancelled = false
     let timer: number | undefined
-    const draftId = draft.id
+    const anchorId = draft.id
+    const schedule = (action: () => void, delay: number) => {
+      if (!cancelled) timer = window.setTimeout(action, delay)
+    }
     const update = (next: ImportDraft) => {
       if (cancelled) return
-      setDraft(next)
+      if (next.id === anchorId) setDraft(next)
+      setGroupDrafts((current) => {
+        const remaining = current.filter((item) => item.id !== next.id)
+        return [...remaining, next].sort((left, right) => left.batchIndex - right.batchIndex)
+      })
       setSavedDrafts((current) => current.map((item) => item.id === next.id ? next : item))
     }
-    const poll = async (start: boolean) => {
+    const loadGroup = async () => {
       try {
-        const next = start ? await api.processImportDraft(draftId) : await api.getImportDraft(draftId)
-        update(next)
-        if (!cancelled && next.status === 'processing') timer = window.setTimeout(() => { void poll(false) }, 850)
+        const items = await api.listImportDrafts()
+        if (cancelled) return
+        const group = importDraftGroup(items, draft)
+        setGroupDrafts(group)
+        setSavedDrafts(items.filter((item) => item.status !== 'committed'))
+        if (group.length !== draft.totalBatches) {
+          setError('部分导入批次已经缺失，请删除该组草稿并重新解析源文件。')
+          return
+        }
+        const nextBatch = group.find((item) => item.status === 'processing')
+        if (!nextBatch) {
+          setError('')
+          return
+        }
+        let started: ImportDraft
+        try {
+          started = await api.processImportDraft(nextBatch.id)
+          update(started)
+        } catch {
+          setError('词典匹配队列暂时繁忙，草稿已经保存，正在等待自动重试。')
+          schedule(() => { void loadGroup() }, 1_500)
+          return
+        }
+        if (started.status !== 'processing') {
+          schedule(() => { void loadGroup() }, 0)
+          return
+        }
+        const pollBatch = async () => {
+          try {
+            const next = await api.getImportDraft(nextBatch.id)
+            update(next)
+            if (next.status === 'processing') schedule(() => { void loadGroup() }, 1_500)
+            else schedule(() => { void loadGroup() }, 0)
+          } catch {
+            if (!cancelled) {
+              setError('词典匹配仍在后台进行。草稿和已完成进度均已保存，正在自动重试。')
+              schedule(() => { void loadGroup() }, 1_500)
+            }
+          }
+        }
+        void pollBatch()
       } catch {
         if (!cancelled) {
-          setError('词典匹配仍在后台进行。你可以关闭窗口，稍后从导入草稿继续。')
-          timer = window.setTimeout(() => { void poll(false) }, 1_500)
+          setError('暂时无法读取整组导入进度。草稿已经保存，正在自动重试。')
+          schedule(() => { void loadGroup() }, 1_500)
         }
       }
     }
-    void poll(true)
+    void loadGroup()
     return () => {
       cancelled = true
       if (timer !== undefined) window.clearTimeout(timer)
     }
-  }, [api, draft?.id, draft?.status, open])
+  }, [api, draft?.id, open])
 
   const entries = useMemo<ImportDraftEntry[]>(() => {
     if (!draft) return parsed?.entries ?? []
-    const rejected = (parsed?.entries ?? []).filter((entry) => entry.status === 'invalid' || entry.status === 'duplicate')
-    return [...draft.entries, ...rejected].sort((left, right) => left.line - right.line)
-  }, [draft, parsed])
-  if (!open) return null
-
+    const drafts = groupDrafts.length ? groupDrafts : [draft]
+    return drafts.flatMap((item) => item.entries).sort((left, right) => left.line - right.line)
+  }, [draft, groupDrafts, parsed])
   function nextDetails() {
     if (!title.trim()) { setError('请先填写单词本名称。'); return }
     setError(''); setStep('source')
@@ -164,7 +227,7 @@ export function ImportWordbookDialog({ open, api, onClose, onCreated, initialTit
     try {
       const imported = await readImportFile(file)
       setContent(imported)
-      setParsed(null); setDraft(null); setDecisions({})
+      setParsed(null); setDraft(null); setGroupDrafts([]); setDecisions({}); setProblemPage(1)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '文件无法读取，请换一个文件重试。')
     } finally { setBusy(false) }
@@ -177,8 +240,10 @@ export function ImportWordbookDialog({ open, api, onClose, onCreated, initialTit
       return
     }
     const nextParsed = parseWordbookText(content)
-    setParsed(nextParsed); setDraft(null); setDecisions({})
+    setParsed(nextParsed); setDraft(null); setGroupDrafts([]); setDecisions({}); setProblemPage(1)
     if (nextParsed.acceptedCount === 0) { setError('没有找到可导入的英文词条，请确认每行首列填写了合法的英文单词或词组。'); return }
+    const entryCountError = validateImportEntryCount(nextParsed.entries.length)
+    if (entryCountError) { setError(entryCountError); return }
     if (!api) { setError('当前未连接词本服务，暂时不能保存导入草稿。'); return }
 
     setBusy(true); setError('')
@@ -186,13 +251,14 @@ export function ImportWordbookDialog({ open, api, onClose, onCreated, initialTit
       const nextDraft = await api.createImportDraft({
         title: title.trim(), description: description.trim() || undefined,
         ...(targetWordbookId ? { targetWordbookId } : {}),
-        lines: nextParsed.entries.filter((entry) => entry.status === 'ready').map(({ line, word, phonetic, pos, enDefinition, zhMeaning, example, meanings }) => ({
-          line, word, ...(pos ? { pos } : {}), ...(enDefinition ? { enDefinition } : {}),
+        lines: nextParsed.entries.map(({ line, word, phonetic, pos, enDefinition, zhMeaning, example, meanings, reason }) => ({
+          line, word, ...(reason ? { sourceReason: reason } : {}), ...(pos ? { pos } : {}), ...(enDefinition ? { enDefinition } : {}),
           ...(phonetic ? { phonetic } : {}), ...(zhMeaning ? { zhMeaning } : {}), ...(example ? { example } : {}),
           ...(meanings ? { meanings } : {}),
         })),
       })
       setDraft(nextDraft)
+      setGroupDrafts([nextDraft])
       setStep('preview')
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '保存导入草稿失败，请重试。')
@@ -203,6 +269,14 @@ export function ImportWordbookDialog({ open, api, onClose, onCreated, initialTit
     setDecisions((current) => ({ ...current, [decisionKey(entry)]: decision }))
   }
 
+  function setBulkDecision(status: ImportDraftEntry['status'], decision: ImportConflictResolution) {
+    setDecisions((current) => {
+      const next = { ...current }
+      for (const entry of entries) if (entry.status === status) next[decisionKey(entry)] = decision
+      return next
+    })
+  }
+
   async function commit(mode: 'append' | 'overwrite' = commitMode) {
     if (!api || !draft) return
     setBusy(true); setError('')
@@ -211,23 +285,8 @@ export function ImportWordbookDialog({ open, api, onClose, onCreated, initialTit
       if (!targetWordbookId && category.trim()) {
         wordbook = await api.updateMyWordbook(wordbook.id, { category: category.trim() })
       }
-      if (mode === 'overwrite') {
-        onCreated(wordbook)
-        onClose()
-        return
-      }
-      const group = await api.listImportDrafts()
-      const next = nextImportDraft(group, draft)
-      if (next) {
-        setDraft(next)
-        setSavedDrafts(group.filter((item) => item.status !== 'committed'))
-        setParsed(null)
-        setDecisions({})
-        setStep('preview')
-      } else {
-        onCreated(wordbook)
-        onClose()
-      }
+      onCreated(wordbook)
+      onClose()
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '创建单词本失败，请重试。')
     } finally { setBusy(false) }
@@ -251,8 +310,9 @@ export function ImportWordbookDialog({ open, api, onClose, onCreated, initialTit
         return
       }
       const accepted = group.flatMap((item) => item.entries)
-        .filter((entry) => entry.status === 'ready' || entry.status === 'unmatched' || entry.status === 'conflict')
-      const importedWords = new Set(accepted.map((entry) => entry.word))
+        .filter((entry) => (entry.status === 'ready' || entry.status === 'unmatched' || entry.status === 'conflict' || entry.status === 'duplicate')
+          && decisions[decisionKey(entry)] !== 'discard')
+      const importedWords = new Set(accepted.map((entry) => entry.word).filter(Boolean))
       const retained = new Set(targetWords.map((word) => word.trim().toLowerCase()).filter((word) => importedWords.has(word)))
       setOverwriteImpact({ imported: importedWords.size, removed: Math.max(0, targetWords.length - retained.size) })
     } catch (cause) {
@@ -266,8 +326,10 @@ export function ImportWordbookDialog({ open, api, onClose, onCreated, initialTit
     setTitle(item.title)
     setDescription(item.description)
     setDraft(item)
+    setGroupDrafts([item])
     setParsed(null)
     setDecisions({})
+    setProblemPage(1)
     setError('')
     setStep('preview')
   }
@@ -276,8 +338,11 @@ export function ImportWordbookDialog({ open, api, onClose, onCreated, initialTit
     if (!api) return
     setBusy(true)
     try {
-      await api.deleteImportDraft(item.id)
-      setSavedDrafts((current) => current.filter((draftItem) => draftItem.id !== item.id))
+      const drafts = await api.listImportDrafts()
+      const group = importDraftGroup(drafts, item)
+      await Promise.all(group.map((draftItem) => api.deleteImportDraft(draftItem.id)))
+      const removed = new Set(group.map((draftItem) => draftItem.id))
+      setSavedDrafts((current) => current.filter((draftItem) => !removed.has(draftItem.id)))
     } catch {
       setError('草稿删除失败，请稍后重试。')
     } finally {
@@ -286,11 +351,27 @@ export function ImportWordbookDialog({ open, api, onClose, onCreated, initialTit
   }
 
   const readyCount = entries.filter((entry) => entry.status === 'ready').length
+  const invalidCount = entries.filter((entry) => entry.status === 'invalid').length
+  const duplicateCount = entries.filter((entry) => entry.status === 'duplicate').length
   const unmatchedCount = entries.filter((entry) => entry.status === 'unmatched').length
   const conflictCount = entries.filter((entry) => entry.status === 'conflict').length
   const continuationCount = draft?.totalBatches ?? parsed?.batchCount ?? 0
-  const isProcessing = draft?.status === 'processing'
-  const matchProgress = draftMatchProgress(draft?.entries ?? [])
+  const isProcessing = Boolean(draft) && (groupDrafts.length !== draft?.totalBatches || groupDrafts.some((item) => item.status === 'processing'))
+  const matchProgress = draftMatchProgress(entries)
+  const problems = importProblemEntries(entries)
+  const problemPages = Math.max(1, Math.ceil(problems.length / PROBLEM_PAGE_SIZE))
+  const visibleProblems = problems.slice((problemPage - 1) * PROBLEM_PAGE_SIZE, problemPage * PROBLEM_PAGE_SIZE)
+  const savedDraftGroups = useMemo(() => {
+    const seen = new Set<string>()
+    return savedDrafts.flatMap((item) => {
+      const key = draftGroupKey(item)
+      if (seen.has(key)) return []
+      seen.add(key)
+      const group = importDraftGroup(savedDrafts, item)
+      return [{ item: group.find((draftItem) => draftItem.status !== 'committed') ?? item, group }]
+    })
+  }, [savedDrafts])
+  if (!open) return null
 
   return (
     <div className={styles.backdrop} role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) onClose() }}>
@@ -317,13 +398,13 @@ export function ImportWordbookDialog({ open, api, onClose, onCreated, initialTit
               <label htmlFor="import-category">分类（可选）</label>
               <input id="import-category" value={category} maxLength={30} onChange={(event) => setCategory(event.target.value)} placeholder="例如：考试、写作、生词" />
             </div>
-            {savedDrafts.length > 0 && <section className={styles.savedDrafts} aria-label="未完成的导入草稿">
+            {savedDraftGroups.length > 0 && <section className={styles.savedDrafts} aria-label="未完成的导入草稿">
               <h3>继续未完成的导入</h3>
-              <p className={styles.hint}>超出单批上限的内容会留在这里，继续后会追加到同一本词本。</p>
+              <p className={styles.hint}>每次导入只保留一个整组草稿入口；继续后会自动处理剩余批次并统一汇总问题。</p>
               <div>
-                {savedDrafts.map((item) => <article key={item.id}>
-                  <span><strong>{item.title}</strong><small>第 {item.batchIndex}/{item.totalBatches} 批 · {item.status === 'processing' ? '匹配中' : `${item.entries.length} 行`}</small></span>
-                  <button type="button" disabled={busy} onClick={() => continueDraft(item)}>{item.status === 'processing' ? '查看进度' : '继续'}</button>
+                {savedDraftGroups.map(({ item, group }) => <article key={draftGroupKey(item)}>
+                  <span><strong>{item.title}</strong><small>共 {item.totalBatches} 批 · {group.some((draftItem) => draftItem.status === 'processing') ? '后台处理中' : '等待统一确认'}</small></span>
+                  <button type="button" disabled={busy} onClick={() => continueDraft(item)}>{group.some((draftItem) => draftItem.status === 'processing') ? '查看进度' : '继续处理'}</button>
                   <button type="button" disabled={busy} onClick={() => { void removeDraft(item) }}>删除</button>
                 </article>)}
               </div>
@@ -333,7 +414,7 @@ export function ImportWordbookDialog({ open, api, onClose, onCreated, initialTit
           {step === 'source' && <>
             <div className={styles.field}>
               <label htmlFor="import-content">粘贴单词或 CSV</label>
-              <textarea id="import-content" value={content} onChange={(event) => { setContent(event.target.value); setParsed(null); setDraft(null) }} placeholder={'a lot of,phrase,a large amount,许多,We had a lot of time.\nresilient,adjective,,有韧性的'} />
+              <textarea id="import-content" value={content} onChange={(event) => { setContent(event.target.value); setParsed(null); setDraft(null); setGroupDrafts([]); setProblemPage(1) }} placeholder={'a lot of,phrase,a large amount,许多,We had a lot of time.\nresilient,adjective,,有韧性的'} />
               <span className={styles.hint}>
                 一行对应一个单词，以 , 作为分隔符，依次为：词条, 词性, 英文释义, 中文释义, 例句（只有词条为必填项）。字段内含逗号时请用双引号包裹。
                 <br />
@@ -346,26 +427,28 @@ export function ImportWordbookDialog({ open, api, onClose, onCreated, initialTit
             </div>
             <div className={styles.upload}>
               <strong>或选择文件导入</strong>
-              <span className={styles.hint}>支持 CSV、TXT、Markdown、DOCX，单个文件不超过 1MB。</span>
+              <span className={styles.hint}>支持 CSV、TXT、Markdown、DOCX，单个文件不超过 1MB。超过 {MAX_IMPORT_ENTRIES} 词会自动拆批排队，单次最多 {MAX_IMPORT_TOTAL_ENTRIES.toLocaleString('en-US')} 词。</span>
               <input type="file" accept=".csv,.txt,.md,.markdown,.docx,text/csv,text/plain,text/markdown,application/vnd.openxmlformats-officedocument.wordprocessingml.document" disabled={busy} onChange={(event) => { void chooseFile(event.target.files?.[0]) }} />
             </div>
           </>}
 
           {step === 'preview' && isProcessing && <section className={styles.processing} role="status">
-            <strong>正在匹配第 {draft?.batchIndex}/{draft?.totalBatches} 批词典数据</strong>
-            <p>{matchProgress.completed}/{matchProgress.total} 词已完成匹配。你可以关闭窗口，后台会继续保存进度；稍后从未完成草稿进入即可继续查看。</p>
+            <strong>正在自动处理全部 {draft?.totalBatches ?? 1} 批词典数据</strong>
+            <p>{matchProgress.completed}/{matchProgress.total} 条记录已完成。全部批次结束后会统一汇总问题，无需逐批确认；关闭窗口也不会丢失草稿进度。</p>
             <progress value={matchProgress.completed} max={Math.max(1, matchProgress.total)} aria-label="词典匹配进度" />
             <small>{matchProgress.percent}%</small>
           </section>}
 
           {step === 'preview' && !isProcessing && <>
             <div className={styles.summary}>
-              <span className={styles.pill}>待导入 {readyCount} 词</span>
+              <span className={styles.pill}>正常词条 {readyCount}</span>
+              {invalidCount > 0 && <span className={styles.pill}>格式无效 {invalidCount}</span>}
+              {duplicateCount > 0 && <span className={styles.pill}>文件内重复 {duplicateCount}</span>}
               {unmatchedCount > 0 && <span className={styles.pill}>未匹配 {unmatchedCount} 词</span>}
               {conflictCount > 0 && <span className={styles.pill}>与词本冲突 {conflictCount} 词</span>}
-              {continuationCount > 1 && <span className={styles.pill}>将生成 {continuationCount - 1} 个后续草稿</span>}
+              {continuationCount > 1 && <span className={styles.pill}>{continuationCount} 批已全部处理</span>}
             </div>
-            <p className={styles.hint}>你填写的词性、释义和例句优先，空缺字段由词典补齐；词性会优先匹配对应义项。返回上一步可改正词条格式无效或重复的行。</p>
+            <p className={styles.problemIntro}>{problems.length > 0 ? `全部批次处理完成。以下汇总 ${problems.length} 条需要确认的记录，设置处理方式后只需提交一次。` : '全部批次处理完成，未发现需要处理的问题，可以一次性完成导入。'}</p>
             {draft?.targetWordbookId && <fieldset className={styles.commitMode}>
               <legend>写入方式</legend>
               <label className={commitMode === 'append' ? styles.modeActive : ''}>
@@ -377,34 +460,64 @@ export function ImportWordbookDialog({ open, api, onClose, onCreated, initialTit
                 <span><strong><span aria-hidden="true">⚠</span> 覆盖原单词本</strong><small>本次有效内容将成为词本的完整内容；同词条保留学习进度。</small></span>
               </label>
             </fieldset>}
-            <table className={styles.table}>
-              <thead><tr><th>行</th><th>词条</th><th>词性 / 英文释义 / 例句</th><th>中文释义</th><th>状态</th><th>处理</th></tr></thead>
-              <tbody>
-                {entries.map((entry) => {
-                  const key = decisionKey(entry)
-                  const decision = decisions[key] ?? entry.resolution
-                  return <tr key={key}>
-                    <td>{entry.line}</td><td>{entry.word}</td>
-                    <td>
-                      <strong>{entry.pos || entry.entry?.meanings[0]?.pos || '—'}</strong>
-                      {(entry.enDefinition || entry.entry?.meanings[0]?.definition) && <div>{entry.enDefinition || entry.entry?.meanings[0]?.definition}</div>}
-                      {(entry.example || entry.entry?.meanings[0]?.example) && <div className={styles.muted}>{entry.example || entry.entry?.meanings[0]?.example}</div>}
-                    </td>
-                    <td>{entry.zhMeaning || entry.entry?.zhMeaning || '—'}</td>
-                    <td><span className={`${styles.status} ${statusClass(entry.status)}`}>{statusLabel[entry.status]}</span>{entry.reason && <div className={styles.muted}>{entry.reason}</div>}</td>
-                    <td>
-                      {commitMode === 'append' && entry.status === 'conflict' && <div className={styles.actions}>
-                        {(['keep', 'replace', 'merge'] as const).map((choice) => <button type="button" className={`${styles.choice} ${decision === choice ? styles.choiceActive : ''}`} onClick={() => setDecision(entry, choice)} key={choice}>{choice === 'keep' ? '保留原词' : choice === 'replace' ? '覆盖原词' : '合并释义'}</button>)}
-                      </div>}
-                      {commitMode === 'append' && entry.status === 'unmatched' && <div className={styles.actions}>
-                        <button type="button" className={`${styles.choice} ${decision !== 'discard' ? styles.choiceActive : ''}`} onClick={() => setDecision(entry, 'keep')}>保留</button>
-                        <button type="button" className={`${styles.choice} ${decision === 'discard' ? styles.choiceActive : ''}`} onClick={() => setDecision(entry, 'discard')}>移除</button>
-                      </div>}
-                    </td>
-                  </tr>
-                })}
-              </tbody>
-            </table>
+            {problems.length === 0 ? <div className={styles.problemEmpty}>无需逐条确认，点击下方按钮即可导入全部词条。</div> : <>
+              <section className={styles.bulkActions} aria-label="批量处理导入问题">
+                {commitMode === 'append' && conflictCount > 0 && <div className={styles.bulkGroup}><strong>词本冲突</strong><span>统一：</span>
+                  <button type="button" onClick={() => setBulkDecision('conflict', 'keep')}>保留原词</button>
+                  <button type="button" onClick={() => setBulkDecision('conflict', 'replace')}>全部覆盖</button>
+                  <button type="button" onClick={() => setBulkDecision('conflict', 'merge')}>合并释义</button>
+                </div>}
+                {commitMode === 'overwrite' && conflictCount > 0 && <div className={styles.bulkGroup}><strong>词本冲突</strong><span>覆盖模式会采用导入词条，并保留同名词的学习进度。</span></div>}
+                {duplicateCount > 0 && <div className={styles.bulkGroup}><strong>文件内重复</strong><span>统一：</span>
+                  <button type="button" onClick={() => setBulkDecision('duplicate', 'keep')}>保留首条</button>
+                  <button type="button" onClick={() => setBulkDecision('duplicate', 'replace')}>采用后条</button>
+                  <button type="button" onClick={() => setBulkDecision('duplicate', 'merge')}>合并释义</button>
+                </div>}
+                {unmatchedCount > 0 && <div className={styles.bulkGroup}><strong>未匹配词典</strong><span>统一：</span>
+                  <button type="button" onClick={() => setBulkDecision('unmatched', 'keep')}>保留</button>
+                  <button type="button" onClick={() => setBulkDecision('unmatched', 'discard')}>移除</button>
+                </div>}
+                {invalidCount > 0 && <div className={styles.bulkGroup}><strong>格式无效</strong><span>将统一跳过；如需保留，请返回源文件修改后重新解析。</span></div>}
+              </section>
+              <table className={styles.table}>
+                <thead><tr><th>行</th><th>词条</th><th>词性 / 英文释义 / 例句</th><th>中文释义</th><th>问题</th><th>处理</th></tr></thead>
+                <tbody>
+                  {visibleProblems.map((entry) => {
+                    const key = decisionKey(entry)
+                    const decision = decisions[key] ?? entry.resolution ?? (entry.status === 'conflict' || entry.status === 'duplicate' || entry.status === 'unmatched' ? 'keep' : undefined)
+                    return <tr key={key}>
+                      <td>{entry.line}</td><td>{entry.word || '—'}</td>
+                      <td>
+                        <strong>{entry.pos || entry.entry?.meanings[0]?.pos || '—'}</strong>
+                        {(entry.enDefinition || entry.entry?.meanings[0]?.definition) && <div>{entry.enDefinition || entry.entry?.meanings[0]?.definition}</div>}
+                        {(entry.example || entry.entry?.meanings[0]?.example) && <div className={styles.muted}>{entry.example || entry.entry?.meanings[0]?.example}</div>}
+                      </td>
+                      <td>{entry.zhMeaning || entry.entry?.zhMeaning || '—'}</td>
+                      <td><span className={`${styles.status} ${statusClass(entry.status)}`}>{statusLabel[entry.status]}</span>{entry.reason && <div className={styles.muted}>{entry.reason}</div>}</td>
+                      <td>
+                        {commitMode === 'append' && entry.status === 'conflict' && <div className={styles.actions}>
+                          {(['keep', 'replace', 'merge'] as const).map((choice) => <button type="button" className={`${styles.choice} ${decision === choice ? styles.choiceActive : ''}`} onClick={() => setDecision(entry, choice)} key={choice}>{choice === 'keep' ? '保留原词' : choice === 'replace' ? '覆盖原词' : '合并释义'}</button>)}
+                        </div>}
+                        {commitMode === 'overwrite' && entry.status === 'conflict' && <span className={styles.muted}>采用导入词条</span>}
+                        {entry.status === 'duplicate' && <div className={styles.actions}>
+                          {(['keep', 'replace', 'merge'] as const).map((choice) => <button type="button" className={`${styles.choice} ${decision === choice ? styles.choiceActive : ''}`} onClick={() => setDecision(entry, choice)} key={choice}>{choice === 'keep' ? '保留首条' : choice === 'replace' ? '采用此条' : '合并释义'}</button>)}
+                        </div>}
+                        {entry.status === 'unmatched' && <div className={styles.actions}>
+                          <button type="button" className={`${styles.choice} ${decision === 'keep' ? styles.choiceActive : ''}`} onClick={() => setDecision(entry, 'keep')}>保留</button>
+                          <button type="button" className={`${styles.choice} ${decision === 'discard' ? styles.choiceActive : ''}`} onClick={() => setDecision(entry, 'discard')}>移除</button>
+                        </div>}
+                        {entry.status === 'invalid' && <span className={styles.muted}>跳过</span>}
+                      </td>
+                    </tr>
+                  })}
+                </tbody>
+              </table>
+              {problemPages > 1 && <nav className={styles.problemPager} aria-label="问题记录分页">
+                <button type="button" disabled={problemPage <= 1} onClick={() => setProblemPage((page) => Math.max(1, page - 1))}>上一页</button>
+                <span>第 {problemPage}/{problemPages} 页</span>
+                <button type="button" disabled={problemPage >= problemPages} onClick={() => setProblemPage((page) => Math.min(problemPages, page + 1))}>下一页</button>
+              </nav>}
+            </>}
           </>}
           {error && <p className={styles.error} role="alert">{error}</p>}
         </div>
@@ -412,7 +525,7 @@ export function ImportWordbookDialog({ open, api, onClose, onCreated, initialTit
           {step !== 'details' && !isProcessing && <Button variant="secondary" disabled={busy} onClick={() => { setError(''); setStep(step === 'preview' ? 'source' : 'details') }}>上一步</Button>}
           {step === 'details' && <Button disabled={busy} onClick={nextDetails}>下一步</Button>}
           {step === 'source' && <Button disabled={busy} onClick={() => { void createDraft() }}>{busy ? '正在匹配词典…' : '解析并预览'}</Button>}
-          {step === 'preview' && !isProcessing && <Button disabled={busy || !draft || draft.status !== 'pending'} onClick={() => { void requestCommit() }}>{busy ? '正在保存…' : draft?.targetWordbookId ? commitMode === 'overwrite' ? '确认覆盖范围' : '追加到单词本' : '创建单词本'}</Button>}
+          {step === 'preview' && !isProcessing && <Button disabled={busy || !draft} onClick={() => { void requestCommit() }}>{busy ? '正在保存…' : draft?.targetWordbookId ? commitMode === 'overwrite' ? '确认覆盖范围' : `确认并追加全部 ${continuationCount} 批` : '确认并创建单词本'}</Button>}
         </footer>
       </section>
       {overwriteImpact && <div className={styles.confirmBackdrop} role="presentation">
