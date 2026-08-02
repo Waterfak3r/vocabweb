@@ -39,6 +39,14 @@ describe('global import draft badge', () => {
     expect(selectImportDraftBadge([])).toBeNull()
   })
 
+  it('carries the queued flag onto the badge while a task waits in the FIFO queue', () => {
+    expect(selectImportDraftBadge([task({ queued: true, completedEntries: 0 })])).toMatchObject({
+      kind: 'processing',
+      queued: true,
+      percent: 0,
+    })
+  })
+
   it('turns a completed group into a static pending-confirmation badge', () => {
     expect(selectImportDraftBadge([task({ status: 'pending', completedEntries: 4_000, completedBatches: 8, nextProcessingDraftId: undefined })])).toMatchObject({
       kind: 'ready',

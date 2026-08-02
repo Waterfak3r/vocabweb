@@ -337,6 +337,7 @@ export type ImportDraft = {
   totalBatches: number
   targetWordbookId?: string
   status: 'processing' | 'pending' | 'committed'
+  queued?: boolean
   createdAt?: string
   updatedAt?: string
 }
@@ -354,6 +355,7 @@ export type ImportDraftTaskSummary = {
   completedEntries: number
   problemCount: number
   nextProcessingDraftId?: string
+  queued?: boolean
   updatedAt: string
 }
 
@@ -1210,6 +1212,7 @@ function parseImportDraft(value: unknown): ImportDraft | null {
     || (value.status !== undefined && value.status !== 'processing' && value.status !== 'pending' && value.status !== 'committed')
     || (value.createdAt !== undefined && !isText(value.createdAt))
     || (value.updatedAt !== undefined && !isText(value.updatedAt))
+    || (value.queued !== undefined && typeof value.queued !== 'boolean')
   ) return null
   return {
     id: value.id,
@@ -1223,6 +1226,7 @@ function parseImportDraft(value: unknown): ImportDraft | null {
     // Existing local drafts predating background processing are ready to commit.
     status: value.status ?? 'pending',
     createdAt: value.createdAt,
+    queued: value.queued,
     updatedAt: value.updatedAt,
   }
 }
@@ -1242,6 +1246,7 @@ function parseImportDraftTaskSummary(value: unknown): ImportDraftTaskSummary | n
     || !isCount(value.completedEntries)
     || !isCount(value.problemCount)
     || (value.nextProcessingDraftId !== undefined && !isText(value.nextProcessingDraftId))
+    || (value.queued !== undefined && typeof value.queued !== 'boolean')
     || !isText(value.updatedAt)
   ) return null
   return {
@@ -1257,6 +1262,7 @@ function parseImportDraftTaskSummary(value: unknown): ImportDraftTaskSummary | n
     completedEntries: value.completedEntries,
     problemCount: value.problemCount,
     nextProcessingDraftId: value.nextProcessingDraftId,
+    queued: value.queued,
     updatedAt: value.updatedAt,
   }
 }
@@ -1388,14 +1394,14 @@ export class WorkspaceApi {
   createMyWordbook(input: { title: string; description?: string; category?: string; words?: WordEntry[] }) { return this.json('api/my/wordbooks', { method: 'POST', body: JSON.stringify(input) }, parseMyWordbook) }
   updateMyWordbook(id: string, input: { category?: string | null; reviewSchedule?: ReviewSchedule; studyPreferences?: WordbookStudyPreferences }) { return this.json(`api/my/wordbooks/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(input) }, parseMyWordbook) }
   createImportDraft(input: { title: string; description?: string; targetWordbookId?: string; lines: ImportDraftLine[] }) {
-    return notifyImportDraftsAfter(this.json('api/my/import-drafts', { method: 'POST', body: JSON.stringify(input) }, parseImportDraft, 30_000))
+    return notifyImportDraftsAfter(this.json('api/my/import-drafts', { method: 'POST', body: JSON.stringify(input) }, parseImportDraft, 120_000))
   }
-  listImportDrafts() { return this.list(new URL('api/my/import-drafts', this.baseUrl), parseImportDraft, 'import drafts') }
+  listImportDrafts() { return this.list(new URL('api/my/import-drafts', this.baseUrl), parseImportDraft, 'import drafts', 120_000) }
   listImportDraftTasks() { return this.list(new URL('api/my/import-drafts/status', this.baseUrl), parseImportDraftTaskSummary, 'import draft tasks') }
-  getImportDraft(id: string) { return this.json(`api/my/import-drafts/${encodeURIComponent(id)}`, {}, parseImportDraft) }
-  processImportDraft(id: string) { return this.json(`api/my/import-drafts/${encodeURIComponent(id)}/process`, { method: 'POST' }, parseImportDraft) }
+  getImportDraft(id: string) { return this.json(`api/my/import-drafts/${encodeURIComponent(id)}`, {}, parseImportDraft, 120_000) }
+  processImportDraft(id: string) { return this.json(`api/my/import-drafts/${encodeURIComponent(id)}/process`, { method: 'POST' }, parseImportDraft, 120_000) }
   deleteImportDraft(id: string) { return notifyImportDraftsAfter(this.empty(`api/my/import-drafts/${encodeURIComponent(id)}`, { method: 'DELETE' })) }
-  commitImportDraft(id: string, resolutions: Record<string, ImportConflictResolution> = {}, mode: 'append' | 'overwrite' = 'append') { return notifyImportDraftsAfter(this.json(`api/my/import-drafts/${encodeURIComponent(id)}/commit`, { method: 'POST', body: JSON.stringify({ mode, resolutions }) }, parseMyWordbook)) }
+  commitImportDraft(id: string, resolutions: Record<string, ImportConflictResolution> = {}, mode: 'append' | 'overwrite' = 'append') { return notifyImportDraftsAfter(this.json(`api/my/import-drafts/${encodeURIComponent(id)}/commit`, { method: 'POST', body: JSON.stringify({ mode, resolutions }) }, parseMyWordbook, 120_000)) }
   deleteMyWordbook(id: string) { return invalidateMarketplaceAfter(this.empty(`api/my/wordbooks/${encodeURIComponent(id)}`, { method: 'DELETE' })) }
   restoreMyWordbook(id: string) { return invalidateMarketplaceAfter(this.json(`api/my/wordbooks/${encodeURIComponent(id)}/restore`, { method: 'POST' }, parseMyWordbook)) }
   listWords(id: string, status?: WordStatus) { const url = new URL(`api/my/wordbooks/${encodeURIComponent(id)}/words`, this.baseUrl); if (status) url.searchParams.set('status', status); return this.list(url, parseWord, 'word list') }
@@ -1509,8 +1515,8 @@ export class WorkspaceApi {
     return user
   }
 
-  private async list<T>(url: URL, parser: (value: unknown) => T | null, label: string): Promise<T[]> {
-    const payload = await this.request(url)
+  private async list<T>(url: URL, parser: (value: unknown) => T | null, label: string, timeoutMs = this.timeoutMs): Promise<T[]> {
+    const payload = await this.request(url, {}, timeoutMs)
     if (!Array.isArray(payload)) throw new Error(`${label} response is invalid.`)
     const items = payload.map(parser)
     if (items.some((item) => item === null)) throw new Error(`${label} response is invalid.`)

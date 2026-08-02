@@ -11,7 +11,6 @@ import { FixedWindowRateLimiter, type RateLimiter } from "./http/rate-limit.js";
 import { isChineseSuggestionQuery, type WordSuggestionLookup } from "./providers/local-dictionary.js";
 import { WiktApiProvider } from "./providers/wiktapi.js";
 import { CsvLocalChineseDictionary, type LocalChineseLookup } from "./study/local-dictionary.js";
-import { BATCH_SIZE } from "./study/ladder.js";
 import { JsonFileStudyStore, StudyResourceLimitError } from "./study/store.js";
 import {
   parseAddWord, parseBatchWords, parseCatalogQuery, parseCatalogWordsQuery, parseClientId, parseCommitImportDraft, parseCreateCatalogContribution, parseCreateImportDraft,
@@ -221,10 +220,11 @@ interface ImportDraftTaskSummary {
   completedEntries: number;
   problemCount: number;
   nextProcessingDraftId?: string;
+  queued?: boolean;
   updatedAt: string;
 }
 
-function summarizeImportDraftTasks(drafts: ImportDraft[]): ImportDraftTaskSummary[] {
+function summarizeImportDraftTasks(drafts: ImportDraft[], isQueued: (draftId: string) => boolean): ImportDraftTaskSummary[] {
   const grouped = new Map<string, ImportDraft[]>();
   for (const draft of drafts) {
     const group = grouped.get(draft.groupId) ?? [];
@@ -257,6 +257,7 @@ function summarizeImportDraftTasks(drafts: ImportDraft[]): ImportDraftTaskSummar
       completedEntries,
       problemCount,
       ...(nextProcessingDraftId ? { nextProcessingDraftId } : {}),
+      ...(nextProcessingDraftId && isQueued(nextProcessingDraftId) ? { queued: true } : {}),
       updatedAt,
     }];
   }).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
@@ -362,10 +363,13 @@ export function createApp(options: CreateAppOptions = {}) {
     lookupJobs.push({ word, resolve: resolveLookup, reject: rejectLookup }); drainLookupQueue();
   });
   const backgroundDraftTasks = new Map<string, Promise<void>>();
-  const maxBackgroundDraftTasks = 20;
-  // A 500-entry draft can fill the bounded lookup queue by itself. Keep later
-  // drafts in FIFO order so capacity pressure delays them instead of failing them.
+  // Every created or resumed batch is appended to this FIFO chain, so imports wait
+  // their turn instead of being rejected when the site is busy. A 500-entry draft
+  // can fill the bounded lookup queue by itself; FIFO ordering delays later drafts
+  // instead of failing them.
   let backgroundDraftQueue = Promise.resolve();
+  let backgroundDraftQueueDepth = 0;
+  const backgroundDraftStarted = new Set<string>();
 
   const enforceWordRateLimit: RequestHandler = (request, response, next) => {
     const clientKey = request.ip || request.socket.remoteAddress || "unknown";
@@ -495,12 +499,13 @@ export function createApp(options: CreateAppOptions = {}) {
   };
   const processImportDraft = (clientId: string, id: string, finalizeLookupFailures = false): Promise<void> => {
     const key = `${clientId}:${id}`; const existing = backgroundDraftTasks.get(key);
-    if (existing) {
-      return finalizeLookupFailures
-        ? existing.then(() => processImportDraft(clientId, id, true))
-        : existing;
-    }
+    // The dialog and the header badge both nudge /process while a batch is
+    // queued or running. Reuse the in-flight task instead of chaining another
+    // full re-run behind it, otherwise polling grows the FIFO queue unboundedly.
+    if (existing) return existing;
+    backgroundDraftQueueDepth += 1;
     const queued = backgroundDraftQueue.then(async () => {
+      backgroundDraftStarted.add(key);
       const draft = await studyStore.getImportDraft(clientId, id);
       if (!draft || draft.status === "committed") return;
       const processable = draft.entries.filter((entry) => entry.word && (entry.status === "processing" || ((entry.status === "conflict" || entry.status === "duplicate") && !entry.entry)));
@@ -529,11 +534,22 @@ export function createApp(options: CreateAppOptions = {}) {
     });
     const task = queued
       .catch((error) => { console.error("Import draft processing failed", error); })
-      .finally(() => { backgroundDraftTasks.delete(key); });
+      .finally(() => {
+        backgroundDraftTasks.delete(key);
+        backgroundDraftStarted.delete(key);
+        backgroundDraftQueueDepth -= 1;
+      });
     backgroundDraftTasks.set(key, task);
     backgroundDraftQueue = task;
     return task;
   };
+  /** True while a batch is waiting in the FIFO queue and has not started yet. */
+  const draftQueueState = (clientId: string, id: string) => {
+    const key = `${clientId}:${id}`;
+    return backgroundDraftTasks.has(key) && !backgroundDraftStarted.has(key);
+  };
+  const withDraftQueueState = (clientId: string, draft: ImportDraft): ImportDraft =>
+    draft.status === "processing" && draftQueueState(clientId, draft.id) ? { ...draft, queued: true } : draft;
 
   app.disable("x-powered-by");
   if (options.trustProxy) app.set("trust proxy", options.trustProxy);
@@ -1686,35 +1702,29 @@ export function createApp(options: CreateAppOptions = {}) {
   });
   app.get("/api/my/import-drafts", async (request, response, next) => {
     const clientId = readClientId(request, response); if (!clientId) return;
-    try { response.status(200).json(await studyStore.listImportDrafts(clientId)); } catch (error) { next(error); }
+    try { response.status(200).json((await studyStore.listImportDrafts(clientId)).map((draft) => withDraftQueueState(clientId, draft))); } catch (error) { next(error); }
   });
   app.get("/api/my/import-drafts/status", async (request, response, next) => {
     const clientId = readClientId(request, response); if (!clientId) return;
-    try { response.status(200).json(summarizeImportDraftTasks(await studyStore.listImportDrafts(clientId))); } catch (error) { next(error); }
+    try { response.status(200).json(summarizeImportDraftTasks(await studyStore.listImportDrafts(clientId), (id) => draftQueueState(clientId, id))); } catch (error) { next(error); }
   });
   app.post("/api/my/import-drafts", async (request, response, next) => {
     const clientId = readClientId(request, response); const input = parseCreateImportDraft(request.body);
     if (!clientId) return;
     if (!input) { response.status(400).json(apiError("INVALID_IMPORT_DRAFT", "Import draft is invalid or exceeds the 10,000-row limit")); return; }
-    const requiredTasks = Math.ceil(input.lines.length / BATCH_SIZE);
-    if (backgroundDraftTasks.size + requiredTasks > maxBackgroundDraftTasks) {
-      response.setHeader("Retry-After", "5");
-      response.status(503).json(apiError("IMPORT_QUEUE_FULL", "Import processing is busy; retry shortly"));
-      return;
-    }
     try {
       const drafts = await studyStore.createImportDrafts(clientId, input);
       if (!drafts[0]) response.status(404).json(apiError("WORDBOOK_NOT_FOUND", "Target wordbook was not found"));
       else {
         for (const draft of drafts) void processImportDraft(clientId, draft.id);
-        response.status(201).json(drafts[0]);
+        response.status(201).json(withDraftQueueState(clientId, drafts[0]));
       }
     } catch (error) { next(error); }
   });
   app.get("/api/my/import-drafts/:id", async (request, response, next) => {
     const clientId = readClientId(request, response); const id = parseResourceId(request.params.id); if (!clientId) return;
     if (!id) { response.status(400).json(apiError("INVALID_RESOURCE_ID", "Resource id is invalid")); return; }
-    try { const draft = await studyStore.getImportDraft(clientId, id); if (!draft) response.status(404).json(apiError("IMPORT_DRAFT_NOT_FOUND", "Import draft was not found")); else response.status(200).json(draft); } catch (error) { next(error); }
+    try { const draft = await studyStore.getImportDraft(clientId, id); if (!draft) response.status(404).json(apiError("IMPORT_DRAFT_NOT_FOUND", "Import draft was not found")); else response.status(200).json(withDraftQueueState(clientId, draft)); } catch (error) { next(error); }
   });
   app.delete("/api/my/import-drafts/:id", async (request, response, next) => {
     const clientId = readClientId(request, response); const id = parseResourceId(request.params.id); if (!clientId) return;
@@ -1745,16 +1755,10 @@ export function createApp(options: CreateAppOptions = {}) {
       const draft = await studyStore.getImportDraft(clientId, id);
       if (!draft) { response.status(404).json(apiError("IMPORT_DRAFT_NOT_FOUND", "Import draft was not found")); return; }
       if (draft.status === "committed") { response.status(409).json(apiError("IMPORT_DRAFT_COMMITTED", "Committed drafts cannot be processed")); return; }
-      const key = `${clientId}:${id}`;
-      if (!backgroundDraftTasks.has(key) && backgroundDraftTasks.size >= maxBackgroundDraftTasks) {
-        response.setHeader("Retry-After", "5");
-        response.status(503).json(apiError("IMPORT_QUEUE_FULL", "Import processing is busy; retry shortly"));
-        return;
-      }
       // A manual/browser resume is the second attempt. If the dictionary is still
       // unavailable, keep the user's raw entry and let the import reach confirmation.
       void processImportDraft(clientId, id, true);
-      response.status(202).json(draft);
+      response.status(202).json(withDraftQueueState(clientId, draft));
     } catch (error) { next(error); }
   });
   app.post("/api/study/rounds", async (request, response, next) => {

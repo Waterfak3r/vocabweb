@@ -783,6 +783,43 @@ test("import drafts preserve Chinese input, queue batches above 500 words, and a
   } finally { await app.close(); }
 });
 
+test("later imports report queued while an earlier batch is still running", async () => {
+  let release: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const app = await server({
+    wordLookup: { async lookup(word) { await gate; return dictionaryEntry(word); } },
+  });
+  try {
+    const firstResponse = await fetch(`${app.baseUrl}/api/my/import-drafts`, {
+      method: "POST", headers,
+      body: JSON.stringify({ title: "先导入", lines: Array.from({ length: 500 }, (_, index) => ({ line: index + 1, word: alphabeticWord(index) })) }),
+    });
+    assert.equal(firstResponse.status, 201);
+    const first = await firstResponse.json() as { id: string };
+    assert.ok(first.id);
+
+    const secondResponse = await fetch(`${app.baseUrl}/api/my/import-drafts`, {
+      method: "POST", headers,
+      body: JSON.stringify({ title: "排队导入", lines: [{ line: 1, word: "queued" }] }),
+    });
+    assert.equal(secondResponse.status, 201);
+    const second = await secondResponse.json() as { id: string; groupId: string; queued?: boolean };
+    assert.equal(second.queued, true);
+
+    const tasks = await (await fetch(`${app.baseUrl}/api/my/import-drafts/status`, { headers })).json() as Array<{ groupId: string; queued?: boolean }>;
+    const queuedGroup = tasks.find((task) => task.groupId === second.groupId);
+    assert.equal(queuedGroup?.queued, true);
+
+    release!();
+    await eventually(
+      async () => await (await fetch(`${app.baseUrl}/api/my/import-drafts/${second.id}`, { headers })).json() as { status: string },
+      (draft) => draft.status === "pending",
+    );
+    const after = await (await fetch(`${app.baseUrl}/api/my/import-drafts/${second.id}`, { headers })).json() as { queued?: boolean };
+    assert.equal(after.queued, undefined);
+  } finally { await app.close(); }
+});
+
 test("duplicate import rows stay in the final group summary and can replace the earlier row", async () => {
   const app = await server({ wordLookup: { async lookup(word) { return dictionaryEntry(word); } } });
   try {

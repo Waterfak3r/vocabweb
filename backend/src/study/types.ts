@@ -435,7 +435,7 @@ export interface ImportDraftEntry {
 export interface ImportDraft {
   id: string; groupId: string; title: string; description: string; targetWordbookId?: string;
   batchIndex: number; totalBatches: number; status: "processing" | "pending" | "committed";
-  createdAt: string; updatedAt: string; committedAt?: string; entries: ImportDraftEntry[];
+  createdAt: string; updatedAt: string; committedAt?: string; queued?: boolean; entries: ImportDraftEntry[];
 }
 export interface CreateImportDraftInput {
   title: string; description?: string; targetWordbookId?: string; lines: ImportLineInput[];

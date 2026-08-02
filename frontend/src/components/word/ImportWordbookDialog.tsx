@@ -77,6 +77,12 @@ export function importDraftGroup(drafts: readonly ImportDraft[], current: Pick<I
     .sort((left, right) => left.batchIndex - right.batchIndex)
 }
 
+export function groupProcessingState(group: readonly Pick<ImportDraft, 'status' | 'queued'>[]): 'queued' | 'processing' | 'pending' {
+  if (group.some((item) => item.status === 'processing' && !item.queued)) return 'processing'
+  if (group.some((item) => item.queued)) return 'queued'
+  return 'pending'
+}
+
 export function importProblemEntries(entries: readonly ImportDraftEntry[]) {
   return entries.filter((entry) => entry.status === 'invalid' || entry.status === 'duplicate' || entry.status === 'unmatched' || entry.status === 'conflict')
 }
@@ -180,7 +186,7 @@ export function ImportWordbookDialog({ open, api, onClose, onCreated, initialTit
           update(started)
         } catch {
           setError('词典匹配队列暂时繁忙，草稿已经保存，正在等待自动重试。')
-          schedule(() => { void loadGroup() }, 1_500)
+          schedule(() => { void loadGroup() }, 3_000)
           return
         }
         if (started.status !== 'processing') {
@@ -191,12 +197,12 @@ export function ImportWordbookDialog({ open, api, onClose, onCreated, initialTit
           try {
             const next = await api.getImportDraft(nextBatch.id)
             update(next)
-            if (next.status === 'processing') schedule(() => { void loadGroup() }, 1_500)
+            if (next.status === 'processing') schedule(() => { void loadGroup() }, 3_000)
             else schedule(() => { void loadGroup() }, 0)
           } catch {
             if (!cancelled) {
               setError('词典匹配仍在后台进行。草稿和已完成进度均已保存，正在自动重试。')
-              schedule(() => { void loadGroup() }, 1_500)
+              schedule(() => { void loadGroup() }, 3_000)
             }
           }
         }
@@ -204,7 +210,7 @@ export function ImportWordbookDialog({ open, api, onClose, onCreated, initialTit
       } catch {
         if (!cancelled) {
           setError('暂时无法读取整组导入进度。草稿已经保存，正在自动重试。')
-          schedule(() => { void loadGroup() }, 1_500)
+          schedule(() => { void loadGroup() }, 3_000)
         }
       }
     }
@@ -362,6 +368,8 @@ export function ImportWordbookDialog({ open, api, onClose, onCreated, initialTit
   const conflictCount = entries.filter((entry) => entry.status === 'conflict').length
   const continuationCount = draft?.totalBatches ?? parsed?.batchCount ?? 0
   const isProcessing = creatingDraft || (Boolean(draft) && (groupDrafts.length !== draft?.totalBatches || groupDrafts.some((item) => item.status === 'processing')))
+  const processingState = groupProcessingState(groupDrafts)
+  const queued = !creatingDraft && processingState === 'queued'
   const matchProgress = draftMatchProgress(entries)
   const problems = importProblemEntries(entries)
   const problemPages = Math.max(1, Math.ceil(problems.length / PROBLEM_PAGE_SIZE))
@@ -408,8 +416,8 @@ export function ImportWordbookDialog({ open, api, onClose, onCreated, initialTit
               <p className={styles.hint}>每次导入只保留一个整组草稿入口；继续后会自动处理剩余批次并统一汇总问题。</p>
               <div>
                 {savedDraftGroups.map(({ item, group }) => <article key={draftGroupKey(item)}>
-                  <span><strong>{item.title}</strong><small>共 {item.totalBatches} 批 · {group.some((draftItem) => draftItem.status === 'processing') ? '后台处理中' : '等待统一确认'}</small></span>
-                  <button type="button" disabled={busy} onClick={() => continueDraft(item)}>{group.some((draftItem) => draftItem.status === 'processing') ? '查看进度' : '继续处理'}</button>
+                  <span><strong>{item.title}</strong><small>共 {item.totalBatches} 批 · {groupProcessingState(group) === 'queued' ? '排队中' : groupProcessingState(group) === 'processing' ? '后台处理中' : '等待统一确认'}</small></span>
+                  <button type="button" disabled={busy} onClick={() => continueDraft(item)}>{groupProcessingState(group) === 'pending' ? '继续处理' : '查看进度'}</button>
                   <button type="button" disabled={busy} onClick={() => { void removeDraft(item) }}>删除</button>
                 </article>)}
               </div>
@@ -438,12 +446,14 @@ export function ImportWordbookDialog({ open, api, onClose, onCreated, initialTit
           </>}
 
           {step === 'preview' && isProcessing && <section className={styles.processing} role="status">
-            <strong>{creatingDraft ? '正在创建导入任务' : `正在自动处理全部 ${draft?.totalBatches ?? 1} 批词典数据`}</strong>
-            <p>{creatingDraft ? `已读取 ${parsed?.entries.length ?? 0} 条记录，正在保存草稿并启动词典匹配。` : `${matchProgress.completed}/${matchProgress.total} 条记录已完成。全部批次结束后会统一汇总问题，无需逐批确认；关闭窗口也不会丢失草稿进度。`}</p>
+            <strong>{creatingDraft ? '正在创建导入任务' : queued ? `已加入处理队列，共 ${draft?.totalBatches ?? 1} 批` : `正在自动处理全部 ${draft?.totalBatches ?? 1} 批词典数据`}</strong>
+            <p>{creatingDraft ? `已读取 ${parsed?.entries.length ?? 0} 条记录，正在保存草稿并启动词典匹配。` : queued ? '当前排在处理队列中，等待前面的导入任务完成。轮到后会自动开始词典匹配，关闭窗口也不会丢失草稿进度。' : `${matchProgress.completed}/${matchProgress.total} 条记录已完成。全部批次结束后会统一汇总问题，无需逐批确认；关闭窗口也不会丢失草稿进度。`}</p>
             {creatingDraft
               ? <progress aria-label="正在创建导入任务" />
-              : <progress value={matchProgress.completed} max={Math.max(1, matchProgress.total)} aria-label="词典匹配进度" />}
-            <small>{creatingDraft ? '正在连接服务器…' : `${matchProgress.percent}%`}</small>
+              : queued
+                ? <progress aria-label="排队等待词典匹配" />
+                : <progress value={matchProgress.completed} max={Math.max(1, matchProgress.total)} aria-label="词典匹配进度" />}
+            <small>{creatingDraft ? '正在连接服务器…' : queued ? '排队中，无需操作' : `${matchProgress.percent}%`}</small>
           </section>}
 
           {step === 'preview' && !isProcessing && <>

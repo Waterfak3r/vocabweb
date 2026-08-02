@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { draftMatchProgress, importDraftGroup, importProblemEntries } from './ImportWordbookDialog'
+import { draftMatchProgress, groupProcessingState, importDraftGroup, importProblemEntries } from './ImportWordbookDialog'
 
 describe('draftMatchProgress', () => {
   it('counts unresolved entries while a background dictionary job is running', () => {
@@ -33,7 +33,32 @@ describe('import draft group summary', () => {
     ]
     expect(importDraftGroup(drafts, { id: 'first', groupId: 'group-a' }).map((draft) => draft.id)).toEqual(['first', 'second', 'third'])
   })
+})
 
+describe('groupProcessingState', () => {
+  it('reports queued while every processing batch waits in the FIFO queue', () => {
+    expect(groupProcessingState([
+      { status: 'processing', queued: true },
+      { status: 'processing', queued: true },
+    ])).toBe('queued')
+  })
+
+  it('reports processing while any batch is actively matching dictionary data', () => {
+    expect(groupProcessingState([
+      { status: 'processing', queued: true },
+      { status: 'processing', queued: false },
+    ])).toBe('processing')
+  })
+
+  it('reports pending once every batch is ready for confirmation', () => {
+    expect(groupProcessingState([
+      { status: 'pending' },
+      { status: 'pending' },
+    ])).toBe('pending')
+  })
+})
+
+describe('import draft group summary', () => {
   it('shows only entries that need a final decision', () => {
     expect(importProblemEntries([
       { line: 1, word: 'ready', status: 'ready' },

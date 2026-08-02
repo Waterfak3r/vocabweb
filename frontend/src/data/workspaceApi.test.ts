@@ -46,6 +46,13 @@ describe('WorkspaceApi import drafts', () => {
     }))
   })
 
+  it('keeps the transient queued flag from the create response', async () => {
+    const fetch = vi.fn<FetchLike>().mockResolvedValue(new Response(JSON.stringify({ ...draft('processing'), queued: true })))
+    const api = new WorkspaceApi('https://api.example.test/', { fetch, clientId: () => 'learner' })
+
+    await expect(api.createImportDraft({ title: '导入测试', lines: [{ line: 1, word: 'resilient' }] })).resolves.toMatchObject({ queued: true })
+  })
+
   it('keeps invalid rows without a normalized word in the persisted problem summary', async () => {
     const fetch = vi.fn<FetchLike>().mockResolvedValue(new Response(JSON.stringify({
       ...draft('pending'),
@@ -71,6 +78,7 @@ describe('WorkspaceApi import drafts', () => {
       completedEntries: 1_000,
       problemCount: 3,
       nextProcessingDraftId: 'draft-3',
+      queued: true,
       updatedAt: '2026-08-02T08:00:00.000Z',
     }
     const fetch = vi.fn<FetchLike>().mockResolvedValue(new Response(JSON.stringify([summary])))

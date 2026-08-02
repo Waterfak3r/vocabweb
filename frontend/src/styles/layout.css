@@ -209,15 +209,17 @@
   top: -0.3rem;
   right: -0.2rem;
   display: inline-grid;
-  min-width: 1.05rem;
-  height: 1.05rem;
+  min-width: 1.15rem;
+  height: 1.15rem;
   place-items: center;
   padding-inline: 0.2rem;
   border-radius: 999px;
   background: currentColor;
-  color: var(--surface-solid);
   font-family: var(--font-mono);
-  font-size: 0.58rem;
+  font-size: 0.68rem;
+}
+.import-status-count > span {
+  color: var(--surface-solid);
 }
 
 @keyframes import-status-spin { to { transform: rotate(360deg); } }

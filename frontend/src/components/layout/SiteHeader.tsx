@@ -326,7 +326,7 @@ export function SiteHeader() {
   }
 
   const importStatusLabel = importDraftBadge?.kind === 'processing'
-    ? `导入处理中 ${importDraftBadge.percent}%`
+    ? importDraftBadge.queued ? '导入排队中' : `导入处理中 ${importDraftBadge.percent}%`
     : importDraftBadge ? `导入待确认${importDraftBadge.problemCount ? ` ${importDraftBadge.problemCount}` : ''}` : ''
   const importStatusDetail = importDraftBadge
     ? `${importDraftBadge.title} · ${importDraftBadge.completedBatches}/${importDraftBadge.totalBatches} 批 · ${importDraftBadge.completedEntries}/${importDraftBadge.totalEntries} 条${importDraftBadge.problemCount ? ` · ${importDraftBadge.problemCount} 条待处理` : ''}${importDraftBadge.taskCount > 1 ? ` · 共 ${importDraftBadge.taskCount} 个任务` : ''}`
@@ -356,7 +356,7 @@ export function SiteHeader() {
               <svg className="import-status-ready-icon" viewBox="0 0 20 20" aria-hidden="true"><path d="m5 10.2 3.1 3.1L15.4 6" /></svg>
             )}
             <span className="import-status-label" aria-live="polite">{importStatusLabel}</span>
-            {importDraftBadge.taskCount > 1 && <span className="import-status-count" aria-hidden="true">{importDraftBadge.taskCount}</span>}
+            {importDraftBadge.taskCount > 1 && <span className="import-status-count" aria-hidden="true"><span>{importDraftBadge.taskCount}</span></span>}
           </button>}
         </span>
         {NAVIGATION.map(({ to, label, icon, end }) => (
