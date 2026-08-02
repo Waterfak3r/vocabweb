@@ -157,6 +157,67 @@ test("catalog word pages limit payloads and search across the whole catalog", as
   } finally { await app.close(); }
 });
 
+test("personal word pages paginate, filter by level, and search beyond the current page", async () => {
+  const app = await server();
+  try {
+    const words = Array.from({ length: 123 }, (_, index) => {
+      const suffix = `${String.fromCharCode(97 + Math.floor(index / 26))}${String.fromCharCode(97 + (index % 26))}`;
+      return {
+        word: index === 87 ? "needle" : `personal${suffix}`,
+        phonetic: "",
+        source: "user",
+        meanings: [{ pos: "noun", definition: index === 87 ? "Hidden cross-page target" : `Personal definition ${index}` }],
+        ...(index === 87 ? { zhMeaning: "跨页搜索目标" } : {}),
+      };
+    });
+    const create = await fetch(`${app.baseUrl}/api/my/wordbooks`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ title: "个人分页词本", words }),
+    });
+    assert.equal(create.status, 201);
+    const book = await create.json() as { id: string };
+    const allWords = await (await fetch(`${app.baseUrl}/api/my/wordbooks/${book.id}/words`, { headers })).json() as Array<{ id: string; word: string }>;
+    const target = allWords.find((word) => word.word === "needle")!;
+    assert.equal((await fetch(`${app.baseUrl}/api/study/events`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ kind: "mark", wordbookId: book.id, wordId: target.id, level: 4 }),
+    })).status, 201);
+
+    const secondResponse = await fetch(`${app.baseUrl}/api/my/wordbooks/${book.id}/words/page?page=2&pageSize=50`, { headers });
+    assert.equal(secondResponse.status, 200);
+    const second = await secondResponse.json() as {
+      items: Array<{ word: string }>;
+      total: number;
+      page: number;
+      pageSize: number;
+      totalPages: number;
+      totalWordCount: number;
+      levelCounts: { l0: number; l1: number; l2: number; l3: number; l4: number };
+    };
+    assert.equal(second.items.length, 50);
+    assert.equal(second.items[0]?.word, words[50]!.word);
+    assert.deepEqual(
+      { total: second.total, page: second.page, pageSize: second.pageSize, totalPages: second.totalPages, totalWordCount: second.totalWordCount },
+      { total: 123, page: 2, pageSize: 50, totalPages: 3, totalWordCount: 123 },
+    );
+    assert.deepEqual(second.levelCounts, { l0: 122, l1: 0, l2: 0, l3: 0, l4: 1 });
+
+    const searchedResponse = await fetch(`${app.baseUrl}/api/my/wordbooks/${book.id}/words/page?q=${encodeURIComponent("跨页搜索")}`, { headers });
+    const searched = await searchedResponse.json() as { items: Array<{ word: string; level: number }>; total: number };
+    assert.equal(searchedResponse.status, 200);
+    assert.deepEqual(searched.items.map((word) => [word.word, word.level]), [["needle", 4]]);
+    assert.equal(searched.total, 1);
+
+    const mastered = await (await fetch(`${app.baseUrl}/api/my/wordbooks/${book.id}/words/page?level=4`, { headers })).json() as { items: Array<{ word: string }>; total: number };
+    assert.deepEqual(mastered.items.map((word) => word.word), ["needle"]);
+    assert.equal(mastered.total, 1);
+    assert.equal((await fetch(`${app.baseUrl}/api/my/wordbooks/${book.id}/words/page?level=5`, { headers })).status, 400);
+    assert.equal((await fetch(`${app.baseUrl}/api/my/wordbooks/${book.id}/words/page?pageSize=101`, { headers })).status, 400);
+  } finally { await app.close(); }
+});
+
 test("a new anonymous client can create a wordbook and starts with no learning activity", async () => {
   const app = await server();
   try {

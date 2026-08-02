@@ -136,11 +136,23 @@
   stroke-linejoin: round;
 }
 
+.import-status-slot {
+  position: relative;
+  display: block;
+  align-self: stretch;
+  width: 2.1rem;
+  flex: 0 0 2.1rem;
+}
+
 .import-status-badge {
+  position: absolute;
+  top: 50%;
+  right: 0;
   display: inline-flex;
   align-items: center;
-  align-self: center;
+  justify-content: center;
   gap: 0.42rem;
+  width: 9.75rem;
   min-height: 2rem;
   padding: 0.32rem 0.62rem;
   border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--rule));
@@ -149,19 +161,21 @@
   color: var(--accent-strong);
   font-size: 0.76rem;
   font-weight: 700;
+  font-variant-numeric: tabular-nums;
   line-height: 1;
   white-space: nowrap;
   box-shadow: 0 2px 8px color-mix(in srgb, var(--accent) 10%, transparent);
+  transform: translateY(-50%);
   transition: border-color 160ms ease, transform 120ms ease, box-shadow 160ms ease;
 }
 
 .import-status-badge:hover {
   border-color: var(--accent);
   box-shadow: 0 3px 12px color-mix(in srgb, var(--accent) 17%, transparent);
-  transform: translateY(-1px);
+  transform: translateY(calc(-50% - 1px));
 }
 
-.import-status-badge:active { transform: translateY(0); }
+.import-status-badge:active { transform: translateY(-50%); }
 
 .import-status-badge.is-ready {
   border-color: color-mix(in srgb, var(--gold-strong) 32%, var(--rule));
@@ -191,6 +205,9 @@
 }
 
 .import-status-count {
+  position: absolute;
+  top: -0.3rem;
+  right: -0.2rem;
   display: inline-grid;
   min-width: 1.05rem;
   height: 1.05rem;
@@ -485,7 +502,7 @@
   display: none;
 }
 
-@media (min-width: 761px) and (max-width: 1120px) {
+@media (max-width: 1120px) {
   .import-status-badge {
     width: 2.1rem;
     justify-content: center;
@@ -583,7 +600,9 @@
   .account-popover { min-width: 9rem; }
 
   .nav-icon { width: 1rem; height: 1rem; flex: 0 0 auto; }
-  .import-status-badge { min-width: 0; justify-content: center; padding-inline: 0.25rem; }
+  .import-status-slot { width: 100%; min-width: 0; flex-basis: auto; }
+  .import-status-badge { width: 100%; min-width: 0; justify-content: center; padding-inline: 0.25rem; }
+  .import-status-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   .import-status-count { display: none; }
 }
 
@@ -595,6 +614,10 @@
   .import-status-badge { font-size: 0.68rem; }
 }
 .nav-unread {
+  position: absolute;
+  z-index: 2;
+  top: 0.05rem;
+  right: -0.55rem;
   display: inline-grid;
   min-width: 1.15rem;
   height: 1.15rem;
@@ -605,7 +628,9 @@
   color: white;
   font-family: var(--font-mono);
   font-size: 0.62rem;
+  font-variant-numeric: tabular-nums;
   line-height: 1;
+  pointer-events: none;
 }
 
 .sources-page {

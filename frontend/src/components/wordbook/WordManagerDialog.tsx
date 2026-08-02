@@ -1,10 +1,17 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react'
-import type { WordbookItem } from '../../domain/types'
-import type { BatchWordAction, BatchWordResult, WordLevel, WordStatus } from '../../data/workspaceApi'
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import type {
+  BatchWordAction,
+  BatchWordResult,
+  MyWordbookWord,
+  MyWordbookWordsPage,
+  WorkspaceApi,
+  WordLevel,
+  WordStatus,
+} from '../../data/workspaceApi'
 import { useModalDialog } from '../../hooks/useModalDialog'
 import './word-manager-dialog.css'
 
-export type EditableWordbookItem = WordbookItem & {
+export type EditableWordbookItem = MyWordbookWord & {
   zhMeaning?: string
   zhMeaningSource?: 'user' | 'dictionary'
   status?: WordStatus
@@ -18,11 +25,15 @@ export type WordbookWordPatch = {
   audioUrl?: string
   zhMeaning: string | null
   meanings: EditableWordbookItem['meanings']
+  refresh: boolean
 }
 
 /** 熟练度档位显示名，索引即档位 0-4。 */
 const LEVEL_NAMES = ['未学习', '初识', '熟悉', '掌握', '精通'] as const
 const WORD_LEVELS: WordLevel[] = [0, 1, 2, 3, 4]
+const PAGE_SIZE = 50
+const SEARCH_DEBOUNCE_MS = 250
+const EMPTY_LEVEL_COUNTS = { l0: 0, l1: 0, l2: 0, l3: 0, l4: 0 } as const
 export type WordManagerLevelFilter = WordLevel | 'all'
 
 /** Same fallback ladder as the wordbook decks: prefer level, else map the legacy status. */
@@ -31,14 +42,16 @@ function levelOf(entry: EditableWordbookItem): WordLevel {
 }
 
 type Props = {
+  api: Pick<WorkspaceApi, 'listWordPage'> | null
+  wordbookId: string
   title: string
-  entries: EditableWordbookItem[]
+  totalWords: number
   initialLevel?: WordManagerLevelFilter
   saving?: boolean
   onClose: () => void
   onSave: (id: string, patch: WordbookWordPatch) => Promise<void>
   /** 标熟: marks the word 精通 (L4); adaptive long-term review can still schedule it later. */
-  onMarkKnown?: (id: string) => Promise<void>
+  onMarkKnown?: (id: string, word: string) => Promise<void>
   onBatch: (action: BatchWordAction, ids: string[]) => Promise<BatchWordResult>
 }
 
@@ -65,6 +78,7 @@ export function parseEditableMeanings(value: string): EditableWordbookItem['mean
     .filter((meaning) => meaning.pos !== 'unknown' || Boolean(meaning.definition) || Boolean(meaning.example))
 }
 
+/** Retained for lightweight filter-contract tests and offline callers. The dialog itself filters on the server. */
 export function filterManagedWords(
   entries: readonly EditableWordbookItem[],
   query: string,
@@ -80,9 +94,41 @@ export function filterManagedWords(
   })
 }
 
+type WordManagerListRowProps = {
+  entry: EditableWordbookItem
+  active: boolean
+  checked: boolean
+  onOpen: (id: string) => void
+  onToggle: (id: string) => void
+}
+
+const WordManagerListRow = memo(function WordManagerListRow({
+  entry,
+  active,
+  checked,
+  onOpen,
+  onToggle,
+}: WordManagerListRowProps) {
+  const level = levelOf(entry)
+  return (
+    <div className={`word-manager-list-row${active ? ' selected' : ''}${checked ? ' checked' : ''}`}>
+      <input type="checkbox" checked={checked} aria-label={`选择 ${entry.word}`} onChange={() => onToggle(entry.id)} />
+      <button type="button" onClick={() => onOpen(entry.id)}>
+        <span className="word-manager-list-head">
+          <strong>{entry.word}</strong>
+          <span className="word-manager-level" data-level={level}>{LEVEL_NAMES[level]}</span>
+        </span>
+        <small>{entry.zhMeaning || entry.meanings[0]?.definition || '暂无释义'}</small>
+      </button>
+    </div>
+  )
+})
+
 export function WordManagerDialog({
+  api,
+  wordbookId,
   title,
-  entries,
+  totalWords,
   initialLevel = 'all',
   saving = false,
   onClose,
@@ -91,36 +137,80 @@ export function WordManagerDialog({
   onBatch,
 }: Props) {
   const [query, setQuery] = useState('')
+  const [debouncedQuery, setDebouncedQuery] = useState('')
   const [levelFilter, setLevelFilter] = useState<WordManagerLevelFilter>(initialLevel)
-  const [selectedId, setSelectedId] = useState(
-    () => entries.find((entry) => initialLevel === 'all' || levelOf(entry) === initialLevel)?.id ?? entries[0]?.id ?? '',
-  )
-  const visible = useMemo(
-    () => filterManagedWords(entries, query, levelFilter),
-    [entries, levelFilter, query],
-  )
-  const selected = visible.find((entry) => entry.id === selectedId) ?? visible[0]
-  const [word, setWord] = useState(selected?.word ?? '')
-  const [phonetic, setPhonetic] = useState(selected?.phonetic ?? '')
-  const [zhMeaning, setZhMeaning] = useState(selected?.zhMeaning ?? '')
-  const [meaningsText, setMeaningsText] = useState(selected ? meaningsToText(selected) : '')
+  const [page, setPage] = useState(1)
+  const [pageData, setPageData] = useState<MyWordbookWordsPage | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
+  const [reloadVersion, setReloadVersion] = useState(0)
+  const [selectedId, setSelectedId] = useState('')
+  const [word, setWord] = useState('')
+  const [phonetic, setPhonetic] = useState('')
+  const [zhMeaning, setZhMeaning] = useState('')
+  const [meaningsText, setMeaningsText] = useState('')
   const [error, setError] = useState('')
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set())
   const [batching, setBatching] = useState<BatchWordAction | null>(null)
   const [batchMessage, setBatchMessage] = useState('')
+  const requestSequence = useRef(0)
   const dialogRef = useModalDialog<HTMLElement>({ open: true, onClose, canClose: !saving && !batching })
 
-  const levelCounts = useMemo(
-    () => WORD_LEVELS.map((level) => entries.filter((entry) => levelOf(entry) === level).length),
-    [entries],
-  )
-  const visibleIds = visible.map((entry) => entry.id)
-  const selectedVisibleCount = visibleIds.filter((id) => selectedIds.has(id)).length
-  const allVisibleSelected = visibleIds.length > 0 && selectedVisibleCount === visibleIds.length
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setDebouncedQuery(query.trim())
+      setPage(1)
+    }, SEARCH_DEBOUNCE_MS)
+    return () => window.clearTimeout(timer)
+  }, [query])
 
-  // Key on the entry's content, not just its id: after a save the parent
-  // refreshes entries (same id, rematched dictionary fields) and the form must
-  // follow — but a refresh returning identical data must not clobber typing.
+  useEffect(() => {
+    const requestId = ++requestSequence.current
+    let active = true
+    if (!api) {
+      setLoading(false)
+      setLoadError('词条服务暂不可用，请稍后重试。')
+      return
+    }
+    setLoading(true)
+    setLoadError('')
+    void api.listWordPage(wordbookId, {
+      page,
+      pageSize: PAGE_SIZE,
+      ...(debouncedQuery ? { q: debouncedQuery } : {}),
+      ...(levelFilter !== 'all' ? { level: levelFilter } : {}),
+    }).then((next) => {
+      if (!active || requestSequence.current !== requestId) return
+      setPageData(next)
+      if (next.page !== page) setPage(next.page)
+      setSelectedId((current) => next.items.some((item) => item.id === current) ? current : next.items[0]?.id ?? '')
+    }).catch(() => {
+      if (active && requestSequence.current === requestId) setLoadError('词条加载失败，请重试。')
+    }).finally(() => {
+      if (active && requestSequence.current === requestId) setLoading(false)
+    })
+    return () => { active = false }
+  }, [api, debouncedQuery, levelFilter, page, reloadVersion, wordbookId])
+
+  const entries = pageData?.items ?? []
+  const selected = useMemo(
+    () => entries.find((entry) => entry.id === selectedId) ?? entries[0],
+    [entries, selectedId],
+  )
+  const visibleIds = useMemo(() => entries.map((entry) => entry.id), [entries])
+  const selectedVisibleCount = useMemo(
+    () => visibleIds.reduce((count, id) => count + Number(selectedIds.has(id)), 0),
+    [selectedIds, visibleIds],
+  )
+  const allVisibleSelected = visibleIds.length > 0 && selectedVisibleCount === visibleIds.length
+  const levelCounts = pageData?.levelCounts ?? EMPTY_LEVEL_COUNTS
+  const currentPage = pageData?.page ?? page
+  const totalPages = pageData?.totalPages ?? 1
+  const matchingCount = pageData?.total ?? 0
+  const totalWordCount = pageData?.totalWordCount ?? totalWords
+
+  // Key on the entry's content, not just its id: after a save, refetch the
+  // current page and follow rematched dictionary fields without clobbering typing.
   const selectedFingerprint = selected ? JSON.stringify(selected) : ''
   useEffect(() => {
     if (!selected) return
@@ -132,12 +222,7 @@ export function WordManagerDialog({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedFingerprint])
 
-  useEffect(() => {
-    const currentIds = new Set(entries.map((entry) => entry.id))
-    setSelectedIds((ids) => new Set([...ids].filter((id) => currentIds.has(id))))
-  }, [entries])
-
-  function toggleSelected(id: string) {
+  const toggleSelected = useCallback((id: string) => {
     setSelectedIds((ids) => {
       const next = new Set(ids)
       if (next.has(id)) next.delete(id)
@@ -145,9 +230,11 @@ export function WordManagerDialog({
       return next
     })
     setBatchMessage('')
-  }
+  }, [])
 
-  function toggleAllVisible() {
+  const openEntry = useCallback((id: string) => setSelectedId(id), [])
+
+  const toggleAllVisible = useCallback(() => {
     setSelectedIds((ids) => {
       const next = new Set(ids)
       if (allVisibleSelected) visibleIds.forEach((id) => next.delete(id))
@@ -155,7 +242,7 @@ export function WordManagerDialog({
       return next
     })
     setBatchMessage('')
-  }
+  }, [allVisibleSelected, visibleIds])
 
   async function runBatch(action: BatchWordAction) {
     const ids = [...selectedIds]
@@ -165,11 +252,16 @@ export function WordManagerDialog({
     setBatchMessage('')
     try {
       const result = await onBatch(action, ids)
-      if (action === 'delete') setSelectedIds((current) => new Set([...current].filter((id) => !result.succeededIds.includes(id))))
+      if (action === 'delete') {
+        const removed = new Set(result.succeededIds)
+        setSelectedIds((current) => new Set([...current].filter((id) => !removed.has(id))))
+      }
       const actionLabel = action === 'refresh-meanings' ? '更新释义' : action === 'mark-mastered' ? '标熟' : '删除'
       setBatchMessage(`${actionLabel}完成：成功 ${result.succeededIds.length} 个${result.failed.length ? `，失败 ${result.failed.length} 个` : ''}。`)
+      setReloadVersion((version) => version + 1)
     } catch {
-      setBatchMessage('批量操作失败，所选词条未全部更新。')
+      setBatchMessage('批量操作失败，部分已完成的词条会保留；请重试剩余词条。')
+      setReloadVersion((version) => version + 1)
     } finally {
       setBatching(null)
     }
@@ -190,9 +282,22 @@ export function WordManagerDialog({
         phonetic: phonetic.trim(),
         zhMeaning: zhMeaning.trim() || null,
         meanings,
+        refresh: selected.word !== word.trim(),
       })
+      setReloadVersion((version) => version + 1)
     } catch {
       setError('保存失败，请检查内容后重试。')
+    }
+  }
+
+  async function markKnown() {
+    if (!selected || !onMarkKnown) return
+    setError('')
+    try {
+      await onMarkKnown(selected.id, selected.word)
+      setReloadVersion((version) => version + 1)
+    } catch {
+      setError('标熟失败，请稍后重试。')
     }
   }
 
@@ -207,19 +312,19 @@ export function WordManagerDialog({
           <button type="button" className="workspace-modal-close" aria-label="关闭" disabled={saving || Boolean(batching)} onClick={onClose}>×</button>
         </header>
         <div className="word-manager-layout">
-          <aside>
+          <aside aria-busy={loading}>
             <label>
-              <span className="sr-only">搜索词条</span>
-              <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={`搜索${levelFilter === 'all' ? '' : LEVEL_NAMES[levelFilter]}词条`} />
+              <span className="sr-only">搜索整本词条</span>
+              <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={`搜索整本${levelFilter === 'all' ? '' : LEVEL_NAMES[levelFilter]}词条`} />
             </label>
             <div className="word-manager-level-filters" role="group" aria-label="按熟练度筛选">
               <button
                 type="button"
                 className={levelFilter === 'all' ? 'active' : ''}
                 aria-pressed={levelFilter === 'all'}
-                onClick={() => setLevelFilter('all')}
+                onClick={() => { setLevelFilter('all'); setPage(1) }}
               >
-                <span>全部</span><strong>{entries.length}</strong>
+                <span>全部</span><strong>{totalWordCount}</strong>
               </button>
               {WORD_LEVELS.map((level) => (
                 <button
@@ -227,9 +332,9 @@ export function WordManagerDialog({
                   key={level}
                   className={levelFilter === level ? 'active' : ''}
                   aria-pressed={levelFilter === level}
-                  onClick={() => setLevelFilter(level)}
+                  onClick={() => { setLevelFilter(level); setPage(1) }}
                 >
-                  <span>{LEVEL_NAMES[level]}</span><strong>{levelCounts[level]}</strong>
+                  <span>{LEVEL_NAMES[level]}</span><strong>{levelCounts[`l${level}`]}</strong>
                 </button>
               ))}
             </div>
@@ -240,30 +345,32 @@ export function WordManagerDialog({
                   checked={allVisibleSelected}
                   ref={(node) => { if (node) node.indeterminate = selectedVisibleCount > 0 && !allVisibleSelected }}
                   onChange={toggleAllVisible}
-                  disabled={!visible.length}
+                  disabled={!entries.length || loading}
                 />
-                <span>全选当前结果</span>
+                <span>全选本页</span>
               </label>
-              <small>已选 {selectedIds.size} / 当前 {visible.length} / 全部 {entries.length}</small>
+              <small>已选 {selectedIds.size} / 本页 {entries.length} / 匹配 {matchingCount} / 全部 {totalWordCount}</small>
             </div>
-            <div className="word-manager-list">
-              {visible.map((entry) => (
-                <div
+            {loadError && <p className="word-manager-load-error" role="alert">{loadError}</p>}
+            <div className={`word-manager-list${loading ? ' loading' : ''}`}>
+              {entries.map((entry) => (
+                <WordManagerListRow
                   key={entry.id}
-                  className={`word-manager-list-row${entry.id === selected?.id ? ' selected' : ''}${selectedIds.has(entry.id) ? ' checked' : ''}`}
-                >
-                  <input type="checkbox" checked={selectedIds.has(entry.id)} aria-label={`选择 ${entry.word}`} onChange={() => toggleSelected(entry.id)} />
-                  <button type="button" onClick={() => setSelectedId(entry.id)}>
-                    <span className="word-manager-list-head">
-                      <strong>{entry.word}</strong>
-                      <span className="word-manager-level" data-level={levelOf(entry)}>{LEVEL_NAMES[levelOf(entry)]}</span>
-                    </span>
-                    <small>{entry.zhMeaning || entry.meanings[0]?.definition || '暂无释义'}</small>
-                  </button>
-                </div>
+                  entry={entry}
+                  active={entry.id === selected?.id}
+                  checked={selectedIds.has(entry.id)}
+                  onOpen={openEntry}
+                  onToggle={toggleSelected}
+                />
               ))}
-              {!visible.length && <p>没有匹配的词条。</p>}
+              {loading && !pageData && <p role="status">正在加载当前页…</p>}
+              {!loading && !loadError && !entries.length && <p>没有匹配的词条。</p>}
             </div>
+            <nav className="word-manager-pagination" aria-label="词条分页">
+              <button type="button" disabled={loading || currentPage <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>上一页</button>
+              <span>第 <strong>{currentPage}</strong> / {totalPages} 页</span>
+              <button type="button" disabled={loading || currentPage >= totalPages} onClick={() => setPage((value) => Math.min(totalPages, value + 1))}>下一页</button>
+            </nav>
           </aside>
           {selected ? (
             <form onSubmit={submit}>
@@ -290,7 +397,7 @@ export function WordManagerDialog({
                     type="button"
                     className="word-manager-mark"
                     disabled={saving || Boolean(batching)}
-                    onClick={() => { void onMarkKnown(selected.id) }}
+                    onClick={() => { void markKnown() }}
                   >
                     标熟（不再学习）
                   </button>
@@ -299,7 +406,7 @@ export function WordManagerDialog({
                 <button type="submit" disabled={saving || Boolean(batching)}>{saving ? '保存中…' : '保存此词条'}</button>
               </footer>
             </form>
-          ) : <div className="word-manager-empty"><p>当前词本还没有单词。</p></div>}
+          ) : <div className="word-manager-empty"><p>{loading ? '正在加载词条…' : loadError ? '当前页暂时无法显示。' : '当前筛选没有词条。'}</p></div>}
         </div>
         {selectedIds.size > 0 && (
           <footer className="word-manager-batch-bar">

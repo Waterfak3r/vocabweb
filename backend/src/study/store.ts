@@ -25,7 +25,7 @@ import type {
   CatalogQuery, CatalogRevision, CatalogRevisionSummary, CatalogRevisionView, CatalogWordChange, CatalogWordbook, CatalogWordsPage, CatalogWordsQuery,
   CatalogUpdateMutationResult, CommitImportDraftInput, ContributionMutationResult, ContributionPreview, CreateCatalogContributionInput, CreateImportDraftInput, CreateMyWordbookInput,
   CursorPage, CursorQuery,
-  ImportDraft, ImportDraftEntry, LearningEvent, LearningEventInput, LearningQueueItem, MyWordbook, MyWordbookCard,
+  ImportDraft, ImportDraftEntry, LearningEvent, LearningEventInput, LearningQueueItem, LevelCounts, MyWordbook, MyWordbookCard, MyWordbookWordsPage, MyWordbookWordsQuery,
   MeaningPreference, ResolveCatalogContributionInput, ResolvedImportDraftEntry, RevertPreview, RevertRevisionInput, ReviewSchedule, RevisionMutationResult,
   StartStudyRoundInput, StudyChoiceOption, StudyDashboard, StudyRound, StudyRoundAnswerInput, StudyRoundMutationResult,
   StudyRoundTask, StudyRoundTaskOptions, StudyStore, StudyWordEntry, SyncedStudySettings, UpdateCatalogWordbookInput, UpdateMyWordbookInput,
@@ -1064,6 +1064,42 @@ export abstract class BaseStore implements StudyStore {
     const client = this.clientView(state, clientId); const book = client.wordbooks.find((item) => item.id === id && !item.deletedAt); if (!book) return null;
     const states = ladderStates(client.events.filter((event) => event.wordbookId === id), reviewScheduleOf(book));
     return book.words.map((word) => queueItem(word, ladderOf(states, word.id))).filter((word) => !status || word.status === status);
+  }); }
+  async listWordPage(clientId: string, id: string, query: MyWordbookWordsQuery): Promise<MyWordbookWordsPage | null> { return await this.read((state) => {
+    const client = this.clientView(state, clientId);
+    const book = client.wordbooks.find((item) => item.id === id && !item.deletedAt);
+    if (!book) return null;
+    const states = ladderStates(client.events.filter((event) => event.wordbookId === id), reviewScheduleOf(book));
+    const levelCounts: LevelCounts = { l0: 0, l1: 0, l2: 0, l3: 0, l4: 0 };
+    const leveled = book.words.map((word) => {
+      const wordState = ladderOf(states, word.id);
+      levelCounts[`l${wordState.level}` as keyof LevelCounts] += 1;
+      return { word, state: wordState };
+    });
+    const normalized = query.q?.toLowerCase();
+    const matching = leveled.filter(({ word, state: wordState }) => {
+      if (query.level !== undefined && wordState.level !== query.level) return false;
+      if (!normalized) return true;
+      return [
+        word.word,
+        word.phonetic,
+        word.zhMeaning,
+        ...word.meanings.flatMap((meaning) => [meaning.pos, meaning.definition, meaning.example]),
+      ].filter(Boolean).join(" ").toLowerCase().includes(normalized);
+    });
+    const total = matching.length;
+    const totalPages = Math.max(1, Math.ceil(total / query.pageSize));
+    const page = Math.min(query.page, totalPages);
+    const start = (page - 1) * query.pageSize;
+    return {
+      items: matching.slice(start, start + query.pageSize).map(({ word, state: wordState }) => queueItem(word, wordState)),
+      total,
+      page,
+      pageSize: query.pageSize,
+      totalPages,
+      totalWordCount: book.words.length,
+      levelCounts,
+    };
   }); }
   async findPersonalWord(clientId: string, word: string): Promise<StudyWordEntry | null> { return await this.read((state) => {
     const normalized = normalizeWord(word);

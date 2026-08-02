@@ -96,6 +96,26 @@ export type CatalogWordsPage = {
   totalPages: number
 }
 
+export type MyWordbookWord = WordbookItem & {
+  status?: WordStatus
+  level?: WordLevel
+  levelReachedAt?: string
+  lastStudiedAt?: string
+  reviewIntervalDays?: number
+  nextReviewAt?: string
+  recognitionStreak?: RecognitionStreak
+}
+export type MyWordbookWordsQuery = { page?: number; pageSize?: number; q?: string; level?: WordLevel }
+export type MyWordbookWordsPage = {
+  items: MyWordbookWord[]
+  total: number
+  page: number
+  pageSize: number
+  totalPages: number
+  totalWordCount: number
+  levelCounts: LevelCounts
+}
+
 export type CatalogRevisionKind = 'initial' | 'update' | 'merge' | 'revert'
 export type CatalogContributionStatus = 'open' | 'merged' | 'closed'
 export type CatalogDiffStats = {
@@ -880,7 +900,7 @@ function isWordLevel(value: unknown): value is WordLevel {
   return value === 0 || value === 1 || value === 2 || value === 3 || value === 4
 }
 
-function parseWord(value: unknown): (WordbookItem & { status?: WordStatus; level?: WordLevel; levelReachedAt?: string; lastStudiedAt?: string; reviewIntervalDays?: number; nextReviewAt?: string; recognitionStreak?: RecognitionStreak }) | null {
+function parseWord(value: unknown): MyWordbookWord | null {
   if (!isRecord(value) || !isText(value.id) || !isText(value.word) || !isText(value.phonetic) || !isText(value.addedAt) || !isText(value.source) || !Array.isArray(value.meanings) || (value.audioUrl !== undefined && !isText(value.audioUrl))) return null
   if (
     (value.zhMeaning !== undefined && !isText(value.zhMeaning))
@@ -918,6 +938,50 @@ function parseWord(value: unknown): (WordbookItem & { status?: WordStatus; level
   }
 }
 
+function parseMyWordbookWordsPage(value: unknown): MyWordbookWordsPage | null {
+  if (
+    !isRecord(value)
+    || !Array.isArray(value.items)
+    || !isCount(value.total)
+    || !isCount(value.page)
+    || !isCount(value.pageSize)
+    || !isCount(value.totalPages)
+    || !isCount(value.totalWordCount)
+    || !Number.isInteger(value.total)
+    || !Number.isInteger(value.page)
+    || !Number.isInteger(value.pageSize)
+    || !Number.isInteger(value.totalPages)
+    || !Number.isInteger(value.totalWordCount)
+    || value.page < 1
+    || value.pageSize < 1
+    || value.pageSize > 100
+    || value.totalPages < 1
+    || value.page > value.totalPages
+  ) return null
+  const items = value.items.map(parseWord)
+  const levelCounts = parseLevelCounts(value.levelCounts)
+  if (items.some((item) => item === null) || items.length > value.pageSize || !levelCounts) return null
+  return {
+    items: items as MyWordbookWord[],
+    total: value.total,
+    page: value.page,
+    pageSize: value.pageSize,
+    totalPages: value.totalPages,
+    totalWordCount: value.totalWordCount,
+    levelCounts,
+  }
+}
+
+function parseBatchWordResult(value: unknown, action: BatchWordAction): BatchWordResult | null {
+  if (!isRecord(value) || value.action !== action || !Array.isArray(value.succeededIds) || !value.succeededIds.every(isText) || !Array.isArray(value.failed)) return null
+  const failed = value.failed.map((item) => isRecord(item) && isText(item.wordId) && (item.code === 'WORD_NOT_FOUND' || item.code === 'DICTIONARY_UNAVAILABLE')
+    ? { wordId: item.wordId, code: item.code }
+    : null)
+  return failed.some((item) => item === null)
+    ? null
+    : { action, succeededIds: value.succeededIds, failed: failed as BatchWordResult['failed'] }
+}
+
 function parsePlan(value: unknown) {
   if (!isRecord(value)) return null
   const parse = (entry: unknown) => isRecord(entry) && isCount(entry.target) && isCount(entry.completed) ? { target: entry.target, completed: entry.completed } : null
@@ -925,7 +989,8 @@ function parsePlan(value: unknown) {
   return newPlan && review && dictation ? { new: newPlan, review, dictation } : null
 }
 
-function parseDashboard(value: unknown): StudyDashboard | null {
+/** Shared by the API client and the browser dashboard cache to reject corrupted snapshots. */
+export function parseStudyDashboard(value: unknown): StudyDashboard | null {
   if (!isRecord(value) || !isText(value.updatedAt) || !Array.isArray(value.recentActivity) || !Array.isArray(value.calendar) || !isRecord(value.week) || !isCount(value.streakDays)) return null
   const wordbook = parseMyWordbook(value.wordbook); const todayPlan = parsePlan(value.todayPlan)
   if (!wordbook || !todayPlan || !isCount(value.week.newCount) || !isCount(value.week.reviewCount) || !isCount(value.week.dictationCount) || !isCount(value.week.total)) return null
@@ -1326,23 +1391,30 @@ export class WorkspaceApi {
   deleteMyWordbook(id: string) { return invalidateMarketplaceAfter(this.empty(`api/my/wordbooks/${encodeURIComponent(id)}`, { method: 'DELETE' })) }
   restoreMyWordbook(id: string) { return invalidateMarketplaceAfter(this.json(`api/my/wordbooks/${encodeURIComponent(id)}/restore`, { method: 'POST' }, parseMyWordbook)) }
   listWords(id: string, status?: WordStatus) { const url = new URL(`api/my/wordbooks/${encodeURIComponent(id)}/words`, this.baseUrl); if (status) url.searchParams.set('status', status); return this.list(url, parseWord, 'word list') }
-  updateWord(wordbookId: string, wordId: string, input: UpdateWordInput) { return this.json(`api/my/wordbooks/${encodeURIComponent(wordbookId)}/words/${encodeURIComponent(wordId)}`, { method: 'PATCH', body: JSON.stringify(input) }, parseWord) }
-  batchWords(wordbookId: string, action: BatchWordAction, wordIds: string[]) {
-    return this.json(
-      `api/my/wordbooks/${encodeURIComponent(wordbookId)}/words/batch`,
-      { method: 'POST', body: JSON.stringify({ action, wordIds }) },
-      (value): BatchWordResult | null => {
-        if (!isRecord(value) || value.action !== action || !Array.isArray(value.succeededIds) || !value.succeededIds.every(isText) || !Array.isArray(value.failed)) return null
-        const failed = value.failed.map((item) => isRecord(item) && isText(item.wordId) && (item.code === 'WORD_NOT_FOUND' || item.code === 'DICTIONARY_UNAVAILABLE')
-          ? { wordId: item.wordId, code: item.code }
-          : null)
-        return failed.some((item) => item === null)
-          ? null
-          : { action, succeededIds: value.succeededIds, failed: failed as BatchWordResult['failed'] }
-      },
-    )
+  listWordPage(id: string, query: MyWordbookWordsQuery = {}) {
+    const url = new URL(`api/my/wordbooks/${encodeURIComponent(id)}/words/page`, this.baseUrl)
+    if (query.page !== undefined) url.searchParams.set('page', String(query.page))
+    if (query.pageSize !== undefined) url.searchParams.set('pageSize', String(query.pageSize))
+    if (query.q?.trim()) url.searchParams.set('q', query.q.trim())
+    if (query.level !== undefined) url.searchParams.set('level', String(query.level))
+    return this.jsonUrl(url, {}, parseMyWordbookWordsPage)
   }
-  getDashboard(id: string) { return this.json(`api/study/dashboard/${encodeURIComponent(id)}`, {}, parseDashboard) }
+  updateWord(wordbookId: string, wordId: string, input: UpdateWordInput) { return this.json(`api/my/wordbooks/${encodeURIComponent(wordbookId)}/words/${encodeURIComponent(wordId)}`, { method: 'PATCH', body: JSON.stringify(input) }, parseWord) }
+  async batchWords(wordbookId: string, action: BatchWordAction, wordIds: string[]): Promise<BatchWordResult> {
+    const result: BatchWordResult = { action, succeededIds: [], failed: [] }
+    for (let start = 0; start < wordIds.length; start += 500) {
+      const chunk = wordIds.slice(start, start + 500)
+      const completed = await this.json(
+        `api/my/wordbooks/${encodeURIComponent(wordbookId)}/words/batch`,
+        { method: 'POST', body: JSON.stringify({ action, wordIds: chunk }) },
+        (value) => parseBatchWordResult(value, action),
+      )
+      result.succeededIds.push(...completed.succeededIds)
+      result.failed.push(...completed.failed)
+    }
+    return result
+  }
+  getDashboard(id: string) { return this.json(`api/study/dashboard/${encodeURIComponent(id)}`, {}, parseStudyDashboard) }
   startStudyRound(wordbookId: string, mode: StudyRoundMode, scope: StudyRoundScope = 'standard') {
     return this.json(
       'api/study/rounds',

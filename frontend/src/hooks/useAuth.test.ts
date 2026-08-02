@@ -5,12 +5,13 @@ describe('completeLogout', () => {
   it('rotates the anonymous data id only after the server ends the session', async () => {
     const order: string[] = []
     const endServerSession = vi.fn(async () => { order.push('server') })
+    const clearCache = vi.fn(() => { order.push('clear') })
     const rotate = vi.fn(() => { order.push('rotate') })
     const reload = vi.fn(() => { order.push('reload') })
 
-    await completeLogout(endServerSession, rotate, reload)
+    await completeLogout(endServerSession, rotate, reload, clearCache)
 
-    expect(order).toEqual(['server', 'rotate', 'reload'])
+    expect(order).toEqual(['server', 'clear', 'rotate', 'reload'])
   })
 
   it('keeps the current identity and page when the server logout fails', async () => {

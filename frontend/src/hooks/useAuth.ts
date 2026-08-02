@@ -10,6 +10,7 @@ import {
 } from 'react'
 import { getWorkspaceApi, type AuthUser } from '../data/workspaceApi'
 import { rotateStudyClientId, setStudyClientId } from '../data/studyApi'
+import { clearAllWordbookStudyCaches } from '../data/wordbookStudyCache'
 
 export type UseAuth = {
   user: AuthUser | null
@@ -26,8 +27,10 @@ export async function completeLogout(
   endServerSession: () => Promise<void>,
   rotateAnonymousId: () => unknown = rotateStudyClientId,
   reload: () => void = () => window.location.reload(),
+  clearStudyCache: () => void = clearAllWordbookStudyCaches,
 ) {
   await endServerSession()
+  clearStudyCache()
   rotateAnonymousId()
   reload()
 }
@@ -74,6 +77,7 @@ function useAuthState(): UseAuth {
   // clientId is retained for compatibility with the current data-partition API;
   // the server session, not this browser-readable value, is the auth credential.
   const adopt = useCallback((account: AuthUser) => {
+    clearAllWordbookStudyCaches()
     setStudyClientId(account.clientId)
     window.location.reload()
   }, [])

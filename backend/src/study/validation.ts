@@ -5,7 +5,7 @@ import {
   type CreateMyWordbookInput, type ImportLineInput, type ImportResolution, type LearningEventInput, type LearningGoal,
   type BatchWordAction, type DictationDisplayPreferences, type FlashcardDisplayPreferences, type PronunciationPreferences, type ReviewSchedule, type StartStudyRoundInput, type StudyDisplayPreferences, type StudyExerciseType, type StudyMeaning, type StudyRoundAnswerInput, type StudyShortcutPreferences, type StudyWordEntry,
   type ResolveCatalogContributionInput, type RevertRevisionInput, type UpdateCatalogWordbookInput, type UpdateMyWordbookInput, type UpdateStudySettingsInput, type UpdateWordInput, type UploadCatalogWordbookInput, type WordbookStudyPreferences,
-  type WordLearningStatus, type WordLevel, type WordSource, type ZhMeaningSource,
+  type MyWordbookWordsQuery, type WordLearningStatus, type WordLevel, type WordSource, type ZhMeaningSource,
 } from "./types.js";
 
 type JsonObject = Record<string, unknown>;
@@ -390,6 +390,26 @@ export function parseCatalogWordsQuery(query: Record<string, unknown>): CatalogW
   const pageSize = positiveInteger(query.pageSize, 50, 100);
   const q = query.q === undefined ? undefined : text(query.q, 100);
   return page !== null && pageSize !== null && q !== null ? { page, pageSize, ...(q ? { q } : {}) } : null;
+}
+
+export function parseMyWordbookWordsQuery(query: Record<string, unknown>): MyWordbookWordsQuery | null {
+  const positiveInteger = (value: unknown, fallback: number, maximum: number): number | null => {
+    if (value === undefined) return fallback;
+    if (typeof value !== "string" || !/^\d+$/.test(value)) return null;
+    const parsed = Number(value);
+    return Number.isSafeInteger(parsed) && parsed >= 1 && parsed <= maximum ? parsed : null;
+  };
+  const page = positiveInteger(query.page, 1, 100_000);
+  const pageSize = positiveInteger(query.pageSize, 50, 100);
+  const q = query.q === undefined ? undefined : text(query.q, 100);
+  const level = query.level === undefined
+    ? undefined
+    : typeof query.level === "string" && /^[0-4]$/.test(query.level)
+      ? Number(query.level) as WordLevel
+      : null;
+  return page !== null && pageSize !== null && q !== null && level !== null
+    ? { page, pageSize, ...(q ? { q } : {}), ...(level !== undefined ? { level } : {}) }
+    : null;
 }
 
 export function parseCreateImportDraft(value: unknown): CreateImportDraftInput | null {

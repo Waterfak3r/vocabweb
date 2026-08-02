@@ -105,12 +105,12 @@ export function SiteHeader() {
 
     let mounted = true
 
-    const placeIndicator = () => {
-      if (!mounted) return
+    const placeIndicator = (reveal = indicator.dataset.ready === 'true') => {
+      if (!mounted) return false
       const activeItem = navigation.querySelector<HTMLElement>('.nav-link.active')
       if (!activeItem) {
         indicator.dataset.visible = 'false'
-        return
+        return false
       }
 
       const navigationRect = navigation.getBoundingClientRect()
@@ -118,26 +118,41 @@ export function SiteHeader() {
       indicator.style.setProperty('--nav-indicator-x', `${activeRect.left - navigationRect.left}px`)
       indicator.style.setProperty('--nav-indicator-y', `${activeRect.bottom - navigationRect.top}px`)
       indicator.style.setProperty('--nav-indicator-width', `${activeRect.width}`)
-      indicator.dataset.visible = 'true'
-      indicator.dataset.ready = 'true'
+      if (reveal) indicator.dataset.visible = 'true'
+      return true
     }
 
-    placeIndicator()
+    if (indicator.dataset.ready === 'true') {
+      placeIndicator(true)
+    } else {
+      indicator.dataset.ready = 'false'
+      indicator.dataset.visible = 'false'
+      const fontsReady = document.fonts?.ready ?? Promise.resolve()
+      void fontsReady.then(() => {
+        if (!mounted) return
+        const hasActiveItem = placeIndicator(false)
+        // Commit the final font-dependent geometry before enabling transitions;
+        // otherwise the underline animates from fallback-font measurements.
+        void indicator.getBoundingClientRect()
+        indicator.dataset.ready = 'true'
+        indicator.dataset.visible = hasActiveItem ? 'true' : 'false'
+      })
+    }
 
     const resizeObserver = typeof ResizeObserver === 'undefined'
       ? null
-      : new ResizeObserver(placeIndicator)
+      : new ResizeObserver(() => { placeIndicator() })
     resizeObserver?.observe(navigation)
     navigation.querySelectorAll<HTMLElement>('.nav-link').forEach((item) => resizeObserver?.observe(item))
-    window.addEventListener('resize', placeIndicator)
-    void document.fonts?.ready.then(placeIndicator)
+    const placeAfterResize = () => { placeIndicator() }
+    window.addEventListener('resize', placeAfterResize)
 
     return () => {
       mounted = false
       resizeObserver?.disconnect()
-      window.removeEventListener('resize', placeIndicator)
+      window.removeEventListener('resize', placeAfterResize)
     }
-  }, [pathname, unreadMessages, pendingContributions, importDraftBadge?.anchorId, importDraftBadge?.kind])
+  }, [pathname])
 
   useEffect(() => {
     if (!engagementApi) return
@@ -327,6 +342,23 @@ export function SiteHeader() {
       </NavLink>
 
       <nav ref={mainNavRef} className="main-nav" aria-label="主导航">
+        <span className="import-status-slot">
+          {importDraftBadge && <button
+            type="button"
+            className={`import-status-badge is-${importDraftBadge.kind}`}
+            aria-label={`${importStatusLabel}，${importStatusDetail}，点击查看`}
+            title={`${importStatusDetail}，点击查看`}
+            onClick={() => navigate(`/wordbook?${IMPORT_DRAFT_QUERY_PARAM}=${encodeURIComponent(importDraftBadge.anchorId)}`)}
+          >
+            {importDraftBadge.kind === 'processing' ? (
+              <span className="import-status-spinner" aria-hidden="true" />
+            ) : (
+              <svg className="import-status-ready-icon" viewBox="0 0 20 20" aria-hidden="true"><path d="m5 10.2 3.1 3.1L15.4 6" /></svg>
+            )}
+            <span className="import-status-label" aria-live="polite">{importStatusLabel}</span>
+            {importDraftBadge.taskCount > 1 && <span className="import-status-count" aria-hidden="true">{importDraftBadge.taskCount}</span>}
+          </button>}
+        </span>
         {NAVIGATION.map(({ to, label, icon, end }) => (
           <NavLink
             key={to}
@@ -341,21 +373,6 @@ export function SiteHeader() {
             {to === '/messages' && unreadMessages > 0 && <span className="nav-unread" aria-label={`${unreadMessages} 条未读回复`}>{unreadMessages > 99 ? '99+' : unreadMessages}</span>}
           </NavLink>
         ))}
-        {importDraftBadge && <button
-          type="button"
-          className={`import-status-badge is-${importDraftBadge.kind}`}
-          aria-label={`${importStatusLabel}，${importStatusDetail}，点击查看`}
-          title={`${importStatusDetail}，点击查看`}
-          onClick={() => navigate(`/wordbook?${IMPORT_DRAFT_QUERY_PARAM}=${encodeURIComponent(importDraftBadge.anchorId)}`)}
-        >
-          {importDraftBadge.kind === 'processing' ? (
-            <span className="import-status-spinner" aria-hidden="true" />
-          ) : (
-            <svg className="import-status-ready-icon" viewBox="0 0 20 20" aria-hidden="true"><path d="m5 10.2 3.1 3.1L15.4 6" /></svg>
-          )}
-          <span className="import-status-label" aria-live="polite">{importStatusLabel}</span>
-          {importDraftBadge.taskCount > 1 && <span className="import-status-count" aria-hidden="true">{importDraftBadge.taskCount}</span>}
-        </button>}
         <div ref={donationMenuRef} className={`donation-menu${donationOpen ? ' open' : ''}`}>
           <button
             ref={donationTriggerRef}

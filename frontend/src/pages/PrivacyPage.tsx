@@ -1,5 +1,6 @@
 import { useDocumentTitle } from '../hooks/useDocumentTitle'
 import { clearBrowserPreferences } from '../data/privacyStorage'
+import { clearAllWordbookStudyCaches } from '../data/wordbookStudyCache'
 
 export function PrivacyPage() {
   useDocumentTitle('隐私说明')
@@ -8,6 +9,7 @@ export function PrivacyPage() {
     if (!window.confirm('重置这台浏览器中的主题、界面偏好和本地缓存？匿名身份会保留，以免失去服务器词本的访问入口；账号和匿名服务器数据都不会删除。')) return
     try {
       clearBrowserPreferences(localStorage)
+      clearAllWordbookStudyCaches(localStorage)
     } finally {
       window.location.assign('/')
     }
@@ -44,7 +46,7 @@ export function PrivacyPage() {
 
       <article>
         <h2>必要存储</h2>
-        <p>会话 Cookie 仅用于登录，具有 HttpOnly、SameSite 和生产环境 Secure 属性；本站没有广告跟踪器。主题、匿名身份和部分界面偏好保存在 localStorage，不使用非必要营销 Cookie。</p>
+        <p>会话 Cookie 仅用于登录，具有 HttpOnly、SameSite 和生产环境 Secure 属性；本站没有广告跟踪器。主题、匿名身份、部分界面偏好和短期学习概览缓存保存在 localStorage，不使用非必要营销 Cookie。</p>
       </article>
     </section>
   )

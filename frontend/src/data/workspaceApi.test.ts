@@ -366,6 +366,40 @@ describe('WorkspaceApi marketplace owner feeds', () => {
   })
 })
 
+describe('WorkspaceApi personal word pages', () => {
+  it('requests a server-filtered page and preserves full-book level counts', async () => {
+    const word = {
+      id: 'word-1',
+      word: 'resilient',
+      phonetic: '/rɪˈzɪliənt/',
+      addedAt: '2026-01-01T09:00:00.000Z',
+      source: 'user',
+      meanings: [{ pos: 'adjective', definition: 'Able to recover.' }],
+      status: 'new',
+      level: 0,
+      reviewIntervalDays: 0,
+      recognitionStreak: 0,
+    }
+    const payload = {
+      items: [word],
+      total: 1,
+      page: 1,
+      pageSize: 50,
+      totalPages: 1,
+      totalWordCount: 4_000,
+      levelCounts: { l0: 900, l1: 800, l2: 800, l3: 800, l4: 700 },
+    }
+    const fetch = vi.fn<FetchLike>().mockResolvedValue(new Response(JSON.stringify(payload)))
+    const api = new WorkspaceApi('https://api.example.test/', { fetch, clientId: () => 'learner' })
+
+    await expect(api.listWordPage('my-book', { page: 1, pageSize: 50, q: ' resilient ', level: 0 })).resolves.toEqual(payload)
+    expect(fetch).toHaveBeenCalledWith(
+      new URL('https://api.example.test/api/my/wordbooks/my-book/words/page?page=1&pageSize=50&q=resilient&level=0'),
+      expect.any(Object),
+    )
+  })
+})
+
 describe('WorkspaceApi batch word actions', () => {
   it('posts selected ids and preserves partial failures', async () => {
     const payload = {
@@ -384,6 +418,24 @@ describe('WorkspaceApi batch word actions', () => {
         body: JSON.stringify({ action: 'refresh-meanings', wordIds: ['word-1', 'word-2'] }),
       }),
     )
+  })
+
+  it('automatically queues selections above the server 500-word limit', async () => {
+    const fetch = vi.fn<FetchLike>().mockImplementation(async (_url, init) => {
+      const body = JSON.parse(String(init?.body)) as { action: 'mark-mastered'; wordIds: string[] }
+      return new Response(JSON.stringify({ action: body.action, succeededIds: body.wordIds, failed: [] }))
+    })
+    const api = new WorkspaceApi('https://api.example.test/', { fetch, clientId: () => 'learner' })
+    const ids = Array.from({ length: 501 }, (_, index) => `word-${index}`)
+
+    await expect(api.batchWords('my-book', 'mark-mastered', ids)).resolves.toEqual({
+      action: 'mark-mastered',
+      succeededIds: ids,
+      failed: [],
+    })
+    expect(fetch).toHaveBeenCalledTimes(2)
+    expect(JSON.parse(String(fetch.mock.calls[0]?.[1]?.body)).wordIds).toHaveLength(500)
+    expect(JSON.parse(String(fetch.mock.calls[1]?.[1]?.body)).wordIds).toHaveLength(1)
   })
 })
 

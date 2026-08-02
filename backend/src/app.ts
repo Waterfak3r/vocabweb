@@ -18,7 +18,7 @@ import {
   parseCursorQuery,
   parseCreateMyWordbook, parseLearningEvent, parseResourceId, parseShareCode, parseStartStudyRound, parseStatus,
   parseResolveCatalogContribution, parseRevertRevision, parseStudyRoundAnswer, parseStudyRoundRevision, parseUpdateCatalog, parseUpdateMyWordbook, parseUpdateStudySettings,
-  isCatalogTitle, parseUpdateWord, parseUploadCatalog, parseWordId,
+  isCatalogTitle, parseMyWordbookWordsQuery, parseUpdateWord, parseUploadCatalog, parseWordId,
 } from "./study/validation.js";
 import type {
   AccountUser,
@@ -1620,6 +1620,12 @@ export function createApp(options: CreateAppOptions = {}) {
     if (!clientId) return;
     if (!id || status === null) { response.status(400).json(apiError("INVALID_QUEUE_QUERY", "Queue query is invalid")); return; }
     try { const words = await studyStore.listWords(clientId, id, status); if (!words) response.status(404).json(apiError("WORDBOOK_NOT_FOUND", "Wordbook was not found")); else response.status(200).json(words); } catch (error) { next(error); }
+  });
+  app.get("/api/my/wordbooks/:id/words/page", async (request, response, next) => {
+    const clientId = readClientId(request, response); const id = parseResourceId(request.params.id); const query = parseMyWordbookWordsQuery(request.query);
+    if (!clientId) return;
+    if (!id || !query) { response.status(400).json(apiError("INVALID_WORD_PAGE_QUERY", "Word page query is invalid")); return; }
+    try { const page = await studyStore.listWordPage(clientId, id, query); if (!page) response.status(404).json(apiError("WORDBOOK_NOT_FOUND", "Wordbook was not found")); else response.status(200).json(page); } catch (error) { next(error); }
   });
   app.patch("/api/my/wordbooks/:id/words/:wordId", async (request, response, next) => {
     const clientId = readClientId(request, response); const wordbookId = parseResourceId(request.params.id); const wordId = parseWordId(request.params.wordId); const input = parseUpdateWord(request.body);

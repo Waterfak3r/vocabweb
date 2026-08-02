@@ -52,6 +52,18 @@ export interface CatalogWordsPage {
   pageSize: number;
   totalPages: number;
 }
+export interface MyWordbookWordsQuery { page: number; pageSize: number; q?: string; level?: WordLevel; }
+export interface MyWordbookWordsPage {
+  items: LearningQueueItem[];
+  /** Number of words matching the current search and proficiency filter. */
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+  /** Unfiltered wordbook size and proficiency counts keep the filter controls stable. */
+  totalWordCount: number;
+  levelCounts: LevelCounts;
+}
 export interface MyWordbook {
   id: string; title: string; description: string; sourceCatalogId?: string;
   /** Immutable public version copied when this wordbook was joined. */
@@ -561,6 +573,8 @@ export interface StudyStore {
   deleteMyWordbook(clientId: string, id: string): Promise<boolean>;
   restoreMyWordbook(clientId: string, id: string): Promise<MyWordbookCard | null>;
   listWords(clientId: string, id: string, status?: WordLearningStatus): Promise<LearningQueueItem[] | null>;
+  /** Server-filtered private words; search and level filtering happen before slicing the page. */
+  listWordPage(clientId: string, id: string, query: MyWordbookWordsQuery): Promise<MyWordbookWordsPage | null>;
   /** Exact normalized lookup across live private wordbooks; the most recently updated book wins. */
   findPersonalWord(clientId: string, word: string): Promise<StudyWordEntry | null>;
   addWordToMyWordbook(clientId: string, wordbookId: string, entry: StudyWordEntry): Promise<{ word: LearningQueueItem; created: boolean } | null>;

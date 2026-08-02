@@ -54,6 +54,14 @@ import {
 } from '../data/pronunciationPreferences'
 import { wordbookCsvFilename, wordbookToCsv } from '../data/wordbookExport'
 import { IMPORT_DRAFT_QUERY_PARAM } from '../data/importDraftStatus'
+import { getStudyClientId } from '../data/studyApi'
+import {
+  invalidateWordbookStudyCache,
+  readCachedWordbookDashboard,
+  readCachedWordbookWords,
+  writeCachedWordbookDashboard,
+  writeCachedWordbookWords,
+} from '../data/wordbookStudyCache'
 import { useModalDialog } from '../hooks/useModalDialog'
 import {
   DEFAULT_REVIEW_SCHEDULE,
@@ -264,6 +272,7 @@ export function WordbookPage() {
   const [notice, setNotice] = useState('')
   const [loading, setLoading] = useState(true)
   const api = getWorkspaceApi()
+  const [cacheClientId] = useState(() => getStudyClientId())
   const [dashboard, setDashboard] = useState<StudyDashboard | null>(null)
   const [remoteEntries, setRemoteEntries] = useState<WorkspaceBook['entries'] | null>(null)
   const [dashboardLoading, setDashboardLoading] = useState(false)
@@ -301,6 +310,7 @@ export function WordbookPage() {
     () => readPronunciationPreferences(),
   )
   const dashboardRequest = useRef(0)
+  const loadedEntriesWordbookId = useRef<string | null>(null)
   const studyRefreshTimer = useRef<number | null>(null)
   const recycleDialogRef = useModalDialog<HTMLElement>({
     open: recycleCandidate !== null,
@@ -446,37 +456,90 @@ export function WordbookPage() {
 
   useEffect(() => { void refreshMyWordbooks() }, [refreshMyWordbooks])
 
-  const refreshSelectedBook = useCallback(async (requestedWordbookId?: string) => {
+  const refreshSelectedBook = useCallback(async (
+    requestedWordbookId?: string,
+    refresh: 'cached' | 'dashboard' | 'all' = 'cached',
+  ) => {
     const requestId = ++dashboardRequest.current
     const wordbookId = requestedWordbookId ?? selectedBook?.id
     if (!api || !wordbookId) {
       setDashboard(null)
       setRemoteEntries(null)
+      loadedEntriesWordbookId.current = null
       setDashboardLoading(false)
       return false
     }
-    // Retain same-book figures during a live study refresh, but never flash the previous book's
-    // dashboard after the learner switches wordbooks.
-    setDashboard((current) => current?.wordbook.id === wordbookId ? current : null)
-    setDashboardLoading(true)
-    try {
-      const [nextDashboard, words] = await Promise.all([
-        api.getDashboard(wordbookId),
-        api.listWords(wordbookId),
-      ])
-      if (dashboardRequest.current !== requestId) return false
-      setDashboard(nextDashboard)
-      setRemoteEntries(words)
-      return true
-    } catch {
-      if (dashboardRequest.current !== requestId) return false
-      setDashboard(null)
-      setNotice('词本详情加载失败，请稍后重试。')
-      return false
-    } finally {
-      if (dashboardRequest.current === requestId) setDashboardLoading(false)
+
+    const forceDashboard = refresh === 'dashboard' || refresh === 'all'
+    const forceWords = refresh === 'all'
+    if (forceDashboard || forceWords) {
+      invalidateWordbookStudyCache(cacheClientId, wordbookId, undefined, {
+        dashboard: forceDashboard,
+        words: forceWords,
+      })
     }
-  }, [api, selectedBook?.id])
+    const cachedDashboard = forceDashboard ? null : readCachedWordbookDashboard(cacheClientId, wordbookId)
+    const cachedWords = forceWords ? null : readCachedWordbookWords(cacheClientId, wordbookId)
+    const retainLoadedWords = refresh === 'dashboard' && loadedEntriesWordbookId.current === wordbookId
+
+    // Switch all four dashboard-backed cards as one snapshot. A cache hit never
+    // falls through to a loading placeholder, while a miss cannot flash another book.
+    setDashboard((current) => cachedDashboard ?? (current?.wordbook.id === wordbookId ? current : null))
+    setDashboardLoading(!cachedDashboard)
+    if (cachedWords) {
+      setRemoteEntries(cachedWords)
+      loadedEntriesWordbookId.current = wordbookId
+    } else if (loadedEntriesWordbookId.current !== wordbookId) {
+      setRemoteEntries(null)
+      loadedEntriesWordbookId.current = null
+    }
+
+    if (cachedDashboard && (cachedWords || retainLoadedWords)) return true
+
+    let dashboardSynced = Boolean(cachedDashboard)
+    let wordsSynced = Boolean(cachedWords) || retainLoadedWords
+    let dashboardFailed = false
+    let wordsFailed = false
+
+    const dashboardTask = cachedDashboard
+      ? Promise.resolve()
+      : api.getDashboard(wordbookId)
+          .then((nextDashboard) => {
+            if (dashboardRequest.current !== requestId) return
+            writeCachedWordbookDashboard(cacheClientId, wordbookId, nextDashboard)
+            setDashboard(nextDashboard)
+            dashboardSynced = true
+          })
+          .catch(() => { dashboardFailed = true })
+          .finally(() => {
+            if (dashboardRequest.current === requestId) setDashboardLoading(false)
+          })
+
+    // The large word payload is intentionally independent: dashboard, recent
+    // activity, calendar and streak render as soon as their much smaller request ends.
+    const wordsTask = cachedWords || retainLoadedWords
+      ? Promise.resolve()
+      : api.listWords(wordbookId)
+          .then((words) => {
+            if (dashboardRequest.current !== requestId) return
+            writeCachedWordbookWords(cacheClientId, wordbookId, words)
+            setRemoteEntries(words)
+            loadedEntriesWordbookId.current = wordbookId
+            wordsSynced = true
+          })
+          .catch(() => { wordsFailed = true })
+
+    await Promise.all([dashboardTask, wordsTask])
+    if (dashboardRequest.current !== requestId) return false
+    if (dashboardFailed || wordsFailed) {
+      setNotice(dashboardFailed && wordsFailed
+        ? '词本详情加载失败，请稍后重试。'
+        : dashboardFailed
+          ? '学习数据加载失败，词条仍可使用。'
+          : '词条加载失败，学习数据已恢复。')
+    }
+    return dashboardSynced && wordsSynced
+  }, [api, cacheClientId, selectedBook?.id])
 
   useEffect(() => { void refreshSelectedBook() }, [refreshSelectedBook])
 
@@ -486,7 +549,7 @@ export function WordbookPage() {
     if (studyRefreshTimer.current !== null) window.clearTimeout(studyRefreshTimer.current)
     studyRefreshTimer.current = window.setTimeout(() => {
       studyRefreshTimer.current = null
-      void refreshSelectedBook(wordbookId)
+      void refreshSelectedBook(wordbookId, 'dashboard')
     }, 120)
   }, [refreshSelectedBook, selectedBook?.id])
 
@@ -499,7 +562,6 @@ export function WordbookPage() {
 
   useEffect(() => {
     if (!selectedBook) return
-    setRemoteEntries(null)
     setCategoryDraft(selectedBook.category ?? '')
     setCategoryEditing(false)
     const resolvedPreferences = selectedBook.studyPreferences ?? readStudyPreferences(selectedBook.id)
@@ -555,7 +617,7 @@ export function WordbookPage() {
     setStudyMode(null)
     await Promise.all([
       refreshMyWordbooks(selectedBook.id),
-      refreshSelectedBook(selectedBook.id),
+      refreshSelectedBook(selectedBook.id, 'all'),
     ])
   }
 
@@ -571,7 +633,7 @@ export function WordbookPage() {
     try {
       await api.updateMyWordbook(selectedBook.id, { reviewSchedule: next })
       await refreshMyWordbooks(selectedBook.id)
-      await refreshSelectedBook()
+      await refreshSelectedBook(undefined, 'all')
       setNotice(isDefaultReviewSchedule(next) ? '已恢复默认遗忘曲线。' : '自定义复习方案已保存。')
       return true
     } catch {
@@ -637,7 +699,7 @@ export function WordbookPage() {
     const existed = books.some((book) => book.id === created.id)
     const [listSynced, detailSynced] = await Promise.all([
       refreshMyWordbooks(created.id),
-      refreshSelectedBook(created.id),
+      refreshSelectedBook(created.id, 'all'),
     ])
     setNotice(listSynced && detailSynced
       ? existed ? `已更新「${created.title}」。` : `已创建「${created.title}」。`
@@ -646,14 +708,10 @@ export function WordbookPage() {
 
   async function saveManagedWord(id: string, patch: WordbookWordPatch) {
     if (!api || !selectedBook) return
-    const current = activeBook.entries.find((entry) => entry.id === id)
     setWordSaving(true)
     try {
-      await api.updateWord(selectedBook.id, id, {
-        ...patch,
-        refresh: Boolean(current && current.word !== patch.word),
-      })
-      await refreshSelectedBook()
+      await api.updateWord(selectedBook.id, id, patch)
+      await refreshSelectedBook(undefined, 'all')
       await refreshMyWordbooks(selectedBook.id)
       setNotice(`已更新「${patch.word}」，未重新处理其他词条。`)
     } finally {
@@ -661,16 +719,14 @@ export function WordbookPage() {
     }
   }
 
-  async function markManagedWordKnown(id: string) {
+  async function markManagedWordKnown(_id: string, word: string) {
     if (!api || !selectedBook) return
-    const entry = activeBook.entries.find((item) => item.id === id)
-    if (!entry) return
     setWordSaving(true)
     try {
-      await api.recordStudyEvent({ kind: 'mark', word: entry.word, wordbookId: selectedBook.id, level: 4 })
-      await refreshSelectedBook()
+      await api.recordStudyEvent({ kind: 'mark', word, wordbookId: selectedBook.id, level: 4 })
+      await refreshSelectedBook(undefined, 'all')
       await refreshMyWordbooks(selectedBook.id)
-      setNotice(`已把「${entry.word}」标为精通。`)
+      setNotice(`已把「${word}」标为精通。`)
     } finally {
       setWordSaving(false)
     }
@@ -684,7 +740,7 @@ export function WordbookPage() {
       setRemoteEntries((current) => current?.filter((entry) => !removed.has(entry.id)) ?? current)
     }
     const [detailsSynced, listSynced] = await Promise.all([
-      refreshSelectedBook(selectedBook.id),
+      refreshSelectedBook(selectedBook.id, 'all'),
       refreshMyWordbooks(selectedBook.id),
     ])
     const label = action === 'refresh-meanings' ? '释义更新' : action === 'mark-mastered' ? '批量标熟' : '批量删除'
@@ -704,6 +760,7 @@ export function WordbookPage() {
     if (!api) return
     try {
       await api.deleteMyWordbook(book.id)
+      invalidateWordbookStudyCache(cacheClientId, book.id)
       setRecycleCandidate(null)
       await refreshMyWordbooks()
       setNotice('')
@@ -727,6 +784,7 @@ export function WordbookPage() {
     if (!api) return
     try {
       await api.restoreMyWordbook(book.id)
+      invalidateWordbookStudyCache(cacheClientId, book.id)
       setRemoteTrash((items) => items.filter((item) => item.id !== book.id))
       await refreshMyWordbooks(book.id)
       setNotice('')
@@ -740,6 +798,7 @@ export function WordbookPage() {
     if (!window.confirm(`彻底删除「${book.title}」？词本和它的学习记录将无法恢复。`)) return
     try {
       await api.purgeMyWordbook(book.id)
+      invalidateWordbookStudyCache(cacheClientId, book.id)
       setRemoteTrash((items) => items.filter((item) => item.id !== book.id))
       setNotice('词本已彻底删除。')
     } catch {
@@ -996,7 +1055,7 @@ export function WordbookPage() {
           </div>
           <div className="overview-actions">
             <button type="button" className="overview-plan-settings" onClick={() => setSettingsSection('plan')}><WorkspaceIcon name="settings" />学习计划</button>
-            <button type="button" disabled={!wordCount || dashboardLoading} onClick={() => openWordManager()}><WorkspaceIcon name="edit" />浏览词条</button>
+            <button type="button" disabled={!wordCount || !api} onClick={() => openWordManager()}><WorkspaceIcon name="edit" />浏览词条</button>
             {selectedBook.sourceCatalogId && <button type="button" disabled={authLoading} onClick={() => { if (!user) { setNotice('请先通过页头账号入口登录，再提交改进。'); return } setContributionBookId(selectedBook.id) }}><WorkspaceIcon name="edit" />提交改进</button>}
             <button type="button" disabled={remoteEntries === null} onClick={exportBookFile}><WorkspaceIcon name="book" />导出 CSV</button>
             <button type="button" onClick={importBookFile}><WorkspaceIcon name="plus" />导入文件</button>
@@ -1122,8 +1181,10 @@ export function WordbookPage() {
         }}
       />}
       {showWordManager && <WordManagerDialog
+        api={api}
+        wordbookId={selectedBook.id}
         title={selectedBook.title}
-        entries={activeBook.entries}
+        totalWords={wordCount}
         initialLevel={wordManagerLevel}
         saving={wordSaving}
         onClose={() => setShowWordManager(false)}
