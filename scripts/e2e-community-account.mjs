@@ -98,7 +98,13 @@ function watchPage(page, label, errors) {
       "/api/account/password",
       "/api/account",
     ].some((path) => request.url().endsWith(path));
-    if (completedMutation && request.failure()?.errorText === "net::ERR_ABORTED") return;
+    // Closing a study surface intentionally tears down its Audio element. If
+    // the same-origin pronunciation redirect is still resolving, Chromium
+    // reports that media cancellation as an aborted request.
+    const requestUrl = new URL(request.url());
+    const cancelledPronunciation = request.method() === "GET"
+      && /^\/api\/pronunciations\/[^/]+\/audio$/.test(requestUrl.pathname);
+    if ((completedMutation || cancelledPronunciation) && request.failure()?.errorText === "net::ERR_ABORTED") return;
     errors.push(`[${label}] requestfailed: ${request.method()} ${request.url()} (${request.failure()?.errorText ?? "unknown"})`);
   });
 }
@@ -611,7 +617,14 @@ async function main() {
         }
       }
     }
-    await rm(tempDir, { recursive: true, force: true });
+    await rm(tempDir, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    }).catch((error) => {
+      console.warn(`E2E 临时目录清理失败：${error.message}`);
+    });
   }
 }
 
