@@ -7,6 +7,7 @@ import { day, EMPTY, ladderEventLevels, migrate, reviewDue, reviewLane, type Sta
 import {
   createPrivateStateSchema,
   loadPrivateClients,
+  migrateImportDraftEntriesIfNeeded,
   migratePrivateStateIfNeeded,
   STUDY_STATE_GENERATION_KEY,
   syncPrivateClients,
@@ -127,6 +128,7 @@ export class SqliteStudyStore extends BaseStore {
       // a legacy private-state document still needs a long write transaction.
       await this.importLegacyJsonIfNeeded(db);
       migratePrivateStateIfNeeded(db);
+      migrateImportDraftEntriesIfNeeded(db);
       await this.refreshBeforeOperation();
       await this.warmCachedState();
       db.prepare("SELECT 1 AS ready").get();
@@ -328,6 +330,7 @@ export class SqliteStudyStore extends BaseStore {
     const db = await this.open();
     await this.importLegacyJsonIfNeeded(db);
     migratePrivateStateIfNeeded(db);
+    migrateImportDraftEntriesIfNeeded(db);
 
     const readSnapshot = db.transaction(() => {
       const clients = loadPrivateClients(db);

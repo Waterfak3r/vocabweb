@@ -23,7 +23,7 @@ Production creates `SqliteStudyStore` and `SqliteEngagementStore` against the sa
 - `wordbooks` stores small metadata records. `wordbook_words` stores order, the stable learner-facing id, the base entry revision, and an optional wordbook-local override. Editing one private copy cannot leak into another wordbook.
 - `study_events` is the ordered learning history and `study_states` is its indexed current projection. Answering a card appends one event and upserts only the affected projection row.
 - `study_rounds`, `study_round_word_ids`, `study_round_tasks`, `study_round_flags`, and `study_round_operations` keep resumable queues and operation idempotency as rows rather than one queue JSON document.
-- import draft metadata and entries are split between `import_drafts` and `import_draft_entries`, so a large recoverable import does not enlarge a client document.
+- import draft metadata and entries are split between `import_drafts` and `import_draft_entries`, so a large recoverable import does not enlarge a client document. Resolved draft entries reference the same content-addressed `dictionary_entries` rows as committed words (`import_draft_entries.entry_id`), so identical content is stored once across wordbooks and drafts.
 - `metadata` records persistence version information and one-time import state.
 
 `SqliteEngagementStore` owns relational tables for search events, feedback, site settings, messages, and unread notifications.

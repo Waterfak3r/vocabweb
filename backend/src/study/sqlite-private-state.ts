@@ -1,6 +1,6 @@
-import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 import { normalizeWord } from "../words/normalize.js";
+import { canonicalEntry, entryHash } from "./entry-id.js";
 import {
   defaultClient,
   migrate,
@@ -12,6 +12,7 @@ import {
 } from "./ladder.js";
 import type {
   ImportDraft,
+  ImportDraftEntry,
   LearningEvent,
   MyWordbook,
   StudyRound,
@@ -22,6 +23,7 @@ import type {
 
 export const PRIVATE_STATE_MIGRATION_KEY = "normalized_private_state_v1";
 export const PRIVATE_SCHEMA_MIGRATION_KEY = "normalized_private_schema_v2";
+export const IMPORT_DRAFT_ENTRY_MIGRATION_KEY = "normalized_import_draft_entries_v1";
 export const STUDY_STATE_GENERATION_KEY = "study_state_generation";
 
 type ClientRow = { client_id: string; data_json: string; study_settings_json: string | null };
@@ -37,7 +39,7 @@ type WordRow = {
 };
 type OwnedJsonRow = { client_id: string; data_json: string };
 type DraftRow = { id: string; client_id: string; data_json: string };
-type DraftEntryRow = { client_id: string; draft_id: string; data_json: string };
+type DraftEntryRow = { client_id: string; draft_id: string; entry_id: string | null; data_json: string; entry_json: string | null };
 type RoundRow = {
   id: string;
   client_id: string;
@@ -88,28 +90,6 @@ function wordEntry(word: WordbookWord): StudyWordEntry {
   return entry;
 }
 
-function canonicalJson(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map((item) => item === undefined ? null : canonicalJson(item));
-  if (!value || typeof value !== "object") return value;
-  const result: Record<string, unknown> = {};
-  for (const key of Object.keys(value).sort()) {
-    const item = (value as Record<string, unknown>)[key];
-    if (item !== undefined) result[key] = canonicalJson(item);
-  }
-  return result;
-}
-
-function canonicalEntry(entry: StudyWordEntry): StudyWordEntry {
-  // Dictionary providers have historically attached attribution fields beyond the
-  // study DTO (for example sources, availableLanguages, and meaning.sourceId).
-  // Keep every JSON field while sorting keys so content-addressed ids stay stable.
-  return canonicalJson(entry) as StudyWordEntry;
-}
-
-function entryHash(entry: StudyWordEntry): string {
-  return createHash("sha256").update(JSON.stringify(canonicalEntry(entry))).digest("hex");
-}
-
 function wordbookMetadata(book: MyWordbook): Omit<MyWordbook, "words"> {
   const { words: _words, ...metadata } = book;
   return metadata;
@@ -117,6 +97,11 @@ function wordbookMetadata(book: MyWordbook): Omit<MyWordbook, "words"> {
 
 function draftMetadata(draft: ImportDraft): Omit<ImportDraft, "entries"> {
   const { entries: _entries, ...metadata } = draft;
+  return metadata;
+}
+
+function draftEntryMetadata(entry: ImportDraftEntry): Omit<ImportDraftEntry, "entry"> {
+  const { entry: _entry, ...metadata } = entry;
   return metadata;
 }
 
@@ -289,6 +274,7 @@ export function createPrivateStateSchema(db: Database.Database): void {
       id TEXT NOT NULL,
       position INTEGER NOT NULL,
       status TEXT NOT NULL,
+      entry_id TEXT REFERENCES dictionary_entries(id),
       data_json TEXT NOT NULL,
       PRIMARY KEY (client_id, draft_id, id),
       FOREIGN KEY (client_id, draft_id) REFERENCES import_drafts(client_id, id) ON DELETE CASCADE
@@ -362,6 +348,17 @@ export function createPrivateStateSchema(db: Database.Database): void {
       ON study_round_operations(client_id, round_id, position);
   `);
   ensureWordbookWordScopedPrimaryKey(db);
+  ensureImportDraftEntryColumn(db);
+}
+
+/** Upgrade databases created before import drafts referenced dictionary entries. */
+function ensureImportDraftEntryColumn(db: Database.Database): void {
+  const columns = db.prepare("PRAGMA table_info(import_draft_entries)").all() as Array<{ name: string }>;
+  if (!columns.some((column) => column.name === "entry_id")) {
+    db.exec("ALTER TABLE import_draft_entries ADD COLUMN entry_id TEXT REFERENCES dictionary_entries(id)");
+  }
+  // The index references the column, so it is created only after any upgrade above.
+  db.exec("CREATE INDEX IF NOT EXISTS import_draft_entries_entry_idx ON import_draft_entries(entry_id, client_id, draft_id)");
 }
 
 function wordbookWordPrimaryKey(db: Database.Database): string[] {
@@ -480,6 +477,39 @@ export function migratePrivateStateIfNeeded(db: Database.Database): void {
   migrateRows.immediate();
 }
 
+/**
+ * Convert draft entries written before content addressing to `entry_id` references once.
+ * Content moves from `data_json` into `dictionary_entries`; the marker and row updates
+ * commit atomically and the update is restart-safe.
+ */
+export function migrateImportDraftEntriesIfNeeded(db: Database.Database): void {
+  if (db.prepare("SELECT 1 FROM metadata WHERE key = ?").get(IMPORT_DRAFT_ENTRY_MIGRATION_KEY)) return;
+  const rows = db.prepare(`
+    SELECT e.client_id, e.draft_id, e.id, e.data_json, d.updated_at
+    FROM import_draft_entries e
+    JOIN import_drafts d ON d.client_id = e.client_id AND d.id = e.draft_id
+    WHERE e.entry_id IS NULL
+  `).all() as Array<{ client_id: string; draft_id: string; id: string; data_json: string; updated_at: string }>;
+  const update = db.prepare("UPDATE import_draft_entries SET entry_id = ?, data_json = ? WHERE client_id = ? AND draft_id = ? AND id = ?");
+  const migrateRows = db.transaction(() => {
+    if (db.prepare("SELECT 1 FROM metadata WHERE key = ?").get(IMPORT_DRAFT_ENTRY_MIGRATION_KEY)) return;
+    let mapped = 0;
+    for (const row of rows) {
+      const entry = parseJson<ImportDraftEntry>(row.data_json);
+      if (!entry.entry?.word) continue;
+      const entryId = ensureDictionaryEntry(db, entry.entry, row.updated_at);
+      update.run(entryId, JSON.stringify(draftEntryMetadata(entry)), row.client_id, row.draft_id, row.id);
+      mapped += 1;
+    }
+    db.prepare("INSERT INTO metadata(key, value) VALUES (?, ?)").run(
+      IMPORT_DRAFT_ENTRY_MIGRATION_KEY,
+      JSON.stringify({ status: "complete", entries: rows.length, mapped }),
+    );
+    if (mapped > 0) advanceStudyStateGeneration(db);
+  });
+  migrateRows.immediate();
+}
+
 /** Reconstruct BaseStore's compatibility view from normalized private rows. */
 export function loadPrivateClients(db: Database.Database): Record<string, ClientData> {
   const clients: Record<string, ClientData> = {};
@@ -519,8 +549,17 @@ export function loadPrivateClients(db: Database.Database): Record<string, Client
     (clients[row.client_id] ??= defaultClient()).drafts.push(draft);
     drafts.set(ownedKey(row.client_id, row.id), draft);
   }
-  for (const row of db.prepare("SELECT client_id, draft_id, data_json FROM import_draft_entries ORDER BY client_id, draft_id, position").all() as DraftEntryRow[]) {
-    drafts.get(ownedKey(row.client_id, row.draft_id))?.entries.push(parseJson(row.data_json));
+  for (const row of db.prepare(`
+    SELECT e.client_id, e.draft_id, e.entry_id, e.data_json, d.data_json AS entry_json
+    FROM import_draft_entries e
+    LEFT JOIN dictionary_entries d ON d.id = e.entry_id
+    ORDER BY e.client_id, e.draft_id, e.position
+  `).all() as DraftEntryRow[]) {
+    const entry = parseJson<ImportDraftEntry>(row.data_json);
+    // Mapped rows store metadata only and resolve content from the dictionary join;
+    // legacy rows carry the full entry in data_json and have no entry_id.
+    if (row.entry_id && row.entry_json) entry.entry = parseJson<StudyWordEntry>(row.entry_json);
+    drafts.get(ownedKey(row.client_id, row.draft_id))?.entries.push(entry);
   }
 
   const rounds = new Map<string, StudyRound>();
@@ -889,7 +928,7 @@ function syncDrafts(db: Database.Database, clientId: string, before: ImportDraft
         dataJson: JSON.stringify(metadata),
       });
     }
-    if (!previous || previous.entries !== draft.entries) syncDraftEntries(db, clientId, draft.id, previous?.entries ?? [], draft.entries);
+    if (!previous || previous.entries !== draft.entries) syncDraftEntries(db, clientId, draft.id, draft.updatedAt, previous?.entries ?? [], draft.entries);
   }
   const remove = db.prepare("DELETE FROM import_drafts WHERE client_id = ? AND id = ?");
   for (const id of old.keys()) if (!current.has(id)) remove.run(clientId, id);
@@ -899,6 +938,7 @@ function syncDraftEntries(
   db: Database.Database,
   clientId: string,
   draftId: string,
+  createdAt: string,
   before: ImportDraft["entries"],
   after: ImportDraft["entries"],
 ): void {
@@ -906,18 +946,29 @@ function syncDraftEntries(
   const current = keyed(after, (entry) => entry.id);
   const oldPositions = new Map(before.map((entry, position) => [entry.id, position]));
   const upsert = db.prepare(`
-    INSERT INTO import_draft_entries(client_id, draft_id, id, position, status, data_json)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO import_draft_entries(client_id, draft_id, id, position, status, entry_id, data_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(client_id, draft_id, id) DO UPDATE SET
       position = excluded.position,
       status = excluded.status,
+      entry_id = excluded.entry_id,
       data_json = excluded.data_json
   `);
   for (const [position, entry] of after.entries()) {
     const previous = old.get(entry.id);
     if (previous === entry && oldPositions.get(entry.id) === position) continue;
     if (previous && oldPositions.get(entry.id) === position && same(previous, entry)) continue;
-    upsert.run(clientId, draftId, entry.id, position, entry.status, JSON.stringify(entry));
+    // Resolved entries store their content once in dictionary_entries and keep only
+    // metadata here; unresolved or unmappable entries carry everything in data_json.
+    let entryId: string | null = null;
+    let dataJson: string;
+    if (entry.entry?.word) {
+      entryId = ensureDictionaryEntry(db, entry.entry, createdAt);
+      dataJson = JSON.stringify(draftEntryMetadata(entry));
+    } else {
+      dataJson = JSON.stringify(entry);
+    }
+    upsert.run(clientId, draftId, entry.id, position, entry.status, entryId, dataJson);
   }
   const remove = db.prepare("DELETE FROM import_draft_entries WHERE client_id = ? AND draft_id = ? AND id = ?");
   for (const id of old.keys()) if (!current.has(id)) remove.run(clientId, draftId, id);

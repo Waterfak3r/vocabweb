@@ -9,6 +9,7 @@ import { test, type TestContext } from "node:test";
 import Database from "better-sqlite3";
 import { createApp } from "../src/app.js";
 import { SqliteEngagementStore } from "../src/engagement/store.js";
+import { entryIdOf } from "../src/study/entry-id.js";
 import type { State } from "../src/study/ladder.js";
 import {
   PRIVATE_SCHEMA_MIGRATION_KEY,
@@ -906,4 +907,73 @@ test("engagement writes do not invalidate the cached study state", async (t) => 
   reader.close();
   writer.close();
   engagement.close();
+});
+
+test("import draft entries reference dictionary content instead of embedding it", async (t) => {
+  const files = await fixture(t);
+  const store = new SqliteStudyStore(files.databaseFile);
+  const alpha = entry("alpha");
+  try {
+    const created = await store.createImportDrafts(CLIENT, { title: "Import", lines: [{ line: 1, word: "alpha" }] });
+    const draft = created[0]!;
+    await store.resolveImportDraftEntries(CLIENT, draft.id, [{ id: draft.entries[0]!.id, status: "ready", entry: alpha }]);
+
+    const db = new Database(files.databaseFile);
+    try {
+      const row = db.prepare("SELECT entry_id, data_json FROM import_draft_entries").get() as { entry_id: string | null; data_json: string };
+      assert.equal(row.entry_id, entryIdOf(alpha));
+      const metadata = JSON.parse(row.data_json) as { word: string; entry?: unknown };
+      assert.equal(metadata.word, "alpha");
+      assert.equal("entry" in metadata, false, "resolved content is stored via entry_id, not data_json");
+      const stored = db.prepare("SELECT data_json FROM dictionary_entries WHERE id = ?").get(entryIdOf(alpha)) as { data_json: string };
+      assert.deepEqual(JSON.parse(stored.data_json), alpha);
+    } finally { db.close(); }
+
+    // The compatibility view reconstructs the full entry for the API/domain layer.
+    const reloaded = await store.getImportDraft(CLIENT, draft.id);
+    assert.ok(reloaded);
+    assert.deepEqual(reloaded.entries[0]?.entry, alpha);
+  } finally { store.close(); }
+});
+
+test("legacy import draft entries are backfilled to entry_id references", async (t) => {
+  const files = await fixture(t);
+  const store = new SqliteStudyStore(files.databaseFile);
+  const alpha = entry("alpha");
+  try {
+    const created = await store.createImportDrafts(CLIENT, { title: "Import", lines: [{ line: 1, word: "alpha" }] });
+    const draft = created[0]!;
+    await store.resolveImportDraftEntries(CLIENT, draft.id, [{ id: draft.entries[0]!.id, status: "ready", entry: alpha }]);
+  } finally { store.close(); }
+
+  // Simulate a database from before content addressing: the entry carries the full
+  // content in data_json, has no entry_id, and the migration marker is absent.
+  const legacyEntry = { id: "legacy-1", line: 1, word: "alpha", status: "ready", entry: alpha };
+  const db = new Database(files.databaseFile);
+  db.exec(`
+    DELETE FROM import_draft_entries;
+    DELETE FROM import_drafts;
+    DELETE FROM metadata WHERE key = 'normalized_import_draft_entries_v1';
+  `);
+  db.prepare("INSERT INTO import_drafts(id, client_id, position, group_id, status, updated_at, data_json) VALUES (?, ?, 0, 'group-legacy', 'pending', ?, ?)")
+    .run("draft-legacy", CLIENT, "2026-01-01T00:00:00.000Z",
+      JSON.stringify({ id: "draft-legacy", title: "Legacy", description: "", batchIndex: 1, totalBatches: 1, status: "pending", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" }));
+  db.prepare("INSERT INTO import_draft_entries(client_id, draft_id, id, position, status, data_json) VALUES (?, ?, ?, 0, 'ready', ?)")
+    .run(CLIENT, "draft-legacy", "legacy-1", JSON.stringify(legacyEntry));
+  db.close();
+
+  // Re-opening the store runs the one-time backfill and maps the legacy row.
+  const reopened = new SqliteStudyStore(files.databaseFile);
+  try {
+    const draft = await reopened.getImportDraft(CLIENT, "draft-legacy");
+    assert.ok(draft);
+    assert.deepEqual(draft.entries[0]?.entry, alpha);
+
+    const inspect = new Database(files.databaseFile);
+    try {
+      const row = inspect.prepare("SELECT entry_id, data_json FROM import_draft_entries").get() as { entry_id: string | null; data_json: string };
+      assert.equal(row.entry_id, entryIdOf(alpha));
+      assert.equal("entry" in JSON.parse(row.data_json), false, "backfill strips content from data_json");
+    } finally { inspect.close(); }
+  } finally { reopened.close(); }
 });

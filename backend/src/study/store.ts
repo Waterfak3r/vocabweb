@@ -20,6 +20,7 @@ import {
   EMPTY, eventsByWordbook, ladderEventLevels, ladderOf, ladderReplay, ladderStates, migrate, progressFromStates, queueItem, replayLadder, reviewDue, reviewLane, reviewScheduleOf,
   sameMeanings, shiftDay, studiedWord, toCatalogWords, toWordbookWords, visibleTo,
 } from "./ladder.js";
+import { entryIdOf } from "./entry-id.js";
 import type { ClientData, State } from "./ladder.js";
 import type {
   AccountAvatar, AccountAvatarInput, AccountStudyProfile, AccountUser, BatchWordInput, BatchWordResult, CatalogAuthor, CatalogCard, CatalogConflict, CatalogContribution, CatalogContributionView,
@@ -312,14 +313,55 @@ export abstract class BaseStore implements StudyStore {
     const avatar = state.userAvatars[user.id];
     return {
       account: { username: user.username, role: user.role, createdAt: user.createdAt, ...(avatar ? { avatar: clone(avatar) } : {}) },
-      collection: clone(this.clientView(state, user.clientId)),
-      catalogUploads: clone(state.catalog.filter((book) => book.authorUserId === user.id)),
-      contributions: clone(state.contributions.filter((contribution) => contribution.contributorUserId === user.id)),
-      revisions: clone(state.revisions.filter(
-        (revision) => revision.authorUserId === user.id || revision.committerUserId === user.id,
-      )),
+      ...this.mappedExport(state, user.clientId, user.id),
     };
   }); }
+
+  /**
+   * Build the export without re-embedding word content. Word content is content-addressed
+   * by the same `dictionary_entries` identity used by SQLite persistence, so wordbook words
+   * reference `entryId` values into a single deduplicated `dictionary` section instead of
+   * carrying full copies. Catalog uploads keep metadata and their `sourceWordbookId` (the
+   * words live in the user's `collection`), and revision changes keep only the diff keys.
+   */
+  private mappedExport(state: State, clientId: string, userId: string) {
+    const dictionary: Record<string, StudyWordEntry> = {};
+    const referenceWord = (word: WordbookWord): { id: string; addedAt: string; entryId: string } => {
+      const { id, addedAt, ...entry } = word;
+      const entryId = entryIdOf(entry);
+      dictionary[entryId] = entry;
+      return { id, addedAt, entryId };
+    };
+    const referenceDraftEntry = (entry: ImportDraftEntry) => {
+      if (!entry.entry) return clone(entry);
+      const entryId = entryIdOf(entry.entry);
+      dictionary[entryId] = entry.entry;
+      const { entry: _entry, ...metadata } = clone(entry);
+      return { ...metadata, entryId };
+    };
+    const client = this.clientView(state, clientId);
+    const wordbooks = clone(client.wordbooks).map((book) => ({ ...book, words: book.words.map(referenceWord) }));
+    const drafts = clone(client.drafts).map((draft) => ({ ...draft, entries: draft.entries.map(referenceDraftEntry) }));
+    const catalogUploads = state.catalog
+      .filter((book) => book.authorUserId === userId)
+      .map((book) => {
+        const { words: _words, ...metadata } = clone(book);
+        return metadata;
+      });
+    const revisions = state.revisions
+      .filter((revision) => revision.authorUserId === userId || revision.committerUserId === userId)
+      .map((revision) => ({
+        ...clone(revision),
+        changes: revision.changes.map((change) => ({ kind: change.kind, key: change.key })),
+      }));
+    return {
+      collection: { ...clone(client), wordbooks, drafts },
+      dictionary,
+      catalogUploads,
+      contributions: clone(state.contributions.filter((contribution) => contribution.contributorUserId === userId)),
+      revisions,
+    };
+  }
   async deleteUser(userId: string): Promise<boolean> { return await this.mutate((state) => {
     const index = state.users.findIndex((item) => item.id === userId);
     if (index < 0) return false;
