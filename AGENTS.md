@@ -59,13 +59,14 @@ This project runs inside **Herdr**. The main agent is **Codex**; coordination ha
 
 ### Division of labor
 - **You (Codex sol max)**: own the plan and the coordination. Design the approach, split work, integrate results, and decide final calls. Implement directly only when the plan is so intricate that handing it off costs more than writing it.
-- **Codex subagents (luna)**: the implementers. Give each a well-scoped implementation task with acceptance criteria and an output path; they write the code, you review and integrate.
+- **Codex subagents (luna)**: the implementers, spawned through Codex's native subagent mechanism (default model `gpt-5.6-luna`, not a Herdr pane). Give each a well-scoped implementation task with acceptance criteria and an output path; they write the code, you review and integrate.
 - **Claude Code (deepseek)**: delegate repetitive or independent work that suits a separate agent: frontend styling passes, cross-checking, mechanical rewrites, review sweeps, parallel experiments.
 
 ### Coordination rules
-- Start another agent only through Herdr: `herdr agent start <name> --kind claude --pane <pane-id>`; never spawn terminals behind the user's back.
+- Spawn luna implementers via Codex's native subagent mechanism; they live inside your process, not as Herdr panes, so do not use `herdr agent` for them.
+- For Claude Code, use Herdr: `herdr agent start <name> --kind claude --pane <pane-id>`; never spawn terminals behind the user's back.
 - Delegate only well-specified tasks with clear acceptance criteria and an output path; agents cannot read each other's context, so write the task down.
-- Check results with `herdr agent wait <name> --until idle` then `herdr agent read <name>`; surface anything unexpected to the user.
+- Check Claude Code results with `herdr agent wait <name> --until idle` then `herdr agent read <name>`; surface anything unexpected to the user.
 - **Claude Code panes are ephemeral**: close the pane once its task is done (`herdr pane close <pane-id>`), unless the user explicitly asked to keep it running.
 - You are the integrator: merge, reconcile, and report. Do not offload coordination or final decisions to subagents.
 - If a subagent reports a blocking issue, take it over yourself instead of bouncing it back.
