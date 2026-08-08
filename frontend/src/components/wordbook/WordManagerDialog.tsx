@@ -48,6 +48,7 @@ type Props = {
   totalWords: number
   initialLevel?: WordManagerLevelFilter
   saving?: boolean
+  returnFocus?: HTMLElement | null
   onClose: () => void
   onSave: (id: string, patch: WordbookWordPatch) => Promise<void>
   /** 标熟: marks the word 精通 (L4); adaptive long-term review can still schedule it later. */
@@ -131,6 +132,7 @@ export function WordManagerDialog({
   totalWords,
   initialLevel = 'all',
   saving = false,
+  returnFocus,
   onClose,
   onSave,
   onMarkKnown,
@@ -154,7 +156,12 @@ export function WordManagerDialog({
   const [batching, setBatching] = useState<BatchWordAction | null>(null)
   const [batchMessage, setBatchMessage] = useState('')
   const requestSequence = useRef(0)
-  const dialogRef = useModalDialog<HTMLElement>({ open: true, onClose, canClose: !saving && !batching })
+  const dialogRef = useModalDialog<HTMLElement>({
+    open: true,
+    onClose,
+    canClose: !saving && !batching,
+    returnFocus,
+  })
 
   useEffect(() => {
     const timer = window.setTimeout(() => {

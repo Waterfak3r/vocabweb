@@ -63,7 +63,7 @@ test("SQLite imports a legacy JSON document once when the database is empty", as
   inspection.close();
 });
 
-test("SQLite persists only the changed client row for a private collection mutation", async (t) => {
+test("SQLite persists only the new wordbook row for a private collection mutation", async (t) => {
   const files = await fixture(t);
   const store = new SqliteStudyStore(files.databaseFile);
   await store.createMyWordbook(CLIENT, { title: "First" });
@@ -74,6 +74,8 @@ test("SQLite persists only the changed client row for a private collection mutat
     CREATE TRIGGER audit_clients_insert AFTER INSERT ON clients BEGIN INSERT INTO write_audit VALUES ('clients', 'insert'); END;
     CREATE TRIGGER audit_clients_update AFTER UPDATE ON clients BEGIN INSERT INTO write_audit VALUES ('clients', 'update'); END;
     CREATE TRIGGER audit_clients_delete AFTER DELETE ON clients BEGIN INSERT INTO write_audit VALUES ('clients', 'delete'); END;
+    CREATE TRIGGER audit_wordbooks_insert AFTER INSERT ON wordbooks BEGIN INSERT INTO write_audit VALUES ('wordbooks', 'insert'); END;
+    CREATE TRIGGER audit_wordbooks_update AFTER UPDATE ON wordbooks BEGIN INSERT INTO write_audit VALUES ('wordbooks', 'update'); END;
     CREATE TRIGGER audit_users_update AFTER UPDATE ON users BEGIN INSERT INTO write_audit VALUES ('users', 'update'); END;
     CREATE TRIGGER audit_sessions_update AFTER UPDATE ON sessions BEGIN INSERT INTO write_audit VALUES ('sessions', 'update'); END;
     CREATE TRIGGER audit_catalog_update AFTER UPDATE ON catalog BEGIN INSERT INTO write_audit VALUES ('catalog', 'update'); END;
@@ -82,9 +84,10 @@ test("SQLite persists only the changed client row for a private collection mutat
   await store.createMyWordbook(CLIENT, { title: "Second" });
   assert.deepEqual(
     inspection.prepare("SELECT table_name, action FROM write_audit").all(),
-    [{ table_name: "clients", action: "update" }],
+    [{ table_name: "wordbooks", action: "insert" }],
   );
   assert.equal((inspection.prepare("SELECT COUNT(*) AS count FROM clients").get() as { count: number }).count, 1);
+  assert.equal((inspection.prepare("SELECT data_json FROM clients").get() as { data_json: string }).data_json, "{}");
   inspection.close();
   store.close();
 });
@@ -123,7 +126,7 @@ test("SQLite durably reloads synchronized wordbook and global study settings", a
   reopened.close();
 });
 
-test("SQLite persists round ids only and derives the current word after reopening", async (t) => {
+test("SQLite persists round queues as rows and derives the current word after reopening", async (t) => {
   const files = await fixture(t);
   const store = new SqliteStudyStore(files.databaseFile);
   const book = await store.createMyWordbook(CLIENT, {
@@ -141,10 +144,15 @@ test("SQLite persists round ids only and derives the current word after reopenin
   store.close();
 
   const inspection = new Database(files.databaseFile, { readonly: true });
-  const persisted = JSON.parse(
-    (inspection.prepare("SELECT data_json FROM clients WHERE client_id = ?").get(CLIENT) as { data_json: string }).data_json,
-  ) as { studyRounds: Array<Record<string, unknown>> };
-  assert.equal(Object.hasOwn(persisted.studyRounds[0]!, "currentWord"), false);
+  assert.deepEqual(
+    inspection.prepare("SELECT id, wordbook_id, revision FROM study_rounds WHERE client_id = ?").get(CLIENT),
+    { id: roundId, wordbook_id: book.id, revision: 0 },
+  );
+  assert.equal(
+    (inspection.prepare("SELECT COUNT(*) AS count FROM study_round_tasks WHERE round_id = ?").get(roundId) as { count: number }).count,
+    started.round.queue.length,
+  );
+  assert.equal((inspection.prepare("SELECT data_json FROM clients WHERE client_id = ?").get(CLIENT) as { data_json: string }).data_json, "{}");
   inspection.close();
 
   const reopened = new SqliteStudyStore(files.databaseFile);
@@ -402,7 +410,19 @@ test("SQLite online backups are complete and pass integrity checks", async (t) =
   const files = await fixture(t);
   const backupFile = path.join(files.directory, "backup", "study.sqlite");
   const store = new SqliteStudyStore(files.databaseFile);
-  await store.createMyWordbook(CLIENT, { title: "Backed up" });
+  const wordbook = await store.createMyWordbook(CLIENT, {
+    title: "Backed up",
+    words: [{ word: "durable", phonetic: "", source: "user", meanings: [{ pos: "adjective", definition: "able to last" }] }],
+  });
+  const round = await store.startStudyRound(CLIENT, { wordbookId: wordbook.id, mode: "new" });
+  assert.ok(round?.round.queue[0]);
+  const answered = await store.answerStudyRound(CLIENT, round!.round.id, {
+    taskId: round!.round.queue[0]!.id,
+    response: "vague",
+    operationId: "backup-operation",
+    revision: round!.round.revision,
+  });
+  assert.equal(answered.kind, "updated");
   const user = await store.createUser("BackupAvatar", "hash", CLIENT);
   assert.equal(user.kind, "created");
   if (user.kind !== "created") return;
@@ -413,7 +433,16 @@ test("SQLite online backups are complete and pass integrity checks", async (t) =
 
   const backup = new SqliteStudyStore(backupFile);
   assert.deepEqual((await backup.listMyWordbooks(CLIENT, false)).map((book) => book.title), ["Backed up"]);
+  assert.equal((await backup.getStudyRound(CLIENT, round!.round.id))?.processedOperationIds[0], "backup-operation");
+  assert.equal((await backup.getDashboard(CLIENT, wordbook.id))?.recentActivity.length, 1);
   assert.equal((await backup.getUserAvatar(user.user.id))?.dataBase64, AVATAR_BYTES.toString("base64"));
   await backup.checkHealth();
   backup.close();
+
+  const inspection = new Database(backupFile, { readonly: true });
+  assert.deepEqual(inspection.pragma("foreign_key_check"), []);
+  assert.equal((inspection.prepare("SELECT COUNT(*) AS count FROM study_events").get() as { count: number }).count, 1);
+  assert.equal((inspection.prepare("SELECT COUNT(*) AS count FROM study_states").get() as { count: number }).count, 1);
+  assert.equal((inspection.prepare("SELECT COUNT(*) AS count FROM study_round_tasks").get() as { count: number }).count, 2);
+  inspection.close();
 });

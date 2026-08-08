@@ -369,6 +369,7 @@ export function WordbookPage() {
   const fullEntriesGeneration = useRef(new Map<string, number>())
   const selectedBookIdRef = useRef('')
   const studyReturnFocusRef = useRef<HTMLElement | null>(null)
+  const wordManagerReturnFocusRef = useRef<HTMLElement | null>(null)
   const studyProgressCommittedRef = useRef(false)
   remoteEntriesRef.current = remoteEntries
   const studyRefreshTimer = useRef<number | null>(null)
@@ -1122,7 +1123,11 @@ export function WordbookPage() {
     if (nextMode === 'review') return reviewDueEntries
     return dictationEntries.slice(0, preferences.plan.dictation)
   }
-  const openWordManager = (level: WordManagerLevelFilter = 'all') => {
+  const openWordManager = (
+    level: WordManagerLevelFilter = 'all',
+    returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null,
+  ) => {
+    wordManagerReturnFocusRef.current = returnFocus
     setWordManagerLevel(level)
     setShowWordManager(true)
   }
@@ -1220,7 +1225,7 @@ export function WordbookPage() {
                   disabled={count === 0}
                   aria-label={`${label} ${count} 个，占 ${share}%${count ? '，点击浏览' : ''}`}
                   title={count ? `浏览 ${count} 个${label}词条` : `暂无${label}词条`}
-                  onClick={() => openWordManager(level)}
+                  onClick={(event) => openWordManager(level, event.currentTarget)}
                 >
                   <em>{label}<small>{share}%</small></em>
                   <strong>{count}</strong>
@@ -1231,7 +1236,7 @@ export function WordbookPage() {
           </div>
           <div className="overview-actions">
             <button type="button" className="overview-plan-settings" onClick={() => setSettingsSection('plan')}><WorkspaceIcon name="settings" />学习计划</button>
-            <button type="button" disabled={!wordCount || !api} onClick={() => openWordManager()}><WorkspaceIcon name="edit" />浏览词条</button>
+            <button type="button" disabled={!wordCount || !api} onClick={(event) => openWordManager('all', event.currentTarget)}><WorkspaceIcon name="edit" />浏览词条</button>
             {selectedBook.sourceCatalogId && <button type="button" disabled={authLoading} onClick={() => { if (!user) { setNotice('请先通过页头账号入口登录，再提交改进。'); return } setContributionBookId(selectedBook.id) }}><WorkspaceIcon name="edit" />提交改进</button>}
             <button type="button" disabled={!api || fullEntriesLoading} onClick={() => { void exportBookFile() }}><WorkspaceIcon name="book" />导出 CSV</button>
             <button type="button" disabled={!api || fullEntriesLoading} onClick={() => { void importBookFile() }}><WorkspaceIcon name="plus" />导入文件</button>
@@ -1366,6 +1371,7 @@ export function WordbookPage() {
         totalWords={wordCount}
         initialLevel={wordManagerLevel}
         saving={wordSaving}
+        returnFocus={wordManagerReturnFocusRef.current}
         onClose={() => setShowWordManager(false)}
         onSave={saveManagedWord}
         onMarkKnown={markManagedWordKnown}

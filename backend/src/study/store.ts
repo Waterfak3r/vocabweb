@@ -43,6 +43,17 @@ export type StudyResourceLimits = {
   maxDraftsPerClient: number;
 };
 
+export type StudyRoundSelectionContext = {
+  clientId: string;
+  wordbookId: string;
+  mode: StudyRound["mode"];
+  scope: StudyRound["scope"];
+  now: Date;
+  preferences: WordbookStudyPreferences;
+  schedule: ReviewSchedule;
+  events: LearningEvent[];
+};
+
 export const DEFAULT_STUDY_RESOURCE_LIMITS: StudyResourceLimits = {
   maxWordbooksPerClient: 50,
   maxWordsPerClient: 50_000,
@@ -52,6 +63,7 @@ export const DEFAULT_STUDY_RESOURCE_LIMITS: StudyResourceLimits = {
 const STUDY_ROUND_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_STUDY_ROUNDS_PER_CLIENT = 20;
 const MAX_PROCESSED_ROUND_OPERATIONS = 2_000;
+const MAX_PERSISTENCE_RETRIES = 8;
 const COMMON_PREFIXES = [
   "anti", "auto", "counter", "inter", "micro", "mis", "multi", "non", "over", "post", "pre", "re", "semi", "sub", "super", "trans", "un", "under",
 ] as const;
@@ -186,7 +198,7 @@ function stableHash(value: string): number {
   return result >>> 0;
 }
 
-function completedReviewLanes(
+export function completedReviewLanes(
   events: LearningEvent[],
   schedule: ReviewSchedule,
   today: string,
@@ -233,6 +245,18 @@ export abstract class BaseStore implements StudyStore {
   protected async refreshBeforeOperation(): Promise<void> {}
   protected clearCachedState(): void {
     this.statePromise = undefined;
+  }
+  /** Startup/readiness can pay the compatibility-view load before serving user traffic. */
+  protected async warmCachedState(): Promise<void> {
+    await this.state();
+  }
+  /** Persistence implementations can request a full transition retry after an optimistic conflict. */
+  protected shouldRetryPersistenceError(_error: unknown): boolean {
+    return false;
+  }
+  /** Record stores can select only candidate word ids from an indexed projection. */
+  protected async selectStudyRoundWordIds(_context: StudyRoundSelectionContext): Promise<string[] | null> {
+    return null;
   }
 
   // --- Accounts & sessions ---
@@ -501,7 +525,7 @@ export abstract class BaseStore implements StudyStore {
       totalPages,
     };
   }); }
-  async toggleFavorite(clientId: string, id: string): Promise<{ favorited: boolean; favoriteCount: number } | null> { return await this.mutate((state) => {
+  async toggleFavorite(clientId: string, id: string): Promise<{ favorited: boolean; favoriteCount: number } | null> { return await this.mutateClient(clientId, (state) => {
     const book = state.catalog.find((item) => item.id === id);
     const client = this.client(state, clientId); const index = client.favorites.indexOf(id);
     if (!book || (index < 0 && !visibleTo(book, clientId)) || (index >= 0 && book.visibility === "private" && book.ownerClientId !== clientId)) return null;
@@ -1069,7 +1093,7 @@ export abstract class BaseStore implements StudyStore {
     });
   }
   async updateStudySettings(clientId: string, input: UpdateStudySettingsInput): Promise<SyncedStudySettings> {
-    return await this.mutate((state) => {
+    return await this.mutateClient(clientId, (state) => {
       const client = this.client(state, clientId);
       const current = client.studySettings ?? {
         shortcuts: {
@@ -1101,12 +1125,12 @@ export abstract class BaseStore implements StudyStore {
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
       .map((book) => card(book, events.get(book.id) ?? []));
   }); }
-  async createMyWordbook(clientId: string, input: CreateMyWordbookInput): Promise<MyWordbookCard> { return await this.mutate((state) => {
+  async createMyWordbook(clientId: string, input: CreateMyWordbookInput): Promise<MyWordbookCard> { return await this.mutateClient(clientId, (state) => {
     const at = this.now().toISOString(); const client = this.client(state, clientId);
     const book: MyWordbook = { id: `my-${randomUUID()}`, title: input.title, description: input.description ?? "", ...(input.category ? { category: input.category } : {}), createdAt: at, updatedAt: at, words: toWordbookWords(input.words ?? [], at) };
     client.wordbooks.push(book); return card(book, client.events);
   }); }
-  async updateMyWordbook(clientId: string, id: string, input: UpdateMyWordbookInput): Promise<MyWordbookCard | null> { return await this.mutate((state) => {
+  async updateMyWordbook(clientId: string, id: string, input: UpdateMyWordbookInput): Promise<MyWordbookCard | null> { return await this.mutateClient(clientId, (state) => {
     const client = this.client(state, clientId); const book = client.wordbooks.find((item) => item.id === id && !item.deletedAt);
     if (!book) return null;
     if (Object.hasOwn(input, "category")) {
@@ -1118,8 +1142,8 @@ export abstract class BaseStore implements StudyStore {
     return card(book, client.events);
   }); }
   async getMyWordbook(clientId: string, id: string): Promise<MyWordbookCard | null> { return await this.read((state) => { const client = this.clientView(state, clientId); const book = client.wordbooks.find((item) => item.id === id && !item.deletedAt); return book ? card(book, client.events) : null; }); }
-  async deleteMyWordbook(clientId: string, id: string): Promise<boolean> { return await this.mutate((state) => { const client = this.client(state, clientId); const book = client.wordbooks.find((item) => item.id === id && !item.deletedAt); if (!book) return false; const at = this.now().toISOString(); book.deletedAt = at; book.updatedAt = at; client.studyRounds = client.studyRounds.filter((round) => round.wordbookId !== id); return true; }); }
-  async restoreMyWordbook(clientId: string, id: string): Promise<MyWordbookCard | null> { return await this.mutate((state) => { const client = this.client(state, clientId); const book = client.wordbooks.find((item) => item.id === id && item.deletedAt); if (!book) return null; book.deletedAt = undefined; book.updatedAt = this.now().toISOString(); return card(book, client.events); }); }
+  async deleteMyWordbook(clientId: string, id: string): Promise<boolean> { return await this.mutateClient(clientId, (state) => { const client = this.client(state, clientId); const book = client.wordbooks.find((item) => item.id === id && !item.deletedAt); if (!book) return false; const at = this.now().toISOString(); book.deletedAt = at; book.updatedAt = at; client.studyRounds = client.studyRounds.filter((round) => round.wordbookId !== id); return true; }); }
+  async restoreMyWordbook(clientId: string, id: string): Promise<MyWordbookCard | null> { return await this.mutateClient(clientId, (state) => { const client = this.client(state, clientId); const book = client.wordbooks.find((item) => item.id === id && item.deletedAt); if (!book) return null; book.deletedAt = undefined; book.updatedAt = this.now().toISOString(); return card(book, client.events); }); }
   async listWords(clientId: string, id: string, status?: WordLearningStatus): Promise<LearningQueueItem[] | null> { return await this.read((state) => {
     const client = this.clientView(state, clientId); const book = client.wordbooks.find((item) => item.id === id && !item.deletedAt); if (!book) return null;
     const states = ladderStates(client.events.filter((event) => event.wordbookId === id), reviewScheduleOf(book));
@@ -1175,7 +1199,7 @@ export abstract class BaseStore implements StudyStore {
     }
     return null;
   }); }
-  async addWordToMyWordbook(clientId: string, wordbookId: string, entry: StudyWordEntry): Promise<{ word: LearningQueueItem; created: boolean } | null> { return await this.mutate((state) => {
+  async addWordToMyWordbook(clientId: string, wordbookId: string, entry: StudyWordEntry): Promise<{ word: LearningQueueItem; created: boolean } | null> { return await this.mutateClientWordbook(clientId, wordbookId, [], (state) => {
     const client = this.client(state, clientId); const book = client.wordbooks.find((item) => item.id === wordbookId && !item.deletedAt); if (!book) return null;
     // Words are stored normalized; dedupe on an exact normalized match.
     const states = ladderStates(client.events.filter((event) => event.wordbookId === wordbookId), reviewScheduleOf(book));
@@ -1186,7 +1210,7 @@ export abstract class BaseStore implements StudyStore {
     book.words.push(added); book.updatedAt = at;
     return { word: queueItem(added, ladderOf(states, added.id)), created: true };
   }); }
-  async purgeMyWordbook(clientId: string, id: string): Promise<boolean> { return await this.mutate((state) => {
+  async purgeMyWordbook(clientId: string, id: string): Promise<boolean> { return await this.mutateClient(clientId, (state) => {
     const client = this.client(state, clientId); const index = client.wordbooks.findIndex((item) => item.id === id && item.deletedAt);
     if (index < 0) return false;
     client.wordbooks.splice(index, 1); client.events = client.events.filter((event) => event.wordbookId !== id); client.studyRounds = client.studyRounds.filter((round) => round.wordbookId !== id); return true;
@@ -1202,7 +1226,7 @@ export abstract class BaseStore implements StudyStore {
     for (const client of Object.values(state.clients)) client.favorites = client.favorites.filter((favorite) => favorite !== id);
     return true;
   }); }
-  async updateWord(clientId: string, wordbookId: string, wordId: string, input: UpdateWordInput, rematched?: StudyWordEntry, options?: { lookupFailed?: boolean }): Promise<UpdateWordResult> { return await this.mutate((state) => {
+  async updateWord(clientId: string, wordbookId: string, wordId: string, input: UpdateWordInput, rematched?: StudyWordEntry, options?: { lookupFailed?: boolean }): Promise<UpdateWordResult> { return await this.mutateClientWordbook(clientId, wordbookId, [wordId], (state) => {
     const client = this.client(state, clientId); const book = client.wordbooks.find((item) => item.id === wordbookId && !item.deletedAt); const target = book?.words.find((item) => item.id === wordId);
     if (!book || !target) return { kind: "not-found" };
     // A true rename must not carry the old word's dictionary data forward; when the
@@ -1229,7 +1253,7 @@ export abstract class BaseStore implements StudyStore {
     const ladderState = ladderOf(ladderStates(client.events.filter((event) => event.wordbookId === wordbookId), reviewScheduleOf(book)), target.id);
     return { kind: "updated", word: studiedWord(target, ladderState) };
   }); }
-  async batchWords(clientId: string, wordbookId: string, input: BatchWordInput): Promise<BatchWordResult | null> { return await this.mutate((state) => {
+  async batchWords(clientId: string, wordbookId: string, input: BatchWordInput): Promise<BatchWordResult | null> { return await this.mutateClientWordbook(clientId, wordbookId, input.wordIds, (state) => {
     const client = this.client(state, clientId);
     const book = client.wordbooks.find((item) => item.id === wordbookId && !item.deletedAt);
     if (!book) return null;
@@ -1285,7 +1309,7 @@ export abstract class BaseStore implements StudyStore {
     if (succeededIds.length) book.updatedAt = this.now().toISOString();
     return { action: input.action, succeededIds, failed };
   }); }
-  async createImportDrafts(clientId: string, input: CreateImportDraftInput): Promise<ImportDraft[]> { return await this.mutate((state) => {
+  async createImportDrafts(clientId: string, input: CreateImportDraftInput): Promise<ImportDraft[]> { return await this.mutateClientDrafts(clientId, [], (state) => {
     const client = this.client(state, clientId);
     const cutoff = this.now().getTime() - RETENTION_MS;
     client.drafts = client.drafts.filter((draft) => draft.status !== "committed" || Date.parse(draft.committedAt ?? draft.updatedAt) >= cutoff);
@@ -1332,7 +1356,7 @@ export abstract class BaseStore implements StudyStore {
     }
     client.drafts.push(...drafts); return clone(drafts);
   }); }
-  async resolveImportDraftEntries(clientId: string, id: string, entries: ResolvedImportDraftEntry[]): Promise<ImportDraft | null> { return await this.mutate((state) => {
+  async resolveImportDraftEntries(clientId: string, id: string, entries: ResolvedImportDraftEntry[]): Promise<ImportDraft | null> { return await this.mutateClientDrafts(clientId, [id], (state) => {
     const client = this.client(state, clientId); const draft = client.drafts.find((item) => item.id === id); if (!draft || draft.status === "committed") return null;
     const byId = new Map(entries.map((entry) => [entry.id, entry]));
     for (const entry of draft.entries) {
@@ -1349,11 +1373,11 @@ export abstract class BaseStore implements StudyStore {
   async listImportDrafts(clientId: string): Promise<ImportDraft[]> { return await this.read((state) => clone([...this.clientView(state, clientId).drafts].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)))); }
   async listImportDraftTaskSummaries(clientId: string): Promise<ImportDraftTaskSummary[]> { return await this.read((state) => summarizeImportDraftTasks(this.clientView(state, clientId).drafts)); }
   async getImportDraft(clientId: string, id: string): Promise<ImportDraft | null> { return await this.read((state) => { const draft = this.clientView(state, clientId).drafts.find((item) => item.id === id); return draft ? clone(draft) : null; }); }
-  async deleteImportDraft(clientId: string, id: string): Promise<boolean> { return await this.mutate((state) => {
+  async deleteImportDraft(clientId: string, id: string): Promise<boolean> { return await this.mutateClientDrafts(clientId, [], (state) => {
     const drafts = this.client(state, clientId).drafts; const index = drafts.findIndex((item) => item.id === id);
     if (index < 0) return false; drafts.splice(index, 1); return true;
   }); }
-  async commitImportDraft(clientId: string, id: string, input: CommitImportDraftInput): Promise<MyWordbookCard | null> { return await this.mutate((state) => {
+  async commitImportDraft(clientId: string, id: string, input: CommitImportDraftInput): Promise<MyWordbookCard | null> { return await this.mutateClientImport(clientId, id, (state) => {
     const client = this.client(state, clientId); const draft = client.drafts.find((item) => item.id === id); if (!draft) return null;
     const siblings = client.drafts.filter((item) => item.groupId === draft.groupId).sort((left, right) => left.batchIndex - right.batchIndex);
     if (siblings.length !== draft.totalBatches || siblings.some((item) => item.status === "processing")) return null;
@@ -1447,7 +1471,7 @@ export abstract class BaseStore implements StudyStore {
   }
 
   async startStudyRound(clientId: string, input: StartStudyRoundInput): Promise<{ round: StudyRoundView; resumed: boolean } | null> {
-    return await this.mutate((state) => {
+    return await this.mutateClient(clientId, async (state) => {
       const client = this.client(state, clientId);
       const book = client.wordbooks.find((item) => item.id === input.wordbookId && !item.deletedAt);
       if (!book) return null;
@@ -1475,63 +1499,78 @@ export abstract class BaseStore implements StudyStore {
       const modePreferences = preferences.modes[input.mode];
       const events = client.events.filter((event) => event.wordbookId === book.id);
       const schedule = reviewScheduleOf(book);
-      const states = ladderStates(events, schedule);
-      let selected: WordbookWord[] = [];
-      if (input.mode === "new") {
-        const afterById = ladderEventLevels(events, schedule);
-        const today = day(now);
-        const completedToday = new Set(
-          events
-            .filter((event) => event.kind === "new" && day(new Date(event.occurredAt)) === today && afterById.get(event.id) === 1)
-            .map((event) => event.wordId),
-        ).size;
-        const unstudied = book.words.filter((word) => ladderOf(states, word.id).level === 0);
-        if (scope === "ahead") {
-          const batchSize = Math.min(200, Math.max(1, preferences.plan.newWords));
-          selected = unstudied.slice(0, batchSize);
-        } else {
-          const remaining = Math.max(0, preferences.plan.newWords - completedToday);
-          selected = unstudied.slice(0, remaining);
-        }
+      const indexedWordIds = await this.selectStudyRoundWordIds({
+        clientId,
+        wordbookId: book.id,
+        mode: input.mode,
+        scope,
+        now,
+        preferences,
+        schedule,
+        events,
+      });
+      let wordIds: string[];
+      if (indexedWordIds !== null) {
+        wordIds = indexedWordIds;
       } else {
-        if (scope === "ahead") {
-          selected = book.words
-            .filter((word) => {
-              const wordState = ladderOf(states, word.id);
-              return wordState.level > 0 && !reviewDue(wordState, now, schedule);
-            })
-            .sort((left, right) => dueTimestamp(ladderOf(states, left.id)) - dueTimestamp(ladderOf(states, right.id)))
-            .slice(0, 200);
-        }
-        const lanes: Record<"protected" | "regular" | "backlog", WordbookWord[]> = {
-          protected: [],
-          regular: [],
-          backlog: [],
-        };
-        for (const word of book.words) {
-          const lane = reviewLane(ladderOf(states, word.id), now, schedule);
-          if (lane) lanes[lane].push(word);
-        }
-        lanes.protected.sort((left, right) => {
-          const a = ladderOf(states, left.id);
-          const b = ladderOf(states, right.id);
-          return Number(b.relearning) - Number(a.relearning) || dueTimestamp(a) - dueTimestamp(b);
-        });
-        lanes.regular.sort((left, right) => dueTimestamp(ladderOf(states, left.id)) - dueTimestamp(ladderOf(states, right.id)));
-        lanes.backlog.sort((left, right) => dueTimestamp(ladderOf(states, left.id)) - dueTimestamp(ladderOf(states, right.id)));
-        const completed = completedReviewLanes(events, schedule, day(now));
-        if (scope === "ahead") {
-          // The voluntary ahead deck was selected above and does not consume today's backlog cap.
-        } else if (scope === "backlog") {
-          const batchSize = Math.min(200, Math.max(50, preferences.plan.backlogReviews));
-          selected = lanes.backlog.slice(0, batchSize);
+        const states = ladderStates(events, schedule);
+        let selected: WordbookWord[] = [];
+        if (input.mode === "new") {
+          const afterById = ladderEventLevels(events, schedule);
+          const today = day(now);
+          const completedToday = new Set(
+            events
+              .filter((event) => event.kind === "new" && day(new Date(event.occurredAt)) === today && afterById.get(event.id) === 1)
+              .map((event) => event.wordId),
+          ).size;
+          const unstudied = book.words.filter((word) => ladderOf(states, word.id).level === 0);
+          if (scope === "ahead") {
+            const batchSize = Math.min(200, Math.max(1, preferences.plan.newWords));
+            selected = unstudied.slice(0, batchSize);
+          } else {
+            const remaining = Math.max(0, preferences.plan.newWords - completedToday);
+            selected = unstudied.slice(0, remaining);
+          }
         } else {
-          const remainingBacklog = Math.max(0, preferences.plan.backlogReviews - completed.backlog.size);
-          selected = [...lanes.protected, ...lanes.regular, ...lanes.backlog.slice(0, remainingBacklog)];
+          if (scope === "ahead") {
+            selected = book.words
+              .filter((word) => {
+                const wordState = ladderOf(states, word.id);
+                return wordState.level > 0 && !reviewDue(wordState, now, schedule);
+              })
+              .sort((left, right) => dueTimestamp(ladderOf(states, left.id)) - dueTimestamp(ladderOf(states, right.id)))
+              .slice(0, 200);
+          }
+          const lanes: Record<"protected" | "regular" | "backlog", WordbookWord[]> = {
+            protected: [],
+            regular: [],
+            backlog: [],
+          };
+          for (const word of book.words) {
+            const lane = reviewLane(ladderOf(states, word.id), now, schedule);
+            if (lane) lanes[lane].push(word);
+          }
+          lanes.protected.sort((left, right) => {
+            const a = ladderOf(states, left.id);
+            const b = ladderOf(states, right.id);
+            return Number(b.relearning) - Number(a.relearning) || dueTimestamp(a) - dueTimestamp(b);
+          });
+          lanes.regular.sort((left, right) => dueTimestamp(ladderOf(states, left.id)) - dueTimestamp(ladderOf(states, right.id)));
+          lanes.backlog.sort((left, right) => dueTimestamp(ladderOf(states, left.id)) - dueTimestamp(ladderOf(states, right.id)));
+          const completed = completedReviewLanes(events, schedule, day(now));
+          if (scope === "ahead") {
+            // The voluntary ahead deck was selected above and does not consume today's backlog cap.
+          } else if (scope === "backlog") {
+            const batchSize = Math.min(200, Math.max(50, preferences.plan.backlogReviews));
+            selected = lanes.backlog.slice(0, batchSize);
+          } else {
+            const remainingBacklog = Math.max(0, preferences.plan.backlogReviews - completed.backlog.size);
+            selected = [...lanes.protected, ...lanes.regular, ...lanes.backlog.slice(0, remainingBacklog)];
+          }
         }
+        wordIds = selected.map((word) => word.id);
       }
 
-      const wordIds = selected.map((word) => word.id);
       const at = now.toISOString();
       const queue = buildRoundTasks(wordIds, modePreferences.exerciseTypes);
       const round: StudyRound = {
@@ -1631,7 +1670,7 @@ export abstract class BaseStore implements StudyStore {
     });
   }
   async rotateStudyRound(clientId: string, id: string, revision: number): Promise<StudyRoundMutationResult> {
-    return await this.mutate((state) => {
+    return await this.mutateClient(clientId, (state) => {
       const client = this.client(state, clientId);
       const round = client.studyRounds.find((item) => item.id === id);
       if (!round || round.completedAt || Date.parse(round.expiresAt) <= this.now().getTime() || round.queue.length === 0) return { kind: "not-found" };
@@ -1646,7 +1685,7 @@ export abstract class BaseStore implements StudyStore {
     });
   }
   async answerStudyRound(clientId: string, id: string, input: StudyRoundAnswerInput): Promise<StudyRoundMutationResult> {
-    return await this.mutate((state) => {
+    return await this.mutateClient(clientId, (state) => {
       const client = this.client(state, clientId);
       const round = client.studyRounds.find((item) => item.id === id);
       if (!round || round.completedAt || Date.parse(round.expiresAt) <= this.now().getTime()) return { kind: "not-found" };
@@ -1721,7 +1760,7 @@ export abstract class BaseStore implements StudyStore {
       return { kind: "updated", round: this.studyRoundView(client, round) };
     });
   }
-  async recordEvent(clientId: string, input: LearningEventInput): Promise<LearningEvent | null> { return await this.mutate((state) => {
+  async recordEvent(clientId: string, input: LearningEventInput): Promise<LearningEvent | null> { return await this.mutateClient(clientId, (state) => {
     const client = this.client(state, clientId); const book = client.wordbooks.find((item) => item.id === input.wordbookId && !item.deletedAt);
     const target = input.wordId ? book?.words.find((word) => word.id === input.wordId) : book?.words.find((word) => word.word === input.word);
     if (!book || !target) return null;
@@ -2237,16 +2276,116 @@ export abstract class BaseStore implements StudyStore {
     await this.refreshBeforeOperation();
     return operation(await this.state());
   }); }
-  private async mutate<T>(operation: (state: State) => T): Promise<T> { return await this.serialize(async () => {
-    await this.refreshBeforeOperation();
-    const previous = await this.state();
-    const draft = clone(previous);
-    const value = operation(draft);
-    this.enforceResourceLimits(previous, draft);
-    await this.save(draft, previous);
-    this.statePromise = Promise.resolve(draft);
-    return value;
-  }); }
+  /**
+   * Clone only the state reachable from one client's study hot paths.
+   *
+   * Study rounds append/rotate their own arrays and learning events append to
+   * the client event list, while the selected wordbook's metadata is updated.
+   * Keep immutable/unchanged payloads (especially word arrays, drafts, the
+   * catalog, and other clients) shared so these frequent transitions do not
+   * structuredClone the entire persisted world.
+   */
+  private scopedClientState(previous: State, clientId: string): State {
+    const source = Object.hasOwn(previous.clients, clientId) ? previous.clients[clientId] : undefined;
+    const client: ClientData = source ? {
+      ...source,
+      favorites: [...source.favorites],
+      wordbooks: source.wordbooks.map((book) => ({ ...book })),
+      events: [...source.events],
+      // Import drafts are read-only for the study hot paths and can remain shared.
+      drafts: source.drafts,
+      studyRounds: source.studyRounds.map((round) => ({
+        ...round,
+        exerciseTypes: [...round.exerciseTypes],
+        wordIds: [...round.wordIds],
+        queue: round.queue.map((task) => ({ ...task })),
+        passedTaskKeys: [...round.passedTaskKeys],
+        completedWordIds: [...round.completedWordIds],
+        masteredWordIds: [...round.masteredWordIds],
+        vagueWordIds: [...round.vagueWordIds],
+        unknownWordIds: [...round.unknownWordIds],
+        processedOperationIds: [...round.processedOperationIds],
+      })),
+    } : defaultClient();
+    return {
+      ...previous,
+      clients: { ...previous.clients, [clientId]: client },
+    };
+  }
+  /** Clone one word array and only the entries an operation is allowed to mutate. */
+  private async mutateClientWordbook<T>(
+    clientId: string,
+    wordbookId: string,
+    mutableWordIds: Iterable<string>,
+    operation: (state: State) => T | Promise<T>,
+  ): Promise<T> {
+    const ids = new Set(mutableWordIds);
+    return await this.mutateClient(clientId, async (state) => {
+      const book = state.clients[clientId]?.wordbooks.find((candidate) => candidate.id === wordbookId);
+      if (book) book.words = book.words.map((word) => ids.has(word.id) ? clone(word) : word);
+      return await operation(state);
+    });
+  }
+  /** Clone the draft array and only draft objects an import operation may edit. */
+  private async mutateClientDrafts<T>(
+    clientId: string,
+    mutableDraftIds: Iterable<string>,
+    operation: (state: State) => T | Promise<T>,
+  ): Promise<T> {
+    const ids = new Set(mutableDraftIds);
+    return await this.mutateClient(clientId, async (state) => {
+      const client = state.clients[clientId]!;
+      client.drafts = client.drafts.map((draft) => ids.has(draft.id) ? clone(draft) : draft);
+      return await operation(state);
+    });
+  }
+  /** Commit can edit every sibling draft and the target wordbook in one transaction. */
+  private async mutateClientImport<T>(
+    clientId: string,
+    draftId: string,
+    operation: (state: State) => T | Promise<T>,
+  ): Promise<T> {
+    return await this.mutateClient(clientId, async (state) => {
+      const client = state.clients[clientId]!;
+      const anchor = client.drafts.find((draft) => draft.id === draftId);
+      const groupId = anchor?.groupId;
+      client.drafts = client.drafts.map((draft) => groupId && draft.groupId === groupId ? clone(draft) : draft);
+      const targetId = anchor?.targetWordbookId;
+      const book = targetId ? client.wordbooks.find((candidate) => candidate.id === targetId) : undefined;
+      if (book) book.words = book.words.map((word) => clone(word));
+      return await operation(state);
+    });
+  }
+  private async runMutation<T>(
+    draftOf: (previous: State) => State,
+    operation: (state: State) => T | Promise<T>,
+  ): Promise<T> {
+    for (let attempt = 0; ; attempt += 1) {
+      await this.refreshBeforeOperation();
+      const previous = await this.state();
+      const draft = draftOf(previous);
+      const value = await operation(draft);
+      this.enforceResourceLimits(previous, draft);
+      try {
+        await this.save(draft, previous);
+      } catch (error) {
+        if (attempt + 1 >= MAX_PERSISTENCE_RETRIES || !this.shouldRetryPersistenceError(error)) throw error;
+        this.clearCachedState();
+        continue;
+      }
+      this.statePromise = Promise.resolve(draft);
+      return value;
+    }
+  }
+  private async mutateClient<T>(clientId: string, operation: (state: State) => T | Promise<T>): Promise<T> {
+    return await this.serialize(async () => await this.runMutation(
+      (previous) => this.scopedClientState(previous, clientId),
+      operation,
+    ));
+  }
+  private async mutate<T>(operation: (state: State) => T): Promise<T> {
+    return await this.serialize(async () => await this.runMutation(clone, operation));
+  }
   private async state(): Promise<State> {
     if (!this.statePromise) {
       const loading = this.load();
