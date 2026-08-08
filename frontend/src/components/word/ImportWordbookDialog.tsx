@@ -186,31 +186,20 @@ export function ImportWordbookDialog({ open, api, onClose, onCreated, initialTit
           update(started)
         } catch {
           setError('词典匹配队列暂时繁忙，草稿已经保存，正在等待自动重试。')
-          schedule(() => { void loadGroup() }, 3_000)
+          schedule(() => { void loadGroup() }, 5_000)
           return
         }
         if (started.status !== 'processing') {
           schedule(() => { void loadGroup() }, 0)
           return
         }
-        const pollBatch = async () => {
-          try {
-            const next = await api.getImportDraft(nextBatch.id)
-            update(next)
-            if (next.status === 'processing') schedule(() => { void loadGroup() }, 3_000)
-            else schedule(() => { void loadGroup() }, 0)
-          } catch {
-            if (!cancelled) {
-              setError('词典匹配仍在后台进行。草稿和已完成进度均已保存，正在自动重试。')
-              schedule(() => { void loadGroup() }, 3_000)
-            }
-          }
-        }
-        void pollBatch()
+        // The next listImportDrafts poll already returns the batch's newest
+        // state, so a separate getImportDraft would only double the payload.
+        schedule(() => { void loadGroup() }, 5_000)
       } catch {
         if (!cancelled) {
           setError('暂时无法读取整组导入进度。草稿已经保存，正在自动重试。')
-          schedule(() => { void loadGroup() }, 3_000)
+          schedule(() => { void loadGroup() }, 5_000)
         }
       }
     }

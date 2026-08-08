@@ -1397,7 +1397,7 @@ export class WorkspaceApi {
     return notifyImportDraftsAfter(this.json('api/my/import-drafts', { method: 'POST', body: JSON.stringify(input) }, parseImportDraft, 120_000))
   }
   listImportDrafts() { return this.list(new URL('api/my/import-drafts', this.baseUrl), parseImportDraft, 'import drafts', 120_000) }
-  listImportDraftTasks() { return this.list(new URL('api/my/import-drafts/status', this.baseUrl), parseImportDraftTaskSummary, 'import draft tasks') }
+  listImportDraftTasks() { return this.list(new URL('api/my/import-drafts/status', this.baseUrl), parseImportDraftTaskSummary, 'import draft tasks', 30_000) }
   getImportDraft(id: string) { return this.json(`api/my/import-drafts/${encodeURIComponent(id)}`, {}, parseImportDraft, 120_000) }
   processImportDraft(id: string) { return this.json(`api/my/import-drafts/${encodeURIComponent(id)}/process`, { method: 'POST' }, parseImportDraft, 120_000) }
   deleteImportDraft(id: string) { return notifyImportDraftsAfter(this.empty(`api/my/import-drafts/${encodeURIComponent(id)}`, { method: 'DELETE' })) }

@@ -437,6 +437,12 @@ export interface ImportDraft {
   batchIndex: number; totalBatches: number; status: "processing" | "pending" | "committed";
   createdAt: string; updatedAt: string; committedAt?: string; queued?: boolean; entries: ImportDraftEntry[];
 }
+export interface ImportDraftTaskSummary {
+  groupId: string; anchorId: string; title: string; targetWordbookId?: string;
+  status: "processing" | "pending"; batchCount: number; totalBatches: number; completedBatches: number;
+  totalEntries: number; completedEntries: number; problemCount: number; nextProcessingDraftId?: string;
+  queued?: boolean; updatedAt: string;
+}
 export interface CreateImportDraftInput {
   title: string; description?: string; targetWordbookId?: string; lines: ImportLineInput[];
 }
@@ -587,6 +593,7 @@ export interface StudyStore {
   createImportDrafts(clientId: string, input: CreateImportDraftInput): Promise<ImportDraft[]>;
   resolveImportDraftEntries(clientId: string, id: string, entries: ResolvedImportDraftEntry[]): Promise<ImportDraft | null>;
   listImportDrafts(clientId: string): Promise<ImportDraft[]>;
+  listImportDraftTaskSummaries(clientId: string): Promise<ImportDraftTaskSummary[]>;
   getImportDraft(clientId: string, id: string): Promise<ImportDraft | null>;
   deleteImportDraft(clientId: string, id: string): Promise<boolean>;
   commitImportDraft(clientId: string, id: string, input: CommitImportDraftInput): Promise<MyWordbookCard | null>;

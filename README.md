@@ -137,5 +137,7 @@ npm run test:e2e:community-account
 
 ## 更多文档
 
-- [checkpoint.md](checkpoint.md) — 后端契约与实现说明（中文）
-- [frontend-handoff.md](frontend-handoff.md) — 前端结构与对接说明
+- [docs/architecture.md](docs/architecture.md) — 架构设计说明
+- [docs/api.md](docs/api.md) — API 参考
+- [docs/database.md](docs/database.md) — 数据库设计
+- [docs/development.md](docs/development.md) — 开发与 E2E 流程

@@ -25,7 +25,7 @@ import type {
   CatalogQuery, CatalogRevision, CatalogRevisionSummary, CatalogRevisionView, CatalogWordChange, CatalogWordbook, CatalogWordsPage, CatalogWordsQuery,
   CatalogUpdateMutationResult, CommitImportDraftInput, ContributionMutationResult, ContributionPreview, CreateCatalogContributionInput, CreateImportDraftInput, CreateMyWordbookInput,
   CursorPage, CursorQuery,
-  ImportDraft, ImportDraftEntry, LearningEvent, LearningEventInput, LearningQueueItem, LevelCounts, MyWordbook, MyWordbookCard, MyWordbookWordsPage, MyWordbookWordsQuery,
+  ImportDraft, ImportDraftEntry, ImportDraftTaskSummary, LearningEvent, LearningEventInput, LearningQueueItem, LevelCounts, MyWordbook, MyWordbookCard, MyWordbookWordsPage, MyWordbookWordsQuery,
   MeaningPreference, ResolveCatalogContributionInput, ResolvedImportDraftEntry, RevertPreview, RevertRevisionInput, ReviewSchedule, RevisionMutationResult,
   StartStudyRoundInput, StudyChoiceOption, StudyDashboard, StudyRound, StudyRoundAnswerInput, StudyRoundMutationResult,
   StudyRoundTask, StudyRoundTaskOptions, StudyStore, StudyWordEntry, SyncedStudySettings, UpdateCatalogWordbookInput, UpdateMyWordbookInput,
@@ -57,6 +57,45 @@ const COMMON_PREFIXES = [
 const COMMON_SUFFIXES = [
   "ability", "ation", "ible", "able", "ality", "ingly", "ment", "ness", "less", "ful", "tion", "sion", "ance", "ence", "ative", "itive", "ous", "ive", "ize", "ise", "ify", "ing", "ed", "er", "est", "ly",
 ] as const;
+
+/** Compact per-group import status used by the header badge and import dialog polling. */
+export function summarizeImportDraftTasks(drafts: ImportDraft[]): ImportDraftTaskSummary[] {
+  const grouped = new Map<string, ImportDraft[]>();
+  for (const draft of drafts) {
+    const group = grouped.get(draft.groupId) ?? [];
+    group.push(draft);
+    grouped.set(draft.groupId, group);
+  }
+
+  return [...grouped.entries()].flatMap(([groupId, items]) => {
+    const group = items.sort((left, right) => left.batchIndex - right.batchIndex);
+    const anchor = group.find((draft) => draft.status !== "committed");
+    if (!anchor) return [];
+    const totalBatches = Math.max(anchor.totalBatches, group.length);
+    const processing = group.length < totalBatches || group.some((draft) => draft.status === "processing");
+    const entries = group.flatMap((draft) => draft.entries);
+    const completedEntries = entries.filter((entry) => entry.status !== "processing"
+      && ((entry.status !== "conflict" && entry.status !== "duplicate") || Boolean(entry.entry))).length;
+    const problemCount = entries.filter((entry) => entry.status === "invalid" || entry.status === "duplicate" || entry.status === "unmatched" || entry.status === "conflict").length;
+    const nextProcessingDraftId = group.find((draft) => draft.status === "processing")?.id;
+    const updatedAt = group.reduce((latest, draft) => draft.updatedAt > latest ? draft.updatedAt : latest, anchor.updatedAt);
+    return [{
+      groupId,
+      anchorId: anchor.id,
+      title: anchor.title,
+      ...(anchor.targetWordbookId ? { targetWordbookId: anchor.targetWordbookId } : {}),
+      status: processing ? "processing" as const : "pending" as const,
+      batchCount: group.length,
+      totalBatches,
+      completedBatches: group.filter((draft) => draft.status !== "processing").length,
+      totalEntries: entries.length,
+      completedEntries,
+      problemCount,
+      ...(nextProcessingDraftId ? { nextProcessingDraftId } : {}),
+      updatedAt,
+    }];
+  }).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+}
 
 function preferencesOf(book: MyWordbook): WordbookStudyPreferences {
   return clone(book.studyPreferences ?? DEFAULT_WORDBOOK_STUDY_PREFERENCES);
@@ -1289,6 +1328,7 @@ export abstract class BaseStore implements StudyStore {
     draft.updatedAt = this.now().toISOString(); return clone(draft);
   }); }
   async listImportDrafts(clientId: string): Promise<ImportDraft[]> { return await this.read((state) => clone([...this.clientView(state, clientId).drafts].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)))); }
+  async listImportDraftTaskSummaries(clientId: string): Promise<ImportDraftTaskSummary[]> { return await this.read((state) => summarizeImportDraftTasks(this.clientView(state, clientId).drafts)); }
   async getImportDraft(clientId: string, id: string): Promise<ImportDraft | null> { return await this.read((state) => { const draft = this.clientView(state, clientId).drafts.find((item) => item.id === id); return draft ? clone(draft) : null; }); }
   async deleteImportDraft(clientId: string, id: string): Promise<boolean> { return await this.mutate((state) => {
     const drafts = this.client(state, clientId).drafts; const index = drafts.findIndex((item) => item.id === id);
