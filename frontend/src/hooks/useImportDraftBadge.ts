@@ -6,8 +6,8 @@ import {
 } from '../data/importDraftStatus'
 import { getWorkspaceApi } from '../data/workspaceApi'
 
-const PROCESSING_POLL_MS = 1_500
-const READY_POLL_MS = 10_000
+const PROCESSING_POLL_MS = 5_000
+const READY_POLL_MS = 15_000
 const IDLE_POLL_MS = 30_000
 const ERROR_RETRY_MS = 5_000
 const RESUME_COOLDOWN_MS = 15_000

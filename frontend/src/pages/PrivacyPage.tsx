@@ -19,7 +19,7 @@ export function PrivacyPage() {
     <section className="sources-page privacy-page" aria-labelledby="privacy-title">
       <p className="marginal">PRIVACY</p>
       <h1 id="privacy-title">隐私与数据说明</h1>
-      <p>本页说明 WeCreate Vocab 在提供查词、词书、学习记录和社区功能时处理的数据。最后更新：2026 年 8 月 1 日。</p>
+      <p>本页说明 WeCreate Vocab 在提供查词、词书、学习记录和社区功能时处理的数据。最后更新：2026 年 8 月 8 日。</p>
 
       <article>
         <h2>账号与学习数据</h2>
@@ -34,7 +34,7 @@ export function PrivacyPage() {
 
       <article>
         <h2>外部服务</h2>
-        <p>本地词典未命中或请求在线发音时，查询词可能发送给 WiktAPI。播放第三方录音时，音频主机可能获得访问者 IP、浏览器信息和请求时间。浏览器语音合成是否使用云服务取决于操作系统和浏览器。</p>
+        <p>本地词典未命中时，查询词可能发送给 WiktAPI。播放在线英音或美音时，浏览器会访问有道词典的发音地址，查询词会随音频请求发送给有道；该服务可能获得访问者 IP、浏览器信息和请求时间。在线音频不可用时才会回退浏览器语音合成，语音合成是否使用云服务取决于操作系统和浏览器。</p>
       </article>
 
       <article>

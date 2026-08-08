@@ -16,7 +16,7 @@ import {
 } from "./collaboration.js";
 import {
   BATCH_SIZE, DEFAULT_WORDBOOK_STUDY_PREFERENCES, RETENTION_MS, card, catalogCard as buildCatalogCard, clone, compactLearningEvents, day, defaultClient,
-  EMPTY, ladderEventLevels, ladderOf, ladderStates, migrate, progress, queueItem, replayLadder, reviewDue, reviewLane, reviewScheduleOf,
+  EMPTY, eventsByWordbook, ladderEventLevels, ladderOf, ladderReplay, ladderStates, migrate, progressFromStates, queueItem, replayLadder, reviewDue, reviewLane, reviewScheduleOf,
   sameMeanings, shiftDay, studiedWord, toCatalogWords, toWordbookWords, visibleTo,
 } from "./ladder.js";
 import type { ClientData, State } from "./ladder.js";
@@ -25,7 +25,7 @@ import type {
   CatalogQuery, CatalogRevision, CatalogRevisionSummary, CatalogRevisionView, CatalogWordChange, CatalogWordbook, CatalogWordsPage, CatalogWordsQuery,
   CatalogUpdateMutationResult, CommitImportDraftInput, ContributionMutationResult, ContributionPreview, CreateCatalogContributionInput, CreateImportDraftInput, CreateMyWordbookInput,
   CursorPage, CursorQuery,
-  ImportDraft, ImportDraftEntry, LearningEvent, LearningEventInput, LearningQueueItem, LevelCounts, MyWordbook, MyWordbookCard, MyWordbookWordsPage, MyWordbookWordsQuery,
+  ImportDraft, ImportDraftEntry, ImportDraftTaskSummary, LearningEvent, LearningEventInput, LearningQueueItem, LevelCounts, MyWordbook, MyWordbookCard, MyWordbookWordsPage, MyWordbookWordsQuery,
   MeaningPreference, ResolveCatalogContributionInput, ResolvedImportDraftEntry, RevertPreview, RevertRevisionInput, ReviewSchedule, RevisionMutationResult,
   StartStudyRoundInput, StudyChoiceOption, StudyDashboard, StudyRound, StudyRoundAnswerInput, StudyRoundMutationResult,
   StudyRoundTask, StudyRoundTaskOptions, StudyStore, StudyWordEntry, SyncedStudySettings, UpdateCatalogWordbookInput, UpdateMyWordbookInput,
@@ -57,6 +57,45 @@ const COMMON_PREFIXES = [
 const COMMON_SUFFIXES = [
   "ability", "ation", "ible", "able", "ality", "ingly", "ment", "ness", "less", "ful", "tion", "sion", "ance", "ence", "ative", "itive", "ous", "ive", "ize", "ise", "ify", "ing", "ed", "er", "est", "ly",
 ] as const;
+
+/** Compact per-group import status used by the header badge and import dialog polling. */
+export function summarizeImportDraftTasks(drafts: ImportDraft[]): ImportDraftTaskSummary[] {
+  const grouped = new Map<string, ImportDraft[]>();
+  for (const draft of drafts) {
+    const group = grouped.get(draft.groupId) ?? [];
+    group.push(draft);
+    grouped.set(draft.groupId, group);
+  }
+
+  return [...grouped.entries()].flatMap(([groupId, items]) => {
+    const group = items.sort((left, right) => left.batchIndex - right.batchIndex);
+    const anchor = group.find((draft) => draft.status !== "committed");
+    if (!anchor) return [];
+    const totalBatches = Math.max(anchor.totalBatches, group.length);
+    const processing = group.length < totalBatches || group.some((draft) => draft.status === "processing");
+    const entries = group.flatMap((draft) => draft.entries);
+    const completedEntries = entries.filter((entry) => entry.status !== "processing"
+      && ((entry.status !== "conflict" && entry.status !== "duplicate") || Boolean(entry.entry))).length;
+    const problemCount = entries.filter((entry) => entry.status === "invalid" || entry.status === "duplicate" || entry.status === "unmatched" || entry.status === "conflict").length;
+    const nextProcessingDraftId = group.find((draft) => draft.status === "processing")?.id;
+    const updatedAt = group.reduce((latest, draft) => draft.updatedAt > latest ? draft.updatedAt : latest, anchor.updatedAt);
+    return [{
+      groupId,
+      anchorId: anchor.id,
+      title: anchor.title,
+      ...(anchor.targetWordbookId ? { targetWordbookId: anchor.targetWordbookId } : {}),
+      status: processing ? "processing" as const : "pending" as const,
+      batchCount: group.length,
+      totalBatches,
+      completedBatches: group.filter((draft) => draft.status !== "processing").length,
+      totalEntries: entries.length,
+      completedEntries,
+      problemCount,
+      ...(nextProcessingDraftId ? { nextProcessingDraftId } : {}),
+      updatedAt,
+    }];
+  }).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+}
 
 function preferencesOf(book: MyWordbook): WordbookStudyPreferences {
   return clone(book.studyPreferences ?? DEFAULT_WORDBOOK_STUDY_PREFERENCES);
@@ -1042,7 +1081,14 @@ export abstract class BaseStore implements StudyStore {
       return clone(settings);
     });
   }
-  async listMyWordbooks(clientId: string, trash: boolean): Promise<MyWordbookCard[]> { return await this.read((state) => { const client = this.clientView(state, clientId); return client.wordbooks.filter((book) => Boolean(book.deletedAt) === trash).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).map((book) => card(book, client.events)); }); }
+  async listMyWordbooks(clientId: string, trash: boolean): Promise<MyWordbookCard[]> { return await this.read((state) => {
+    const client = this.clientView(state, clientId);
+    const events = eventsByWordbook(client.events);
+    return client.wordbooks
+      .filter((book) => Boolean(book.deletedAt) === trash)
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+      .map((book) => card(book, events.get(book.id) ?? []));
+  }); }
   async createMyWordbook(clientId: string, input: CreateMyWordbookInput): Promise<MyWordbookCard> { return await this.mutate((state) => {
     const at = this.now().toISOString(); const client = this.client(state, clientId);
     const book: MyWordbook = { id: `my-${randomUUID()}`, title: input.title, description: input.description ?? "", ...(input.category ? { category: input.category } : {}), createdAt: at, updatedAt: at, words: toWordbookWords(input.words ?? [], at) };
@@ -1289,6 +1335,7 @@ export abstract class BaseStore implements StudyStore {
     draft.updatedAt = this.now().toISOString(); return clone(draft);
   }); }
   async listImportDrafts(clientId: string): Promise<ImportDraft[]> { return await this.read((state) => clone([...this.clientView(state, clientId).drafts].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)))); }
+  async listImportDraftTaskSummaries(clientId: string): Promise<ImportDraftTaskSummary[]> { return await this.read((state) => summarizeImportDraftTasks(this.clientView(state, clientId).drafts)); }
   async getImportDraft(clientId: string, id: string): Promise<ImportDraft | null> { return await this.read((state) => { const draft = this.clientView(state, clientId).drafts.find((item) => item.id === id); return draft ? clone(draft) : null; }); }
   async deleteImportDraft(clientId: string, id: string): Promise<boolean> { return await this.mutate((state) => {
     const drafts = this.client(state, clientId).drafts; const index = drafts.findIndex((item) => item.id === id);
@@ -1663,7 +1710,8 @@ export abstract class BaseStore implements StudyStore {
     // but still surfaced in recentActivity. Internal retention checkpoints stay invisible.
     const studyEvents = activityEvents.filter((event) => event.kind !== "mark");
     const todayEvents = studyEvents.filter((event) => day(new Date(event.occurredAt)) === today);
-    const afterById = ladderEventLevels(events, schedule);
+    const ladder = ladderReplay(events, schedule);
+    const afterById = ladder.eventLevels;
     const uniqueWords = (items: LearningEvent[], kind?: LearningEvent["kind"]) =>
       new Set(items.filter((event) => !kind || event.kind === kind).map((event) => event.wordId));
     // Count the first judgment that actually crosses L0 -> L1 so daily progress stays word-based.
@@ -1678,7 +1726,7 @@ export abstract class BaseStore implements StudyStore {
     ]);
     const completedReview = completedReviewIds.size;
     const completedDictation = uniqueWords(todayEvents.filter((event) => event.kind === "dictation" && event.correct)).size;
-    const states = ladderStates(events, schedule); const bookProgress = progress(book, events); const { levels } = bookProgress;
+    const states = ladder.states; const bookProgress = progressFromStates(book, states); const { levels } = bookProgress;
     // Availability per contract: 新词学习 from l0, 听写训练 from l2+l3+l4; 复习巩固 is the adaptive DUE count (below).
     const newAvailable = levels.l0; const dictationAvailable = levels.l2 + levels.l3 + levels.l4;
     // Every learned rung stays on the expanding review schedule. finalCheckDue is the L3 subset
@@ -1723,7 +1771,7 @@ export abstract class BaseStore implements StudyStore {
     // Reverse first so equal-millisecond events retain newest-insertion-first
     // ordering under JavaScript's stable sort.
     return {
-      wordbook: card(book, events),
+      wordbook: card(book, events, bookProgress),
       todayPlan: {
         new: {
           target: Math.max(completedNew, Math.min(preferences.plan.newWords, completedNew + newAvailable)),

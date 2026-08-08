@@ -1,6 +1,6 @@
 # Vacabweb 背单词
 
-本地优先的查词 + 背单词应用：生产后端预载 OEWN 2025 英文释义与 ECDICT 中文释义，仅在本地英文未命中时使用在线词典补充；React 前端支持中英文释义切换、单词本、单词卡和听写。Express 后端还提供账号同步、账户资料与改密、学习统计、单词社区与公开楼中楼留言板。
+本地优先的查词 + 背单词应用：生产后端预载 OEWN 2025 英文释义与 ECDICT 中文释义，仅在本地英文未命中时使用在线词典补充；在线发音优先播放有道词典提供的英音或美音，音频不可用时才回退浏览器语音。React 前端支持中英文释义切换、单词本、单词卡和听写。Express 后端还提供账号同步、账户资料与改密、学习统计、单词社区与公开楼中楼留言板。
 
 ## 目录结构
 
@@ -137,5 +137,7 @@ npm run test:e2e:community-account
 
 ## 更多文档
 
-- [checkpoint.md](checkpoint.md) — 后端契约与实现说明（中文）
-- [frontend-handoff.md](frontend-handoff.md) — 前端结构与对接说明
+- [docs/architecture.md](docs/architecture.md) — 架构设计说明
+- [docs/api.md](docs/api.md) — API 参考
+- [docs/database.md](docs/database.md) — 数据库设计
+- [docs/development.md](docs/development.md) — 开发与 E2E 流程

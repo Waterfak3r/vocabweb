@@ -303,6 +303,25 @@ test("GET /api/pronunciations/:word/audio redirects media playback to the select
   }
 });
 
+test("default pronunciation lookups redirect to Youdao for both accents", async () => {
+  const server = await startServer();
+  try {
+    for (const [accent, type] of [["gb", "1"], ["us", "2"]] as const) {
+      const response = await fetch(
+        `${server.baseUrl}/api/pronunciations/water/audio?accent=${accent}`,
+        { redirect: "manual" },
+      );
+      assert.equal(response.status, 302);
+      assert.equal(
+        response.headers.get("location"),
+        `https://dict.youdao.com/dictvoice?audio=water&type=${type}`,
+      );
+    }
+  } finally {
+    await server.close();
+  }
+});
+
 test("CORS rejects origins outside the configured allowlist", async () => {
   const server = await startServer({
     frontendOrigins: ["https://frontend.example"],

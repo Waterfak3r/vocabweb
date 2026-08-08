@@ -274,6 +274,16 @@ function bucketByWord(events: LearningEvent[]): Map<string, LearningEvent[]> {
   return buckets;
 }
 
+/** Group events by wordbook in one pass so callers can replay each book's history only once. */
+export function eventsByWordbook(events: LearningEvent[]): Map<string, LearningEvent[]> {
+  const grouped = new Map<string, LearningEvent[]>();
+  for (const event of events) {
+    const bucket = grouped.get(event.wordbookId);
+    if (bucket) bucket.push(event); else grouped.set(event.wordbookId, [event]);
+  }
+  return grouped;
+}
+
 /**
  * Replace detailed events older than the retention window with one replayable baseline per word.
  * This keeps activity retention bounded without resetting proficiency when a learner returns after
@@ -323,6 +333,22 @@ export function ladderEventLevels(events: LearningEvent[], schedule: ReviewSched
   const after = new Map<string, WordLevel>();
   for (const bucket of bucketByWord(events).values()) replayLadder(bucket, (event, level) => after.set(event.id, level), schedule);
   return after;
+}
+
+export interface LadderReplayResult {
+  states: Map<string, WordLadderState>;
+  /** Level each word held right after each event, keyed by event id. */
+  eventLevels: Map<string, WordLevel>;
+}
+
+/** Replay a history once when a caller needs both final word states and per-event levels. */
+export function ladderReplay(events: LearningEvent[], schedule: ReviewSchedule = DEFAULT_REVIEW_SCHEDULE): LadderReplayResult {
+  const states = new Map<string, WordLadderState>();
+  const eventLevels = new Map<string, WordLevel>();
+  for (const [wordId, bucket] of bucketByWord(events)) {
+    states.set(wordId, replayLadder(bucket, (event, level) => eventLevels.set(event.id, level), schedule));
+  }
+  return { states, eventLevels };
 }
 export function ladderOf(states: Map<string, WordLadderState>, wordId: string): WordLadderState {
   return states.get(wordId) ?? { level: 0, recognitionStreak: 0, reviewIntervalDays: 0, easeFactor: DEFAULT_EASE, relearning: false };
@@ -377,17 +403,19 @@ export function reviewLane(
   if (state.relearning || interval <= Math.max(3, schedule.familiarDays)) return "protected";
   return "regular";
 }
-export function progress(book: MyWordbook, events: LearningEvent[]): WordbookProgress {
-  const states = ladderStates(events, reviewScheduleOf(book));
+export function progressFromStates(book: MyWordbook, states: Map<string, WordLadderState>): WordbookProgress {
   const levels: LevelCounts = { l0: 0, l1: 0, l2: 0, l3: 0, l4: 0 };
   for (const word of book.words) levels[`l${ladderOf(states, word.id).level}` as keyof LevelCounts] += 1;
   const total = book.words.length;
   const percent = total ? Math.round(((levels.l1 * 0.25 + levels.l2 * 0.5 + levels.l3 * 0.75 + levels.l4) / total) * 100) : 0;
   return { mastered: levels.l3 + levels.l4, learning: levels.l1, review: levels.l2, unstudied: levels.l0, percent, levels };
 }
-export function card(book: MyWordbook, events: LearningEvent[]): MyWordbookCard {
+export function progress(book: MyWordbook, events: LearningEvent[]): WordbookProgress {
+  return progressFromStates(book, ladderStates(events, reviewScheduleOf(book)));
+}
+export function card(book: MyWordbook, events: LearningEvent[], precomputedProgress?: WordbookProgress): MyWordbookCard {
   const { words: _words, deletedAt: _deletedAt, ...rest } = book;
-  return { ...clone(rest), reviewSchedule: reviewScheduleOf(book), wordCount: book.words.length, progress: progress(book, events) };
+  return { ...clone(rest), reviewSchedule: reviewScheduleOf(book), wordCount: book.words.length, progress: precomputedProgress ?? progress(book, events) };
 }
 export function sameMeanings(left: StudyWordEntry["meanings"], right: StudyWordEntry["meanings"]): StudyWordEntry["meanings"] {
   // Dedupe on (pos, definition); the length-prefix keeps the boundary unambiguous so no pair collides.
