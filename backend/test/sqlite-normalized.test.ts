@@ -10,7 +10,11 @@ import Database from "better-sqlite3";
 import { createApp } from "../src/app.js";
 import { SqliteEngagementStore } from "../src/engagement/store.js";
 import type { State } from "../src/study/ladder.js";
-import { PRIVATE_SCHEMA_MIGRATION_KEY, PRIVATE_STATE_MIGRATION_KEY } from "../src/study/sqlite-private-state.js";
+import {
+  PRIVATE_SCHEMA_MIGRATION_KEY,
+  PRIVATE_STATE_MIGRATION_KEY,
+  STUDY_STATE_GENERATION_KEY,
+} from "../src/study/sqlite-private-state.js";
 import { SqliteStudyStore } from "../src/study/sqlite-store.js";
 import type { StudyRoundView, StudyWordEntry, WordbookStudyPreferences } from "../src/study/types.js";
 
@@ -126,6 +130,11 @@ function auditCounts(db: Database.Database): Record<string, number> {
   return Object.fromEntries(rows.map((row) => [row.key, row.count]));
 }
 
+function studyStateGeneration(db: Database.Database): number {
+  const row = db.prepare("SELECT value FROM metadata WHERE key = ?").get(STUDY_STATE_GENERATION_KEY) as { value: string };
+  return Number(row.value);
+}
+
 test("fresh SQLite databases record the no-source migration and reopen cleanly", async (t) => {
   const files = await fixture(t);
   const store = new CountingSqliteStudyStore(files.databaseFile);
@@ -143,6 +152,7 @@ test("fresh SQLite databases record the no-source migration and reopen cleanly",
   `).all(PRIVATE_STATE_MIGRATION_KEY) as Array<{ key: string; value: string }>).map((row) => [row.key, row.value]));
   assert.equal(markers.legacy_json_import_v1, "no-source");
   assert.deepEqual(JSON.parse(markers[PRIVATE_STATE_MIGRATION_KEY]!), { status: "complete", clients: 0 });
+  assert.equal(studyStateGeneration(db), 0);
   const tables = new Set((db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>).map((row) => row.name));
   for (const table of ["dictionary_entries", "wordbooks", "wordbook_words", "study_events", "study_states", "study_rounds", "study_round_tasks"]) {
     assert.equal(tables.has(table), true, `missing normalized table ${table}`);
@@ -163,6 +173,7 @@ test("SQLite upgrades the intermediate client-only word-id primary key", async (
   seed.close();
 
   const old = new Database(files.databaseFile);
+  const generationBeforeUpgrade = studyStateGeneration(old);
   old.exec(`
     DROP INDEX wordbook_words_book_position_idx;
     DROP INDEX wordbook_words_book_word_idx;
@@ -204,6 +215,7 @@ test("SQLite upgrades the intermediate client-only word-id primary key", async (
   );
   const marker = db.prepare("SELECT value FROM metadata WHERE key = ?").get(PRIVATE_SCHEMA_MIGRATION_KEY) as { value: string };
   assert.deepEqual(JSON.parse(marker.value).primaryKey, ["client_id", "wordbook_id", "id"]);
+  assert.equal(studyStateGeneration(db), generationBeforeUpgrade + 1);
   assert.deepEqual(db.pragma("foreign_key_check"), []);
   db.close();
 });
@@ -319,6 +331,7 @@ test("SQLite atomically migrates a complete legacy client document to normalized
   assert.equal((db.prepare("SELECT COUNT(*) AS count FROM study_round_operations").get() as { count: number }).count, 1);
   const marker = db.prepare("SELECT value FROM metadata WHERE key = ?").get(PRIVATE_STATE_MIGRATION_KEY) as { value: string };
   assert.equal(JSON.parse(marker.value).status, "complete");
+  assert.equal(studyStateGeneration(db), 1);
   db.close();
 
   const reopened = new SqliteStudyStore(files.databaseFile, { legacyJsonFile: files.legacyJsonFile });

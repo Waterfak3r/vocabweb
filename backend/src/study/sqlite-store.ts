@@ -8,6 +8,7 @@ import {
   createPrivateStateSchema,
   loadPrivateClients,
   migratePrivateStateIfNeeded,
+  STUDY_STATE_GENERATION_KEY,
   syncPrivateClients,
 } from "./sqlite-private-state.js";
 import type { AccountAvatar, AccountAvatarInput, AccountUser, CatalogContribution, CatalogRevision, CatalogWordbook } from "./types.js";
@@ -49,8 +50,6 @@ type StudyStateRow = {
 };
 
 const LEGACY_IMPORT_KEY = "legacy_json_import_v1";
-const STUDY_GENERATION_KEY = "study_state_generation";
-
 class StaleStudyStateError extends Error {
   constructor() {
     super("Study state changed before the transaction could commit");
@@ -467,7 +466,7 @@ export class SqliteStudyStore extends BaseStore {
       CREATE INDEX IF NOT EXISTS catalog_contributions_catalog_status_idx ON catalog_contributions(catalog_id, status, created_at DESC);
       CREATE INDEX IF NOT EXISTS catalog_contributions_contributor_status_idx ON catalog_contributions(contributor_user_id, status, created_at DESC);
     `);
-    db.prepare("INSERT INTO metadata(key, value) VALUES (?, '0') ON CONFLICT(key) DO NOTHING").run(STUDY_GENERATION_KEY);
+    db.prepare("INSERT INTO metadata(key, value) VALUES (?, '0') ON CONFLICT(key) DO NOTHING").run(STUDY_STATE_GENERATION_KEY);
     const userColumns = db.prepare("PRAGMA table_info(users)").all() as Array<{ name: string }>;
     if (!userColumns.some((column) => column.name === "role")) {
       db.exec("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('user', 'admin'))");
@@ -484,13 +483,13 @@ export class SqliteStudyStore extends BaseStore {
   }
 
   private readStudyGeneration(db: Database.Database): number {
-    const row = db.prepare("SELECT value FROM metadata WHERE key = ?").get(STUDY_GENERATION_KEY) as { value: string } | undefined;
+    const row = db.prepare("SELECT value FROM metadata WHERE key = ?").get(STUDY_STATE_GENERATION_KEY) as { value: string } | undefined;
     const parsed = Number(row?.value ?? 0);
     return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 0;
   }
 
   private bumpStudyGeneration(db: Database.Database): number {
-    db.prepare("UPDATE metadata SET value = CAST(value AS INTEGER) + 1 WHERE key = ?").run(STUDY_GENERATION_KEY);
+    db.prepare("UPDATE metadata SET value = CAST(value AS INTEGER) + 1 WHERE key = ?").run(STUDY_STATE_GENERATION_KEY);
     return this.readStudyGeneration(db);
   }
 

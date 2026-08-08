@@ -22,6 +22,7 @@ import type {
 
 export const PRIVATE_STATE_MIGRATION_KEY = "normalized_private_state_v1";
 export const PRIVATE_SCHEMA_MIGRATION_KEY = "normalized_private_schema_v2";
+export const STUDY_STATE_GENERATION_KEY = "study_state_generation";
 
 type ClientRow = { client_id: string; data_json: string; study_settings_json: string | null };
 type FavoriteRow = { client_id: string; catalog_id: string };
@@ -61,6 +62,13 @@ type RoundFlagKind = (typeof ROUND_FLAG_KINDS)[number];
 
 function same(left: unknown, right: unknown): boolean {
   return left === right || JSON.stringify(left) === JSON.stringify(right);
+}
+
+function advanceStudyStateGeneration(db: Database.Database): void {
+  db.prepare(`
+    INSERT INTO metadata(key, value) VALUES (?, '1')
+    ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1
+  `).run(STUDY_STATE_GENERATION_KEY);
 }
 
 function keyed<T>(items: T[], key: (item: T) => string): Map<string, T> {
@@ -375,6 +383,7 @@ function ensureWordbookWordScopedPrimaryKey(db: Database.Database): void {
     return;
   }
   const upgrade = db.transaction(() => {
+    let rebuilt = false;
     if (!matches()) {
       db.exec(`
         DROP INDEX IF EXISTS wordbook_words_book_position_idx;
@@ -411,11 +420,13 @@ function ensureWordbookWordScopedPrimaryKey(db: Database.Database): void {
         CREATE INDEX wordbook_words_entry_idx
           ON wordbook_words(entry_id, client_id, wordbook_id);
       `);
+      rebuilt = true;
     }
     db.prepare("INSERT INTO metadata(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(
       PRIVATE_SCHEMA_MIGRATION_KEY,
       JSON.stringify({ status: "complete", primaryKey: expected }),
     );
+    if (rebuilt) advanceStudyStateGeneration(db);
   });
   upgrade.immediate();
 }
@@ -464,6 +475,7 @@ export function migratePrivateStateIfNeeded(db: Database.Database): void {
       PRIVATE_STATE_MIGRATION_KEY,
       JSON.stringify({ status: "complete", clients: rows.length }),
     );
+    if (rows.length > 0) advanceStudyStateGeneration(db);
   });
   migrateRows.immediate();
 }
