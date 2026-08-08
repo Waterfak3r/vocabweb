@@ -66,5 +66,6 @@ This project runs inside **Herdr**. The main agent is **Codex**; coordination ha
 - Start another agent only through Herdr: `herdr agent start <name> --kind claude --pane <pane-id>`; never spawn terminals behind the user's back.
 - Delegate only well-specified tasks with clear acceptance criteria and an output path; agents cannot read each other's context, so write the task down.
 - Check results with `herdr agent wait <name> --until idle` then `herdr agent read <name>`; surface anything unexpected to the user.
+- **Claude Code panes are ephemeral**: close the pane once its task is done (`herdr pane close <pane-id>`), unless the user explicitly asked to keep it running.
 - You are the integrator: merge, reconcile, and report. Do not offload coordination or final decisions to subagents.
 - If a subagent reports a blocking issue, take it over yourself instead of bouncing it back.
