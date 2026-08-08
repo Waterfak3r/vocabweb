@@ -28,6 +28,7 @@ During development Vite proxies `/api` to Express. Production builds the SPA int
 - Component-local React state handles transient view state.
 - Feature hooks own disposable study-session state; it is not a durable source of truth.
 - `AuthProvider` performs one shared session lookup and exposes account actions.
+- Account avatars are center-cropped and re-encoded in the browser before the typed account adapter uploads them; the shared auth context replaces its lightweight user DTO so the profile and header update together.
 - Zustand `wordbookStore.ts` persists the legacy/local wordbook to `localStorage`.
 - Synced personal wordbooks, study progress, marketplace data, collaboration, and account operations flow through `WorkspaceApi` and the backend.
 - Browser storage also holds anonymous client identity, preferences, and bounded caches. The session cookie—not stored client identity—is the authentication credential.
@@ -39,6 +40,7 @@ During development Vite proxies `/api` to Express. Production builds the SPA int
 - `backend/src/study/validation.ts` parses untrusted study, wordbook, marketplace, and collaboration inputs before domain operations run.
 - `backend/src/study/types.ts` defines the backend domain/store contract; `store.ts` contains domain behavior and compatibility stores; `sqlite-store.ts` supplies production persistence.
 - `backend/src/auth.ts` owns password hashing, session tokens, and cookie utilities; `authorization.ts` maps roles to capabilities.
+- Account avatar validation is isolated in `backend/src/account-avatar.ts`; production stores its bounded BLOB separately and reads it only for versioned authenticated image delivery or an account export.
 - `backend/src/engagement/store.ts` isolates search analytics, feedback, site settings, messages, and message notifications behind an engagement-store interface.
 - `backend/src/words/` contains normalization, provider-facing types, caching, and lookup service logic. `providers/` contains the local SQLite dictionary, the remote WiktAPI definition fallback, and the Youdao pronunciation adapter.
 

@@ -48,6 +48,7 @@ async function register(baseUrl: string, clientId: string, username: string) {
       clientId: string;
       role: "user" | "admin";
       createdAt: string;
+      avatarUrl: string | null;
       capabilities: string[];
     },
     cookie: setCookie.split(";")[0]!,
@@ -65,6 +66,7 @@ test("sessions override client headers, claimed ids require auth, and logout is 
       clientId: ALICE_CLIENT,
       role: "user",
       createdAt: alice.user.createdAt,
+      avatarUrl: null,
       capabilities: [],
     });
 
@@ -88,6 +90,7 @@ test("sessions override client headers, claimed ids require auth, and logout is 
       clientId: ALICE_CLIENT,
       role: "user",
       createdAt: alice.user.createdAt,
+      avatarUrl: null,
       capabilities: [],
     });
 
@@ -535,6 +538,7 @@ test("client merge remaps colliding book, word, and event ids with references in
     contributions: [],
     clients: {},
     users: [],
+    userAvatars: {},
     sessions: [],
   });
   const entry = { word: "resilient", phonetic: "", meanings: [], source: "user" as const };

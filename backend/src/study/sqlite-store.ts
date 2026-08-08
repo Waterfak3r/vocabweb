@@ -1,9 +1,10 @@
 import { mkdir, readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import Database from "better-sqlite3";
+import { createAccountAvatar, decodeAccountAvatar } from "../account-avatar.js";
 import { BaseStore, type StudyResourceLimits } from "./store.js";
 import { EMPTY, migrate, type ClientData, type State } from "./ladder.js";
-import type { AccountUser, CatalogContribution, CatalogRevision, CatalogWordbook } from "./types.js";
+import type { AccountAvatar, AccountAvatarInput, AccountUser, CatalogContribution, CatalogRevision, CatalogWordbook } from "./types.js";
 
 type SqliteStoreOptions = {
   now?: () => Date;
@@ -19,7 +20,9 @@ type UserRow = {
   client_id: string;
   role: "user" | "admin";
   created_at: string;
+  avatar_version: string | null;
 };
+type AvatarRow = { mime_type: AccountAvatar["mimeType"]; data: Buffer; version: string; updated_at: string };
 type SessionRow = {
   token_hash: string;
   user_id: string;
@@ -36,6 +39,18 @@ function same(left: unknown, right: unknown): boolean {
 
 function keyed<T>(items: T[], key: (item: T) => string): Map<string, T> {
   return new Map(items.map((item) => [key(item), item]));
+}
+
+function userFromRow(row: UserRow): AccountUser {
+  return {
+    id: row.id,
+    username: row.username,
+    passwordHash: row.password_hash,
+    clientId: row.client_id,
+    role: row.role,
+    createdAt: row.created_at,
+    ...(row.avatar_version ? { avatarVersion: row.avatar_version } : {}),
+  };
 }
 
 /**
@@ -73,6 +88,69 @@ export class SqliteStudyStore extends BaseStore {
     await db.backup(destination);
   }
 
+  override async getUserAvatar(userId: string): Promise<AccountAvatar | null> {
+    return await this.serialize(async () => {
+      const db = await this.open();
+      const row = db.prepare(`
+        SELECT mime_type, data, version, updated_at
+        FROM user_avatars
+        WHERE user_id = ?
+      `).get(userId) as AvatarRow | undefined;
+      if (!row) return null;
+      const avatar: AccountAvatar = {
+        mimeType: row.mime_type,
+        dataBase64: row.data.toString("base64"),
+        version: row.version,
+        updatedAt: row.updated_at,
+      };
+      return decodeAccountAvatar(avatar) ? avatar : null;
+    });
+  }
+
+  override async setUserAvatar(userId: string, input: AccountAvatarInput | null): Promise<AccountUser | null> {
+    return await this.serialize(async () => {
+      const db = await this.open();
+      const row = db.prepare(`
+        SELECT u.id, u.username, u.password_hash, u.client_id, u.role, u.created_at,
+               a.version AS avatar_version
+        FROM users u
+        LEFT JOIN user_avatars a ON a.user_id = u.id
+        WHERE u.id = ?
+      `).get(userId) as UserRow | undefined;
+      if (!row) return null;
+      let avatarVersion: string | null = null;
+      if (input) {
+        const avatar = createAccountAvatar(input, this.now().toISOString());
+        const bytes = decodeAccountAvatar(avatar);
+        if (!bytes) throw new Error("Account avatar payload is invalid");
+        db.prepare(`
+          INSERT INTO user_avatars(user_id, mime_type, data, version, updated_at)
+          VALUES (?, ?, ?, ?, ?)
+          ON CONFLICT(user_id) DO UPDATE SET
+            mime_type = excluded.mime_type,
+            data = excluded.data,
+            version = excluded.version,
+            updated_at = excluded.updated_at
+        `).run(userId, avatar.mimeType, bytes, avatar.version, avatar.updatedAt);
+        avatarVersion = avatar.version;
+      } else {
+        db.prepare("DELETE FROM user_avatars WHERE user_id = ?").run(userId);
+      }
+      this.clearCachedState();
+      return userFromRow({ ...row, avatar_version: avatarVersion });
+    });
+  }
+
+  override async exportUserData(userId: string): Promise<unknown | null> {
+    const exported = await super.exportUserData(userId);
+    if (!exported || typeof exported !== "object") return exported;
+    const avatar = await this.getUserAvatar(userId);
+    if (avatar && "account" in exported && exported.account && typeof exported.account === "object") {
+      (exported.account as Record<string, unknown>).avatar = avatar;
+    }
+    return exported;
+  }
+
   protected async refreshBeforeOperation(): Promise<void> {
     const db = await this.open();
     const version = (db.pragma("data_version", { simple: true }) as number);
@@ -90,15 +168,12 @@ export class SqliteStudyStore extends BaseStore {
     for (const row of db.prepare("SELECT client_id, data_json FROM clients").all() as Array<{ client_id: string; data_json: string }>) {
       clients[row.client_id] = JSON.parse(row.data_json) as ClientData;
     }
-    const users = (db.prepare("SELECT id, username, password_hash, client_id, role, created_at FROM users").all() as UserRow[])
-      .map((row): AccountUser => ({
-        id: row.id,
-        username: row.username,
-        passwordHash: row.password_hash,
-        clientId: row.client_id,
-        role: row.role,
-        createdAt: row.created_at,
-      }));
+    const users = (db.prepare(`
+      SELECT u.id, u.username, u.password_hash, u.client_id, u.role, u.created_at,
+             a.version AS avatar_version
+      FROM users u
+      LEFT JOIN user_avatars a ON a.user_id = u.id
+    `).all() as UserRow[]).map(userFromRow);
     const sessions = (db.prepare("SELECT token_hash, user_id, expires_at, created_at FROM sessions").all() as SessionRow[])
       .map((row) => ({
         tokenHash: row.token_hash,
@@ -113,7 +188,7 @@ export class SqliteStudyStore extends BaseStore {
     const contributions = (db.prepare("SELECT data_json FROM catalog_contributions").all() as JsonRow[])
       .map((row) => JSON.parse(row.data_json) as CatalogContribution);
 
-    return migrate({ version: 6, catalog, revisions, contributions, clients, users, sessions });
+    return migrate({ version: 6, catalog, revisions, contributions, clients, users, userAvatars: {}, sessions });
   }
 
   protected async save(state: State, previous?: State): Promise<void> {
@@ -159,6 +234,13 @@ export class SqliteStudyStore extends BaseStore {
         client_id TEXT NOT NULL UNIQUE,
         role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('user', 'admin')),
         created_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS user_avatars (
+        user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+        mime_type TEXT NOT NULL CHECK (mime_type IN ('image/jpeg', 'image/png', 'image/webp')),
+        data BLOB NOT NULL CHECK (length(data) BETWEEN 1 AND 524288),
+        version TEXT NOT NULL,
+        updated_at TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS sessions (
         token_hash TEXT PRIMARY KEY,
@@ -250,6 +332,7 @@ export class SqliteStudyStore extends BaseStore {
         const empty = EMPTY();
         this.syncClients(db, empty, legacy);
         this.syncUsers(db, empty, legacy);
+        this.syncUserAvatars(db, empty, legacy);
         this.syncCatalog(db, empty, legacy);
         this.syncRevisions(db, empty, legacy);
         this.syncContributions(db, empty, legacy);
@@ -289,6 +372,28 @@ export class SqliteStudyStore extends BaseStore {
     const remove = db.prepare("DELETE FROM users WHERE id = ?");
     for (const user of after.users) if (!same(old.get(user.id), user)) upsert.run(user);
     for (const id of old.keys()) if (!current.has(id)) remove.run(id);
+  }
+
+  /** Used only by the one-time JSON import; ordinary SQLite avatar I/O stays lazy. */
+  private syncUserAvatars(db: Database.Database, before: State, after: State): void {
+    const upsert = db.prepare(`
+      INSERT INTO user_avatars(user_id, mime_type, data, version, updated_at)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(user_id) DO UPDATE SET
+        mime_type = excluded.mime_type,
+        data = excluded.data,
+        version = excluded.version,
+        updated_at = excluded.updated_at
+    `);
+    const remove = db.prepare("DELETE FROM user_avatars WHERE user_id = ?");
+    for (const [userId, avatar] of Object.entries(after.userAvatars)) {
+      if (same(before.userAvatars[userId], avatar)) continue;
+      const bytes = decodeAccountAvatar(avatar);
+      if (bytes) upsert.run(userId, avatar.mimeType, bytes, avatar.version, avatar.updatedAt);
+    }
+    for (const userId of Object.keys(before.userAvatars)) {
+      if (!(userId in after.userAvatars)) remove.run(userId);
+    }
   }
 
   private syncSessions(db: Database.Database, before: State, after: State): void {

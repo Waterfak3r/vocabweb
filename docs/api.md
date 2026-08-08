@@ -2,7 +2,7 @@
 
 ## Transport
 
-- All application endpoints live under `/api` and use JSON except empty responses and pronunciation audio.
+- All application endpoints live under `/api` and use JSON except empty responses, pronunciation audio, and account-avatar image bytes.
 - Development uses `frontend/vite.config.ts` to proxy `/api` to `127.0.0.1:3000`; committed frontend environments set `VITE_API_BASE=/`.
 - Production serves the SPA and API from one origin. Frontend API clients include `credentials: 'include'` for session cookies.
 - Additional development origins are controlled by `FRONTEND_ORIGIN`, but cross-origin configuration does not replace the same-site session design.
@@ -39,6 +39,8 @@ Keep existing HTTP status meanings and machine error codes backward compatible. 
 - Session cookies use same-site behavior and become `Secure` under production security. Correct `TRUST_PROXY` configuration is required when HTTPS terminates at a proxy.
 - `POST /api/auth/logout` revokes the current session and clears the cookie; account password changes revoke other sessions.
 - `GET /api/auth/me` is the frontend's source of truth for signed-in state; an absent or expired session is anonymous.
+- Auth DTOs expose `avatarUrl: string | null` on current servers. The URL contains an opaque replacement version and never embeds image data; clients remain compatible with older DTOs where the field is absent.
+- `PUT /api/account/avatar` accepts an authenticated raw JPEG, PNG, or WebP body up to 512 KiB. `DELETE /api/account/avatar` restores the generated initials, and `GET /api/account/avatar/:version` serves only the current session account's exact current version.
 
 `X-Vocab-Client-Id` is a browser-readable identifier for anonymous data partitioning, not a credential:
 

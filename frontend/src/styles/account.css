@@ -291,6 +291,7 @@
 
 .user-avatar {
   display: inline-grid;
+  overflow: hidden;
   flex: 0 0 auto;
   place-items: center;
   border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--rule));
@@ -303,6 +304,15 @@
   line-height: 1;
   user-select: none;
 }
+
+.user-avatar img {
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  object-fit: cover;
+}
+
+.user-avatar-image { background: var(--surface-solid); }
 
 .user-avatar-sm { width: 1.65rem; height: 1.65rem; border-radius: 0.48rem; font-size: 0.68rem; }
 .user-avatar-md { width: 2.1rem; height: 2.1rem; border-radius: 0.58rem; font-size: 0.82rem; }
@@ -372,6 +382,48 @@
 .account-hero-avatar {
   box-shadow: 0 0.8rem 2.4rem color-mix(in srgb, var(--accent) 12%, transparent);
 }
+
+.account-avatar-editor {
+  display: grid;
+  justify-items: center;
+  gap: 0.65rem;
+}
+
+.account-avatar-actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+}
+
+.account-avatar-actions button {
+  min-height: 2.15rem;
+  padding: 0.35rem 0.72rem;
+  border: 1px solid var(--input-border);
+  border-radius: 999px;
+  background: var(--surface-solid);
+  color: var(--ink);
+  font-size: var(--text-sm);
+  font-weight: 650;
+  transition: border-color 160ms ease, color 160ms ease, transform 120ms ease;
+}
+
+.account-avatar-actions button:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent-strong);
+  transform: translateY(-1px);
+}
+
+.account-avatar-actions button:disabled { cursor: wait; opacity: 0.62; }
+.account-avatar-actions .account-avatar-remove { color: var(--muted); }
+
+.account-avatar-status {
+  min-height: 1.25rem;
+  color: var(--muted);
+  font-size: var(--text-xs);
+}
+
+.account-avatar-status.error { color: var(--danger); }
 
 .account-profile-hero .account-identity-copy { margin-top: 1rem; }
 

@@ -1,8 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
 import { isJsonObject } from "./validation.js";
 import { catalogDiffStats, diffCatalogWords } from "./collaboration.js";
+import { isAccountAvatarVersion, isStoredAccountAvatar } from "../account-avatar.js";
 import type {
-  AccountUser, CatalogCard, CatalogContribution, CatalogRevision, CatalogRevisionSummary, CatalogWordbook, ImportDraft, LearningEvent, LevelCounts, MyWordbook, MyWordbookCard,
+  AccountAvatar, AccountUser, CatalogCard, CatalogContribution, CatalogRevision, CatalogRevisionSummary, CatalogWordbook, ImportDraft, LearningEvent, LevelCounts, MyWordbook, MyWordbookCard,
   ReviewSchedule, StudiedWord, StudyMeaning, StudyRound, StudyWordEntry, LearningQueueItem, SyncedStudySettings,
   WordLearningStatus, WordLevel, WordbookProgress, WordbookStudyPreferences, WordbookWord,
 } from "./types.js";
@@ -28,9 +29,11 @@ export interface State {
   contributions: CatalogContribution[];
   clients: Record<string, ClientData>;
   users: AccountUser[];
+  /** JSON/memory avatar payloads. SQLite keeps this map empty and reads its BLOB table lazily. */
+  userAvatars: Record<string, AccountAvatar>;
   sessions: SessionRecord[];
 }
-export const EMPTY = (): State => ({ version: 6, catalog: [], revisions: [], contributions: [], clients: {}, users: [], sessions: [] });
+export const EMPTY = (): State => ({ version: 6, catalog: [], revisions: [], contributions: [], clients: {}, users: [], userAvatars: {}, sessions: [] });
 export const RETENTION_MS = 90 * 86_400_000;
 export const BATCH_SIZE = 500;
 
@@ -468,11 +471,24 @@ export function migrate(raw: unknown): State {
   state.version = 6;
   // Accounts and sessions are newer than the on-disk document; default them so older files load.
   state.users ??= [];
+  state.userAvatars = isJsonObject(state.userAvatars) ? state.userAvatars : {};
   state.sessions ??= [];
   state.revisions ??= [];
   state.contributions ??= [];
   for (const user of state.users) {
     if (user.role !== "admin") user.role = "user";
+    const avatar = state.userAvatars[user.id];
+    if (avatar && isStoredAccountAvatar(avatar)) user.avatarVersion = avatar.version;
+    else if (avatar) {
+      delete state.userAvatars[user.id];
+      delete user.avatarVersion;
+    }
+    if (user.avatarVersion !== undefined && !isAccountAvatarVersion(user.avatarVersion)) {
+      delete user.avatarVersion;
+    }
+  }
+  for (const userId of Object.keys(state.userAvatars)) {
+    if (!state.users.some((user) => user.id === userId)) delete state.userAvatars[userId];
   }
   for (const book of state.catalog) {
     // Existing/legacy catalog entries predate visibility; the marketplace treats them as public.

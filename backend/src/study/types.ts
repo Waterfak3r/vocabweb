@@ -505,8 +505,26 @@ export interface BatchWordResult {
 }
 
 export type UserRole = "user" | "admin";
+export type AccountAvatarMimeType = "image/jpeg" | "image/png" | "image/webp";
+export interface AccountAvatar {
+  mimeType: AccountAvatarMimeType;
+  dataBase64: string;
+  /** Random cache-busting token; it changes on every successful replacement. */
+  version: string;
+  updatedAt: string;
+}
+export type AccountAvatarInput = Pick<AccountAvatar, "mimeType" | "dataBase64">;
 /** A registered account. `clientId` is the account's data home (the anonymous id adopted at registration). */
-export interface AccountUser { id: string; username: string; passwordHash: string; clientId: string; role: UserRole; createdAt: string; }
+export interface AccountUser {
+  id: string;
+  username: string;
+  passwordHash: string;
+  clientId: string;
+  role: UserRole;
+  createdAt: string;
+  /** Lightweight metadata only; avatar bytes live behind the dedicated store seam. */
+  avatarVersion?: string;
+}
 
 /** Persistence seam: production SQLite is durable; tests inject the memory store. */
 export interface StudyStore {
@@ -520,6 +538,8 @@ export interface StudyStore {
   setUserRole(username: string, role: UserRole): Promise<AccountUser | null>;
   /** Replaces a password hash and revokes every session except the one making the change. */
   updateUserPassword(userId: string, passwordHash: string, keepSessionTokenHash: string): Promise<AccountUser | null>;
+  getUserAvatar(userId: string): Promise<AccountAvatar | null>;
+  setUserAvatar(userId: string, input: AccountAvatarInput | null): Promise<AccountUser | null>;
   exportUserData(userId: string): Promise<unknown | null>;
   deleteUser(userId: string): Promise<boolean>;
   createSession(tokenHash: string, userId: string, expiresAt: string): Promise<void>;

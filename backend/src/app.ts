@@ -2,6 +2,12 @@ import path from "node:path";
 import cors from "cors";
 import express, { type ErrorRequestHandler, type RequestHandler } from "express";
 import helmet from "helmet";
+import {
+  ACCOUNT_AVATAR_MAX_BYTES,
+  decodeAccountAvatar,
+  hasAccountAvatarSignature,
+  parseAccountAvatarMimeType,
+} from "./account-avatar.js";
 import { MemoryEngagementStore, type EngagementStore, type FeedbackInput, type FeedbackType, type MessageActor } from "./engagement/store.js";
 import {
   clearSessionCookie, createSessionToken, hashPassword, hashSessionToken, parseAuthCredentials, parsePasswordChange,
@@ -550,7 +556,16 @@ export function createApp(options: CreateAppOptions = {}) {
     }),
   );
   app.use("/api", enforceMutationRateLimit);
-  app.use(express.json({ limit: "2mb" }));
+  const jsonBodyParser = express.json({ limit: "2mb" });
+  app.use((request, response, next) => {
+    // The avatar route owns a stricter raw-body parser; do not let the general
+    // JSON parser consume a mislabeled avatar payload under its larger limit.
+    if (request.method === "PUT" && request.path === "/api/account/avatar") {
+      next();
+      return;
+    }
+    jsonBodyParser(request, response, next);
+  });
   app.use("/api", async (request, response, next) => {
     try {
       const headerClientId = parseClientId(request.header("x-vocab-client-id"));
@@ -595,7 +610,31 @@ export function createApp(options: CreateAppOptions = {}) {
     role: user.role,
     createdAt: user.createdAt,
     capabilities: capabilitiesFor(user),
+    avatarUrl: user.avatarVersion
+      ? `/api/account/avatar/${encodeURIComponent(user.avatarVersion)}`
+      : null,
   });
+  const requireAccount: RequestHandler = (_request, response, next) => {
+    if (!identityOf(response).user) {
+      response.status(401).json(apiError("AUTH_REQUIRED", "No active account session"));
+      return;
+    }
+    next();
+  };
+  const avatarBodyParser = express.raw({ type: () => true, limit: ACCOUNT_AVATAR_MAX_BYTES, inflate: false });
+  const parseAvatarBody: RequestHandler = (request, response, next) => {
+    avatarBodyParser(request, response, (error) => {
+      if (error && typeof error === "object" && "type" in error && error.type === "entity.too.large") {
+        response.status(413).json(apiError("AVATAR_TOO_LARGE", "Avatar image exceeds the 512 KiB limit"));
+        return;
+      }
+      if (error && typeof error === "object" && "type" in error && error.type === "encoding.unsupported") {
+        response.status(415).json(apiError("UNSUPPORTED_AVATAR_ENCODING", "Compressed avatar request bodies are not supported"));
+        return;
+      }
+      next(error);
+    });
+  };
   const beginSession = async (response: express.Response, user: AccountUser) => {
     const created = createSessionToken();
     await studyStore.createSession(created.tokenHash, user.id, sessionExpiresAt());
@@ -700,6 +739,63 @@ export function createApp(options: CreateAppOptions = {}) {
       return;
     }
     response.status(200).json(authDto(user));
+  });
+
+  app.get("/api/account/avatar/:version", requireAccount, async (request, response, next) => {
+    const user = identityOf(response).user!;
+    if (!user.avatarVersion || request.params.version !== user.avatarVersion) {
+      response.status(404).json(apiError("AVATAR_NOT_FOUND", "Account avatar was not found"));
+      return;
+    }
+    try {
+      const avatar = await studyStore.getUserAvatar(user.id);
+      const bytes = avatar ? decodeAccountAvatar(avatar) : null;
+      if (!avatar || !bytes || avatar.version !== request.params.version) {
+        response.status(404).json(apiError("AVATAR_NOT_FOUND", "Account avatar was not found"));
+        return;
+      }
+      response.setHeader("Cache-Control", "private, max-age=31536000, immutable");
+      response.vary("Cookie");
+      response.setHeader("Content-Type", avatar.mimeType);
+      response.setHeader("Content-Disposition", "inline");
+      response.status(200).send(bytes);
+    } catch (error) { next(error); }
+  });
+
+  app.put("/api/account/avatar", requireAccount, parseAvatarBody, async (request, response, next) => {
+    const user = identityOf(response).user!;
+    const mimeType = parseAccountAvatarMimeType(request.header("content-type"));
+    if (!mimeType) {
+      response.status(415).json(apiError("UNSUPPORTED_AVATAR_TYPE", "Avatar must be JPEG, PNG, or WebP"));
+      return;
+    }
+    if (!Buffer.isBuffer(request.body) || !hasAccountAvatarSignature(request.body, mimeType)) {
+      response.status(400).json(apiError("INVALID_AVATAR_IMAGE", "Avatar bytes do not match the declared image type"));
+      return;
+    }
+    try {
+      const updated = await studyStore.setUserAvatar(user.id, {
+        mimeType,
+        dataBase64: request.body.toString("base64"),
+      });
+      if (!updated) {
+        response.status(404).json(apiError("ACCOUNT_NOT_FOUND", "Account no longer exists"));
+        return;
+      }
+      response.status(200).json(authDto(updated));
+    } catch (error) { next(error); }
+  });
+
+  app.delete("/api/account/avatar", requireAccount, async (_request, response, next) => {
+    const user = identityOf(response).user!;
+    try {
+      const updated = await studyStore.setUserAvatar(user.id, null);
+      if (!updated) {
+        response.status(404).json(apiError("ACCOUNT_NOT_FOUND", "Account no longer exists"));
+        return;
+      }
+      response.status(200).json(authDto(updated));
+    } catch (error) { next(error); }
   });
 
   app.get("/api/account/export", async (_request, response, next) => {
@@ -1878,6 +1974,14 @@ export function createApp(options: CreateAppOptions = {}) {
 
     if (error instanceof StudyResourceLimitError) {
       response.status(409).json(apiError("RESOURCE_LIMIT_EXCEEDED", `The ${error.resource} storage limit has been reached`));
+      return;
+    }
+
+    if (
+      error instanceof URIError &&
+      request.originalUrl.startsWith("/api/account/avatar/")
+    ) {
+      response.status(404).json(apiError("AVATAR_NOT_FOUND", "Account avatar was not found"));
       return;
     }
 

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
+import { createAccountAvatar } from "../account-avatar.js";
 import { isValidWordQuery, normalizeWord } from "../words/normalize.js";
 import { isJsonObject } from "./validation.js";
 import {
@@ -21,7 +22,7 @@ import {
 } from "./ladder.js";
 import type { ClientData, State } from "./ladder.js";
 import type {
-  AccountStudyProfile, AccountUser, BatchWordInput, BatchWordResult, CatalogAuthor, CatalogCard, CatalogConflict, CatalogContribution, CatalogContributionView,
+  AccountAvatar, AccountAvatarInput, AccountStudyProfile, AccountUser, BatchWordInput, BatchWordResult, CatalogAuthor, CatalogCard, CatalogConflict, CatalogContribution, CatalogContributionView,
   CatalogQuery, CatalogRevision, CatalogRevisionSummary, CatalogRevisionView, CatalogWordChange, CatalogWordbook, CatalogWordsPage, CatalogWordsQuery,
   CatalogUpdateMutationResult, CommitImportDraftInput, ContributionMutationResult, ContributionPreview, CreateCatalogContributionInput, CreateImportDraftInput, CreateMyWordbookInput,
   CursorPage, CursorQuery,
@@ -264,11 +265,29 @@ export abstract class BaseStore implements StudyStore {
     );
     return clone(user);
   }); }
+  async getUserAvatar(userId: string): Promise<AccountAvatar | null> { return await this.read((state) => {
+    const avatar = state.userAvatars[userId];
+    return avatar ? clone(avatar) : null;
+  }); }
+  async setUserAvatar(userId: string, input: AccountAvatarInput | null): Promise<AccountUser | null> { return await this.mutate((state) => {
+    const user = state.users.find((item) => item.id === userId);
+    if (!user) return null;
+    if (input) {
+      const avatar = createAccountAvatar(input, this.now().toISOString());
+      state.userAvatars[userId] = avatar;
+      user.avatarVersion = avatar.version;
+    } else {
+      delete state.userAvatars[userId];
+      delete user.avatarVersion;
+    }
+    return clone(user);
+  }); }
   async exportUserData(userId: string): Promise<unknown | null> { return await this.read((state) => {
     const user = state.users.find((item) => item.id === userId);
     if (!user) return null;
+    const avatar = state.userAvatars[user.id];
     return {
-      account: { username: user.username, role: user.role, createdAt: user.createdAt },
+      account: { username: user.username, role: user.role, createdAt: user.createdAt, ...(avatar ? { avatar: clone(avatar) } : {}) },
       collection: clone(this.clientView(state, user.clientId)),
       catalogUploads: clone(state.catalog.filter((book) => book.authorUserId === user.id)),
       contributions: clone(state.contributions.filter((contribution) => contribution.contributorUserId === user.id)),
@@ -282,6 +301,7 @@ export abstract class BaseStore implements StudyStore {
     if (index < 0) return false;
     const [user] = state.users.splice(index, 1);
     if (!user) return false;
+    delete state.userAvatars[user.id];
     state.sessions = state.sessions.filter((session) => session.userId !== userId);
     delete state.clients[user.clientId];
     const removedCatalogIds = new Set(
@@ -2207,11 +2227,17 @@ export abstract class BaseStore implements StudyStore {
   }
   /** 12 hexadecimal characters = 48 bits; legacy 6–8 character codes remain importable. */
   private shareCode(state: State): string { let code = ""; do { code = randomUUID().replace(/-/g, "").slice(0, 24).toUpperCase(); } while (state.catalog.some((book) => book.shareCode === code)); return code; }
-  private async read<T>(operation: (state: State) => T): Promise<T> { const task = this.queue.then(async () => {
+  /** Serialize implementation-specific operations with ordinary state reads/mutations. */
+  protected async serialize<T>(operation: () => Promise<T>): Promise<T> {
+    const task = this.queue.then(operation);
+    this.queue = task.then(() => undefined, () => undefined);
+    return await task;
+  }
+  private async read<T>(operation: (state: State) => T): Promise<T> { return await this.serialize(async () => {
     await this.refreshBeforeOperation();
     return operation(await this.state());
-  }); this.queue = task.then(() => undefined, () => undefined); return await task; }
-  private async mutate<T>(operation: (state: State) => T): Promise<T> { const task = this.queue.then(async () => {
+  }); }
+  private async mutate<T>(operation: (state: State) => T): Promise<T> { return await this.serialize(async () => {
     await this.refreshBeforeOperation();
     const previous = await this.state();
     const draft = clone(previous);
@@ -2220,7 +2246,7 @@ export abstract class BaseStore implements StudyStore {
     await this.save(draft, previous);
     this.statePromise = Promise.resolve(draft);
     return value;
-  }); this.queue = task.then(() => undefined, () => undefined); return await task; }
+  }); }
   private async state(): Promise<State> {
     if (!this.statePromise) {
       const loading = this.load();

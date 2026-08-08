@@ -18,6 +18,7 @@ export type UseAuth = {
   login: (username: string, password: string) => Promise<AuthUser>
   register: (username: string, password: string) => Promise<AuthUser>
   logout: () => Promise<void>
+  replaceUser: (user: AuthUser) => void
 }
 
 const AuthContext = createContext<UseAuth | null>(null)
@@ -113,9 +114,13 @@ function useAuthState(): UseAuth {
     await completeLogout(() => api.logout())
   }, [])
 
+  const replaceUser = useCallback((account: AuthUser) => {
+    setUser((current) => current?.clientId === account.clientId ? account : current)
+  }, [])
+
   return useMemo(
-    () => ({ user, loading, login, register, logout }),
-    [user, loading, login, register, logout],
+    () => ({ user, loading, login, register, logout, replaceUser }),
+    [user, loading, login, register, logout, replaceUser],
   )
 }
 

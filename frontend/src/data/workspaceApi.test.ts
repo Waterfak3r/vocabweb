@@ -121,6 +121,7 @@ describe('WorkspaceApi account contracts', () => {
       clientId: 'client-account-0001',
       role: 'user',
       createdAt: '2026-07-31T00:00:00.000Z',
+      avatarUrl: null,
       capabilities: [],
     }
     const fetch = vi.fn<FetchLike>()
@@ -154,6 +155,7 @@ describe('WorkspaceApi account contracts', () => {
     const fetch = vi.fn<FetchLike>()
       .mockResolvedValueOnce(new Response(JSON.stringify(legacy)))
       .mockResolvedValueOnce(new Response(JSON.stringify({ ...legacy, createdAt: 42 })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ...legacy, avatarUrl: 'https://tracker.example/avatar.png' })))
     const api = new WorkspaceApi('https://api.example.test/', {
       fetch,
       clientId: () => 'client-account-0002',
@@ -161,6 +163,40 @@ describe('WorkspaceApi account contracts', () => {
 
     await expect(api.me()).resolves.toEqual(legacy)
     await expect(api.me()).rejects.toThrow('Backend response is invalid')
+    await expect(api.me()).rejects.toThrow('Backend response is invalid')
+  })
+
+  it('uploads raw avatar bytes and returns replacements or the explicit no-avatar state', async () => {
+    const account = {
+      username: 'Learner',
+      clientId: 'client-account-0003',
+      role: 'user',
+      createdAt: '2026-08-08T00:00:00.000Z',
+      avatarUrl: '/api/account/avatar/9ef03dd4-0e65-4c45-9dca-80da679dce4c',
+      capabilities: [],
+    } as const
+    const removed = { ...account, avatarUrl: null }
+    const fetch = vi.fn<FetchLike>()
+      .mockResolvedValueOnce(new Response(JSON.stringify(account)))
+      .mockResolvedValueOnce(new Response(JSON.stringify(removed)))
+    const api = new WorkspaceApi('https://api.example.test/', {
+      fetch,
+      clientId: () => account.clientId,
+    })
+    const image = new Blob([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], { type: 'image/png' })
+
+    await expect(api.uploadAccountAvatar(image)).resolves.toEqual(account)
+    await expect(api.deleteAccountAvatar()).resolves.toEqual(removed)
+    expect(fetch).toHaveBeenNthCalledWith(1, new URL('https://api.example.test/api/account/avatar'), expect.objectContaining({
+      method: 'PUT',
+      body: image,
+      credentials: 'include',
+      headers: expect.objectContaining({ 'Content-Type': 'image/png' }),
+    }))
+    expect(fetch).toHaveBeenNthCalledWith(2, new URL('https://api.example.test/api/account/avatar'), expect.objectContaining({
+      method: 'DELETE',
+      credentials: 'include',
+    }))
   })
 
   it('loads the account study profile and rejects an incomplete activity window', async () => {

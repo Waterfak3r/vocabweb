@@ -1,9 +1,11 @@
+import { useState } from 'react'
 import { cn } from '../../lib/cn'
 
 export type UserAvatarProps = {
   username: string
   size?: 'sm' | 'md' | 'lg'
   className?: string
+  avatarUrl?: string | null
   /** Use when the username is already exposed by nearby text or a control label. */
   decorative?: boolean
 }
@@ -18,15 +20,19 @@ export function getUserInitials(username: string) {
   return initials ? initials.toLocaleUpperCase('zh-CN') : '账'
 }
 
-export function UserAvatar({ username, size = 'md', className, decorative = false }: UserAvatarProps) {
+export function UserAvatar({ username, size = 'md', className, avatarUrl, decorative = false }: UserAvatarProps) {
+  const [failedUrl, setFailedUrl] = useState<string | null>(null)
+  const showImage = Boolean(avatarUrl && failedUrl !== avatarUrl)
   return (
     <span
-      className={cn('user-avatar', `user-avatar-${size}`, className)}
+      className={cn('user-avatar', `user-avatar-${size}`, showImage && 'user-avatar-image', className)}
       role={decorative ? undefined : 'img'}
       aria-hidden={decorative || undefined}
       aria-label={decorative ? undefined : `${username}头像`}
     >
-      {getUserInitials(username)}
+      {showImage ? (
+        <img src={avatarUrl ?? undefined} alt="" onError={() => setFailedUrl(avatarUrl ?? null)} />
+      ) : getUserInitials(username)}
     </span>
   )
 }

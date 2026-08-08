@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from 'react'
 import { Link } from 'react-router'
 import { AccountActivityHeatmap } from '../components/account/AccountActivityHeatmap'
 import { AccountDeletionDialog } from '../components/account/AccountDeletionDialog'
@@ -13,9 +13,10 @@ import { UserAvatar } from '../components/account/UserAvatar'
 import { PageHeader } from '../components/layout/PageHeader'
 import { Button } from '../components/ui/Button'
 import { TextField } from '../components/ui/TextField'
-import { getWorkspaceApi, type AccountStudyProfile } from '../data/workspaceApi'
+import { WorkspaceApiError, getWorkspaceApi, type AccountStudyProfile } from '../data/workspaceApi'
 import { useAuth } from '../hooks/useAuth'
 import { useDocumentTitle } from '../hooks/useDocumentTitle'
+import { AccountAvatarImageError, prepareAccountAvatar } from '../lib/accountAvatar'
 
 const EMPTY_PASSWORDS: PasswordChangeFields = {
   currentPassword: '',
@@ -38,9 +39,23 @@ function metricNumber(value: number) {
   return new Intl.NumberFormat('zh-CN').format(Math.max(0, Number.isFinite(value) ? value : 0))
 }
 
+function avatarErrorMessage(error: unknown) {
+  if (error instanceof AccountAvatarImageError) {
+    if (error.code === 'unsupported') return '请选择 JPG、PNG 或 WebP 图片。'
+    if (error.code === 'too-large') return '原图不能超过 10 MB。'
+    if (error.code === 'decode') return '无法读取这张图片，请尝试其他文件。'
+    return '图片处理失败，请尝试其他文件。'
+  }
+  if (error instanceof WorkspaceApiError) {
+    if (error.code === 'AVATAR_TOO_LARGE') return '处理后的头像仍然过大，请尝试其他图片。'
+    if (error.code === 'UNSUPPORTED_AVATAR_TYPE' || error.code === 'INVALID_AVATAR_IMAGE') return '头像格式无效，请尝试其他图片。'
+  }
+  return '头像保存失败，请稍后重试。'
+}
+
 export function AccountPage() {
   useDocumentTitle('个人资料')
-  const { user, loading, login, register } = useAuth()
+  const { user, loading, login, register, replaceUser } = useAuth()
   const [authMode, setAuthMode] = useState<AuthMode | null>(null)
   const [profile, setProfile] = useState<AccountStudyProfile | null>(null)
   const [profileLoading, setProfileLoading] = useState(false)
@@ -54,6 +69,10 @@ export function AccountPage() {
   const [exporting, setExporting] = useState(false)
   const [exportStatus, setExportStatus] = useState('')
   const [deleteOpen, setDeleteOpen] = useState(false)
+  const [avatarAction, setAvatarAction] = useState<'upload' | 'remove' | null>(null)
+  const [avatarStatus, setAvatarStatus] = useState('')
+  const [avatarError, setAvatarError] = useState(false)
+  const avatarInputRef = useRef<HTMLInputElement>(null)
   const api = getWorkspaceApi()
   const passwordErrors = useMemo(() => validatePasswordChange(passwords), [passwords])
   const passwordReady = Object.keys(passwordErrors).length === 0
@@ -83,7 +102,44 @@ export function AccountPage() {
     return () => {
       active = false
     }
-  }, [api, profileVersion, user])
+  }, [api, profileVersion, user?.clientId])
+
+  async function uploadAvatar(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.currentTarget.files?.[0]
+    event.currentTarget.value = ''
+    if (!file || !api || avatarAction) return
+    setAvatarAction('upload')
+    setAvatarStatus('')
+    setAvatarError(false)
+    try {
+      const image = await prepareAccountAvatar(file)
+      const updated = await api.uploadAccountAvatar(image)
+      replaceUser(updated)
+      setAvatarStatus('头像已更新。')
+    } catch (error) {
+      setAvatarError(true)
+      setAvatarStatus(avatarErrorMessage(error))
+    } finally {
+      setAvatarAction(null)
+    }
+  }
+
+  async function removeAvatar() {
+    if (!api || avatarAction) return
+    setAvatarAction('remove')
+    setAvatarStatus('')
+    setAvatarError(false)
+    try {
+      const updated = await api.deleteAccountAvatar()
+      replaceUser(updated)
+      setAvatarStatus('已恢复为默认字母头像。')
+    } catch (error) {
+      setAvatarError(true)
+      setAvatarStatus(avatarErrorMessage(error))
+    } finally {
+      setAvatarAction(null)
+    }
+  }
 
   function setPasswordField(field: keyof PasswordChangeFields, value: string) {
     setPasswords((current) => ({ ...current, [field]: value }))
@@ -167,7 +223,34 @@ export function AccountPage() {
       ) : (
         <div className="account-profile">
           <section className="account-profile-hero" aria-label="账号摘要">
-            <UserAvatar username={user.username} size="lg" className="account-hero-avatar" />
+            <div className="account-avatar-editor">
+              <UserAvatar username={user.username} avatarUrl={user.avatarUrl} size="lg" className="account-hero-avatar" />
+              {user.avatarUrl !== undefined && (
+                <>
+                  <input
+                    ref={avatarInputRef}
+                    className="sr-only"
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp"
+                    aria-label="选择头像图片"
+                    onChange={(event) => { void uploadAvatar(event) }}
+                  />
+                  <div className="account-avatar-actions">
+                    <button type="button" disabled={avatarAction !== null} onClick={() => avatarInputRef.current?.click()}>
+                      {avatarAction === 'upload' ? '处理中…' : user.avatarUrl ? '更换头像' : '上传头像'}
+                    </button>
+                    {user.avatarUrl && (
+                      <button className="account-avatar-remove" type="button" disabled={avatarAction !== null} onClick={() => { void removeAvatar() }}>
+                        {avatarAction === 'remove' ? '正在移除…' : '移除'}
+                      </button>
+                    )}
+                  </div>
+                  <p className={avatarError ? 'account-avatar-status error' : 'account-avatar-status'} aria-live="polite">
+                    {avatarStatus || 'JPG、PNG 或 WebP，自动裁切为正方形。'}
+                  </p>
+                </>
+              )}
+            </div>
             <div className="account-identity-copy">
               <h2>{user.username}</h2>
               <p>{user.role === 'admin' ? '管理员账号' : '学习者账号'}</p>

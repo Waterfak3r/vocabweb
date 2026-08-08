@@ -430,7 +430,7 @@ export function SiteHeader() {
             }}
             onKeyDown={handleTriggerKeyDown}
           >
-            {user ? <UserAvatar username={user.username} size="sm" decorative /> : <NavIcon name="account" />}
+            {user ? <UserAvatar username={user.username} avatarUrl={user.avatarUrl} size="sm" decorative /> : <NavIcon name="account" />}
             账号
             {pendingContributions > 0 && <span className="nav-unread" aria-label={`${pendingContributions} 条待审核建议`}>{pendingContributions > 99 ? '99+' : pendingContributions}</span>}
             <svg className="nav-chevron" viewBox="0 0 16 16" aria-hidden="true">
@@ -444,7 +444,7 @@ export function SiteHeader() {
               ) : user ? (
                 <>
                   <p className="account-user">
-                    <UserAvatar username={user.username} size="sm" decorative />
+                    <UserAvatar username={user.username} avatarUrl={user.avatarUrl} size="sm" decorative />
                     <span>{user.username}</span>
                   </p>
                   <Link role="menuitem" to="/account" onClick={() => setAccountOpen(false)}>个人资料</Link>

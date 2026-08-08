@@ -15,6 +15,7 @@ const clientIdKey = "vocab-ielts:client-id:v1";
 const username = `验收用户_${Date.now().toString(36)}`;
 const password = "E2e-pass-2026!";
 const changedPassword = "E2e-pass-updated-2026!";
+const avatarPng = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
 const visualCaptureDir = process.env.ACCOUNT_VISUAL_CAPTURE?.trim();
 const sourceTitle = `匿名验收词本-${Date.now().toString(36)}`;
 const titles = {
@@ -279,6 +280,39 @@ async function main() {
     await owner.locator(".account-metrics dd").first().waitFor();
     assert.deepEqual(await owner.locator(".account-metrics dd").allTextContents(), ["1", "1", "0", "0", "0"]);
     step("个人资料页展示真实词书、词量与 90 天学习统计");
+
+    const avatarInput = owner.getByLabel("选择头像图片");
+    const avatarFile = { name: "avatar.png", mimeType: "image/png", buffer: avatarPng };
+    await avatarInput.setInputFiles(avatarFile);
+    await owner.getByText("头像已更新。", { exact: true }).waitFor();
+    const heroAvatarImage = owner.locator(".account-hero-avatar img");
+    await heroAvatarImage.waitFor();
+    const firstAvatarUrl = await heroAvatarImage.getAttribute("src");
+    assert.match(firstAvatarUrl ?? "", /^\/api\/account\/avatar\/[A-Za-z0-9-]+$/);
+    assert.equal(await owner.locator(".account-trigger .user-avatar img").count(), 1);
+
+    await avatarInput.setInputFiles(avatarFile);
+    await owner.waitForFunction(
+      (previousUrl) => document.querySelector(".account-hero-avatar img")?.getAttribute("src") !== previousUrl,
+      firstAvatarUrl,
+    );
+    await heroAvatarImage.dispatchEvent("error");
+    await owner.locator(".account-trigger .user-avatar img").dispatchEvent("error");
+    await heroAvatarImage.waitFor({ state: "detached" });
+    assert.notEqual((await owner.locator(".account-hero-avatar").textContent())?.trim(), "");
+    assert.equal(await owner.locator(".account-trigger .user-avatar img").count(), 0);
+
+    await owner.reload();
+    await owner.getByRole("heading", { name: "个人资料" }).waitFor();
+    await heroAvatarImage.waitFor();
+    const replacementAvatarUrl = await heroAvatarImage.getAttribute("src");
+    assert.notEqual(replacementAvatarUrl, firstAvatarUrl);
+    await owner.getByRole("button", { name: "移除", exact: true }).click();
+    await owner.getByText("已恢复为默认字母头像。", { exact: true }).waitFor();
+    await heroAvatarImage.waitFor({ state: "detached" });
+    assert.equal(await owner.locator(".account-trigger .user-avatar img").count(), 0);
+    step("头像可上传、即时同步、失败回退、刷新恢复、替换并删除");
+
     if (captureDir) {
       await owner.setViewportSize({ width: 1440, height: 900 });
       await owner.screenshot({ path: join(captureDir, "account-page-light.png"), fullPage: true });

@@ -52,6 +52,8 @@ export type AuthUser = {
   role: 'user' | 'admin'
   /** Optional only for a short rolling-deploy window against an older backend. */
   createdAt?: string
+  /** `undefined` means an older backend; `null` means this account has no uploaded avatar. */
+  avatarUrl?: string | null
   capabilities: AuthCapability[]
 }
 export type CatalogExam = 'IELTS' | 'TOEFL' | 'GRE' | '高考' | '四级' | '六级' | '四六级' | '考研'
@@ -685,6 +687,11 @@ function parseAuthUser(value: unknown): AuthUser | null {
   if (!isRecord(value) || !isText(value.username) || !isText(value.clientId)) return null
   if (value.role !== 'user' && value.role !== 'admin') return null
   if (value.createdAt !== undefined && !isText(value.createdAt)) return null
+  if (
+    value.avatarUrl !== undefined
+    && value.avatarUrl !== null
+    && (!isText(value.avatarUrl) || !/^\/api\/account\/avatar\/[A-Za-z0-9_-]{8,128}$/.test(value.avatarUrl))
+  ) return null
   if (!Array.isArray(value.capabilities)) return null
   const allowed: AuthCapability[] = ['site.settings.write', 'messages.moderate', 'messages.contact.read']
   if (!value.capabilities.every((item): item is AuthCapability => typeof item === 'string' && allowed.includes(item as AuthCapability))) return null
@@ -693,6 +700,7 @@ function parseAuthUser(value: unknown): AuthUser | null {
     clientId: value.clientId,
     role: value.role,
     ...(value.createdAt ? { createdAt: value.createdAt } : {}),
+    ...(value.avatarUrl !== undefined ? { avatarUrl: value.avatarUrl } : {}),
     capabilities: [...value.capabilities],
   }
 }
@@ -1610,6 +1618,16 @@ export class WorkspaceApi {
       method: 'POST',
       body: JSON.stringify({ currentPassword, newPassword }),
     })
+  }
+  uploadAccountAvatar(image: Blob) {
+    return this.json('api/account/avatar', {
+      method: 'PUT',
+      headers: { 'Content-Type': image.type },
+      body: image,
+    }, parseAuthUser)
+  }
+  deleteAccountAvatar() {
+    return this.json('api/account/avatar', { method: 'DELETE' }, parseAuthUser)
   }
   async exportAccount(): Promise<unknown> {
     const response = await this.fetch(new URL('api/account/export', this.baseUrl), this.requestInit({}))
