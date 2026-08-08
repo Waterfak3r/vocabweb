@@ -58,12 +58,16 @@ This project runs inside **Herdr**. The main agent is **Codex**; coordination ha
 | Assistant agent | Claude Code | `deepseek-v4-flash` via local proxy | Runs in a Herdr pane started with `herdr agent start ... --kind claude`; inherits `ANTHROPIC_BASE_URL` from `~/.claude/settings.json` |
 
 ### Division of labor
-- **You (Codex sol max)**: own the plan and the coordination. Design the approach, split work, integrate results, and decide final calls. Implement directly only when the plan is so intricate that handing it off costs more than writing it.
-- **Codex subagents (luna)**: the medium-scope implementers, spawned through Codex's native subagent mechanism (default model `gpt-5.6-luna`, not a Herdr pane). Give each a well-scoped implementation task with acceptance criteria and an output path; they write the code, you review and integrate.
-- **Claude Code (deepseek)**: the quick-fix and review owner. Reach for it first on anything quick, simple, or repetitive — bug quickfixes, small edits, code audits, review sweeps, cross-checking, frontend styling passes, mechanical rewrites, parallel experiments. Prefer Claude Code for quickfixes and simple tasks; keep luna for medium-scope implementation; keep planning for yourself.
+| 任务类型 | 交给谁 |
+|---|---|
+| 规划、协调、整合、最终决策 | 你（sol） |
+| 中等规模实现 | luna（codex 原生 subagent） |
+| quickfix、简单任务、审查、重复性 | claude code（herdr 起 pane） |
+
+选 agent 顺序：quick/simple/repetitive → claude code；medium 实现 → luna；方案级或移交成本高于自己写 → 你。所有委派写清验收标准与产出路径。
 
 ### Coordination rules
-- Spawn luna implementers via Codex's native subagent mechanism; they live inside your process, not as Herdr panes, so do not use `herdr agent` for them.
+- luna 走 codex 原生 subagent（进程内），不要用 `herdr agent` 操作。
 - For Claude Code, use Herdr: `herdr agent start <name> --kind claude --pane <pane-id>`; never spawn terminals behind the user's back.
 - Delegate only well-specified tasks with clear acceptance criteria and an output path; agents cannot read each other's context, so write the task down.
 - Check Claude Code results with `herdr agent wait <name> --until idle` then `herdr agent read <name>`; surface anything unexpected to the user.
