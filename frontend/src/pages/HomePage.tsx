@@ -137,7 +137,7 @@ export function HomePage() {
 
   function runLookup(raw: string) {
     if (/^[\p{Script=Han}\s]+$/u.test(raw.trim())) {
-      setInputError('请先从候选中选择对应的英文单词或词组。')
+      setInputError('请从候选中选择一个英文单词或词组。')
       return
     }
     suggestionState.dismiss(raw)
@@ -194,9 +194,9 @@ export function HomePage() {
             </svg>
             <div>
               <h1 className="home-title" id="home-title">
-                定制你的专属单词学习
+                按自己的方式背单词
               </h1>
-              <p className="home-subtitle">结合你的习惯，建立一套自己的背词体系</p>
+              <p className="home-subtitle">查词、收藏、复习，按你的节奏来</p>
             </div>
           </div>
         </div>
@@ -306,12 +306,12 @@ export function HomePage() {
 
         <div className="chip-row" aria-label="近 7 天热门搜索">
           <span className="chip-label" aria-hidden="true">♨&nbsp; 近 7 天热门</span>
-          {popular.map(({ word, count }) => (
+          {popular.map(({ word, count, trend }) => (
             <button
               key={word}
               type="button"
               className="chip"
-              title={`近 7 天搜索 ${count} 次`}
+              title={trend > 0 ? `近 7 天搜索 ${count} 次 · 较上周 +${trend}` : `近 7 天搜索 ${count} 次`}
               onClick={() => {
                 setInputValue(word)
                 runLookup(word)

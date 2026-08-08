@@ -1109,11 +1109,11 @@ export function WordbookPage() {
     ? reviewBreakdown.protected + reviewBreakdown.regular
     : reviewDueCount
   const reviewDetail = [isDefaultReviewSchedule(reviewSchedule) ? '分层遗忘曲线' : '自定义分层曲线']
-    .concat(timelyReviewCount > 0 ? [`优先到期 ${timelyReviewCount}`] : [])
-    .concat(backlogCount > 0 ? [`历史积压 ${backlogCount}`] : [])
+    .concat(timelyReviewCount > 0 ? [`优先复习 ${timelyReviewCount} 词`] : [])
+    .concat(backlogCount > 0 ? [`历史积压 ${backlogCount} 词`] : [])
     .join(' · ')
   const newDetail = preferences.plan.newWords >= 200
-    ? `高强度计划：短间隔复习会优先保护，避免被旧积压稀释`
+    ? '新词量大：优先安排短间隔复习，避免旧积压拖慢进度'
     : '学习新词，建立印象'
   const entriesForMode = (nextMode: StudyMode) => {
     if (nextMode === 'new') {
@@ -1484,7 +1484,7 @@ function StudyCalendar({ calendar, loading }: { calendar: StudyDashboard['calend
 }
 
 function StudyStreak({ days, loading }: { days: number | undefined; loading: boolean }) {
-  return <section className="study-streak"><h2><WorkspaceIcon name="fire" />连续学习</h2>{days === undefined ? <p className="workspace-data-state" role={loading ? 'status' : undefined}>{loading ? '正在载入连续学习数据。' : '连续学习数据暂不可用。'}</p> : <><strong>{days} <small>天</small></strong><p>继续加油，养成好习惯！</p><div>{['一','二','三','四','五','六','日'].map((day, index) => <span key={day}><small>{day}</small><i className={index < Math.min(7, days) ? 'complete' : ''}>{index < Math.min(7, days) ? '✓' : ''}</i></span>)}</div></>}</section>
+  return <section className="study-streak"><h2><WorkspaceIcon name="fire" />连续学习</h2>{days === undefined ? <p className="workspace-data-state" role={loading ? 'status' : undefined}>{loading ? '正在载入连续学习数据。' : '连续学习数据暂不可用。'}</p> : <><strong>{days} <small>天</small></strong><p>继续保持！</p><div>{['一','二','三','四','五','六','日'].map((day, index) => <span key={day}><small>{day}</small><i className={index < Math.min(7, days) ? 'complete' : ''}>{index < Math.min(7, days) ? '✓' : ''}</i></span>)}</div></>}</section>
 }
 
 const REVIEW_SCHEDULE_FIELDS: Array<{ key: keyof ReviewSchedule; label: string; detail: string }> = [

@@ -93,7 +93,7 @@ export function MessagesPage() {
       <header className="messages-hero">
         <p className="marginal">COMMUNITY NOTES</p>
         <h1 id="messages-title">公开留言板</h1>
-        <p>分享建议、问题或学习心得。保持友善，让每一次回复都有价值。</p>
+        <p>有什么建议、问题或学习心得，欢迎留言。</p>
       </header>
 
       <form className="message-composer" onSubmit={submit}>
@@ -128,7 +128,7 @@ export function MessagesPage() {
             </article>
           ))}
         </div>
-      ) : <div className="message-empty"><h2>还没有留言</h2><p>成为第一个在这里留下文字的人。</p></div>}
+      ) : <div className="message-empty"><h2>还没有留言</h2><p>来写下第一条吧。</p></div>}
       {nextCursor && <button className="messages-more" type="button" disabled={loadingMore} onClick={() => { setLoadingMore(true); void load(nextCursor) }}>{loadingMore ? '加载中…' : '加载更多留言'}</button>}
     </section>
   )

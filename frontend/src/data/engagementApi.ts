@@ -1,7 +1,7 @@
 import { getStudyClientId } from './studyApi'
 import { resolveApiBase } from './resolveApiBase'
 
-export type PopularSearch = { word: string; count: number }
+export type PopularSearch = { word: string; count: number; trend: number }
 export type FeedbackType = 'suggestion' | 'bug' | 'other'
 export type FeedbackInput = {
   type: FeedbackType
@@ -71,9 +71,9 @@ export class EngagementApi {
     if (!Array.isArray(payload)) throw new Error('Popular searches returned invalid data.')
     return payload.flatMap((item) => {
       if (!item || typeof item !== 'object') return []
-      const { word, count } = item as Record<string, unknown>
-      return typeof word === 'string' && typeof count === 'number' && Number.isFinite(count)
-        ? [{ word, count }]
+      const { word, count, trend } = item as Record<string, unknown>
+      return typeof word === 'string' && typeof count === 'number' && Number.isFinite(count) && typeof trend === 'number' && Number.isFinite(trend)
+        ? [{ word, count, trend }]
         : []
     }).slice(0, limit)
   }

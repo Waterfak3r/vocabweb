@@ -7,11 +7,11 @@ describe('EngagementApi', () => {
   it('reports successful searches and parses the popular list', async () => {
     const fetch = vi.fn<FetchLike>()
       .mockResolvedValueOnce(new Response(null, { status: 204 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify([{ word: 'resilient', count: 4 }])))
+      .mockResolvedValueOnce(new Response(JSON.stringify([{ word: 'resilient', count: 4, trend: 2 }])))
     const api = new EngagementApi('https://example.test/', { fetch, clientId: () => 'learner' })
 
     await api.reportSearch('resilient')
-    await expect(api.listPopularSearches()).resolves.toEqual([{ word: 'resilient', count: 4 }])
+    await expect(api.listPopularSearches()).resolves.toEqual([{ word: 'resilient', count: 4, trend: 2 }])
     expect(fetch.mock.calls.map(([url, init]) => [url.toString(), init?.method ?? 'GET'])).toEqual([
       ['https://example.test/api/searches', 'POST'],
       ['https://example.test/api/searches/popular?days=7&limit=8', 'GET'],

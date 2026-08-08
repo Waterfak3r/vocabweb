@@ -955,7 +955,8 @@ export function createApp(options: CreateAppOptions = {}) {
     }
     try {
       const since = new Date(Date.now() - days * 86_400_000);
-      response.status(200).json(await engagementStore.listPopularSearches(since, limit));
+      const previousSince = new Date(Date.now() - 2 * days * 86_400_000);
+      response.status(200).json(await engagementStore.listPopularSearches(since, previousSince, limit));
     } catch (error) {
       next(error);
     }
