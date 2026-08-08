@@ -59,8 +59,8 @@ This project runs inside **Herdr**. The main agent is **Codex**; coordination ha
 
 ### Division of labor
 - **You (Codex sol max)**: own the plan and the coordination. Design the approach, split work, integrate results, and decide final calls. Implement directly only when the plan is so intricate that handing it off costs more than writing it.
-- **Codex subagents (luna)**: the implementers, spawned through Codex's native subagent mechanism (default model `gpt-5.6-luna`, not a Herdr pane). Give each a well-scoped implementation task with acceptance criteria and an output path; they write the code, you review and integrate.
-- **Claude Code (deepseek)**: the reviewer. Owns code audits and repetitive/independent work that suits a separate agent: code audit, review sweeps, cross-checking, frontend styling passes, mechanical rewrites, parallel experiments. When the user or sol asks for an audit, route it to Claude Code.
+- **Codex subagents (luna)**: the medium-scope implementers, spawned through Codex's native subagent mechanism (default model `gpt-5.6-luna`, not a Herdr pane). Give each a well-scoped implementation task with acceptance criteria and an output path; they write the code, you review and integrate.
+- **Claude Code (deepseek)**: the quick-fix and review owner. Reach for it first on anything quick, simple, or repetitive — bug quickfixes, small edits, code audits, review sweeps, cross-checking, frontend styling passes, mechanical rewrites, parallel experiments. Prefer Claude Code for quickfixes and simple tasks; keep luna for medium-scope implementation; keep planning for yourself.
 
 ### Coordination rules
 - Spawn luna implementers via Codex's native subagent mechanism; they live inside your process, not as Herdr panes, so do not use `herdr agent` for them.
