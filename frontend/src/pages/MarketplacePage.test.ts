@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   filterMarketplaceBooks,
+  hasOpenVisibilityChanges,
   isSnapshotSourceLocked,
   marketplaceCatalogQuery,
   marketplaceDetailHref,
@@ -39,6 +40,13 @@ function book(
 }
 
 describe('MarketplacePage catalog filtering', () => {
+  it('locks only less-visible choices while a public upload has open suggestions', () => {
+    expect(hasOpenVisibilityChanges('public', 2)).toBe(true)
+    expect(hasOpenVisibilityChanges('public', 0)).toBe(false)
+    expect(hasOpenVisibilityChanges('unlisted', 2)).toBe(false)
+    expect(hasOpenVisibilityChanges(undefined, 2)).toBe(true)
+  })
+
   it('keeps marketplace display titles within the card-oriented limit', () => {
     expect(MARKETPLACE_TITLE_MAX_LENGTH).toBe(40)
     expect(marketplaceTitleError('词'.repeat(40))).toBe('')

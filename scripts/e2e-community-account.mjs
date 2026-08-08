@@ -15,6 +15,7 @@ const clientIdKey = "vocab-ielts:client-id:v1";
 const username = `验收用户_${Date.now().toString(36)}`;
 const password = "E2e-pass-2026!";
 const changedPassword = "E2e-pass-updated-2026!";
+const avatarPng = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
 const visualCaptureDir = process.env.ACCOUNT_VISUAL_CAPTURE?.trim();
 const sourceTitle = `匿名验收词本-${Date.now().toString(36)}`;
 const titles = {
@@ -275,10 +276,43 @@ async function main() {
 
     await owner.getByRole("button", { name: "账号", exact: true }).click();
     await owner.getByRole("menuitem", { name: "个人资料" }).click();
-    await owner.getByRole("heading", { name: "账户资料" }).waitFor();
+    await owner.getByRole("heading", { name: "个人资料" }).waitFor();
     await owner.locator(".account-metrics dd").first().waitFor();
-    assert.deepEqual(await owner.locator(".account-metrics dd").allTextContents(), ["1", "1", "0"]);
-    step("账户资料页展示真实词书、收录词和上传统计");
+    assert.deepEqual(await owner.locator(".account-metrics dd").allTextContents(), ["1", "1", "0", "0", "0"]);
+    step("个人资料页展示真实词书、词量与 90 天学习统计");
+
+    const avatarInput = owner.getByLabel("选择头像图片");
+    const avatarFile = { name: "avatar.png", mimeType: "image/png", buffer: avatarPng };
+    await avatarInput.setInputFiles(avatarFile);
+    await owner.getByText("头像已更新。", { exact: true }).waitFor();
+    const heroAvatarImage = owner.locator(".account-hero-avatar img");
+    await heroAvatarImage.waitFor();
+    const firstAvatarUrl = await heroAvatarImage.getAttribute("src");
+    assert.match(firstAvatarUrl ?? "", /^\/api\/account\/avatar\/[A-Za-z0-9-]+$/);
+    assert.equal(await owner.locator(".account-trigger .user-avatar img").count(), 1);
+
+    await avatarInput.setInputFiles(avatarFile);
+    await owner.waitForFunction(
+      (previousUrl) => document.querySelector(".account-hero-avatar img")?.getAttribute("src") !== previousUrl,
+      firstAvatarUrl,
+    );
+    await heroAvatarImage.dispatchEvent("error");
+    await owner.locator(".account-trigger .user-avatar img").dispatchEvent("error");
+    await heroAvatarImage.waitFor({ state: "detached" });
+    assert.notEqual((await owner.locator(".account-hero-avatar").textContent())?.trim(), "");
+    assert.equal(await owner.locator(".account-trigger .user-avatar img").count(), 0);
+
+    await owner.reload();
+    await owner.getByRole("heading", { name: "个人资料" }).waitFor();
+    await heroAvatarImage.waitFor();
+    const replacementAvatarUrl = await heroAvatarImage.getAttribute("src");
+    assert.notEqual(replacementAvatarUrl, firstAvatarUrl);
+    await owner.getByRole("button", { name: "移除", exact: true }).click();
+    await owner.getByText("已恢复为默认字母头像。", { exact: true }).waitFor();
+    await heroAvatarImage.waitFor({ state: "detached" });
+    assert.equal(await owner.locator(".account-trigger .user-avatar img").count(), 0);
+    step("头像可上传、即时同步、失败回退、刷新恢复、替换并删除");
+
     if (captureDir) {
       await owner.setViewportSize({ width: 1440, height: 900 });
       await owner.screenshot({ path: join(captureDir, "account-page-light.png"), fullPage: true });
@@ -343,6 +377,15 @@ async function main() {
     await owner.waitForTimeout(50);
     assert.equal(await createTrigger.evaluate((trigger) => trigger === document.activeElement), true);
 
+    let fullWordListRequests = 0;
+    let roundStartRequests = 0;
+    const observeStudyRequests = (request) => {
+      const url = new URL(request.url());
+      if (/^\/api\/my\/wordbooks\/[^/]+\/words$/.test(url.pathname)) fullWordListRequests += 1;
+      if (url.pathname === "/api/study/rounds" && request.method() === "POST") roundStartRequests += 1;
+    };
+    owner.on("request", observeStudyRequests);
+
     const studyTrigger = owner.locator(".plan-card", { hasText: "新词学习" }).first().locator("button:not(.plan-card-settings)").first();
     await studyTrigger.click();
     const studyDialog = owner.getByRole("dialog", { name: "新词学习悬浮窗口" });
@@ -351,11 +394,26 @@ async function main() {
     await studyDialog.getByRole("button", { name: "关闭学习窗口" }).focus();
     await owner.keyboard.press("Shift+Tab");
     assert.equal(await studyDialog.evaluate((dialog) => dialog.contains(document.activeElement)), true);
+    await studyDialog.getByRole("button", { name: "认识", exact: true }).click();
+    await studyDialog.getByText("看词选义", { exact: false }).waitFor();
+    await owner.waitForTimeout(200);
     await owner.keyboard.press("Escape");
     await studyDialog.waitFor({ state: "hidden" });
     await owner.waitForTimeout(50);
     assert.equal(await studyTrigger.evaluate((trigger) => trigger === document.activeElement), true);
     assert.notEqual(await owner.evaluate(() => document.body.style.overflow), "hidden");
+
+    const reviewTrigger = owner.locator(".quick-actions > button", { hasText: "复习巩固" });
+    await reviewTrigger.click();
+    const reviewDialog = owner.getByRole("dialog", { name: "复习巩固悬浮窗口" });
+    await reviewDialog.waitFor();
+    await reviewDialog.getByRole("button", { name: "关闭学习窗口" }).click();
+    await reviewDialog.waitFor({ state: "hidden" });
+    await owner.waitForTimeout(50);
+    owner.off("request", observeStudyRequests);
+    assert.equal(roundStartRequests, 2, "新词和复习应分别由轮次接口选词");
+    assert.equal(fullWordListRequests, 0, "新词或复习不应读取整个单词本");
+
     const wordManagerTrigger = owner.getByRole("button", { name: "浏览词条", exact: true });
     await wordManagerTrigger.click();
     const wordManagerDialog = owner.getByRole("dialog", { name: targetBookTitle });
@@ -370,7 +428,7 @@ async function main() {
     await owner.waitForTimeout(50);
     assert.equal(await wordManagerTrigger.evaluate((trigger) => trigger === document.activeElement), true);
     assert.notEqual(await owner.evaluate(() => document.body.style.overflow), "hidden");
-    step("新建、学习与词条管理弹窗均锁定焦点、页面滚动并恢复触发按钮");
+    step("新词与复习仅读取当前轮次词条，弹窗焦点和页面滚动保持正确");
 
     const identityBeforeReset = await owner.evaluate(() => {
       localStorage.setItem("vocab-ielts:theme:v1", "dark");
@@ -558,7 +616,7 @@ async function main() {
     step("重新登录后账号数据恢复");
 
     await owner.goto("/account");
-    await owner.getByRole("heading", { name: "账户资料" }).waitFor();
+    await owner.getByRole("heading", { name: "个人资料" }).waitFor();
     const [download] = await Promise.all([
       owner.waitForEvent("download"),
       owner.getByRole("button", { name: "导出数据", exact: true }).click(),

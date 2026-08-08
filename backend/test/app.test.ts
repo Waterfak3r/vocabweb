@@ -113,8 +113,8 @@ test("search reporting and feedback expose stable public API contracts", async (
     const popular = await fetch(`${server.baseUrl}/api/searches/popular?days=7&limit=8`);
     assert.equal(popular.status, 200);
     assert.deepEqual(await popular.json(), [
-      { word: "resilient", count: 2 },
-      { word: "feasible", count: 1 },
+      { word: "resilient", count: 2, trend: 2 },
+      { word: "feasible", count: 1, trend: 1 },
     ]);
 
     const feedback = await fetch(`${server.baseUrl}/api/feedback`, {

@@ -3,7 +3,7 @@ import { mkdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import Database from "better-sqlite3";
 
-export type PopularSearch = { word: string; count: number };
+export type PopularSearch = { word: string; count: number; trend: number };
 export type FeedbackType = "suggestion" | "bug" | "other";
 export type FeedbackInput = {
   type: FeedbackType;
@@ -39,7 +39,8 @@ export interface EngagementStore {
   getSiteSetting(key: string): Promise<string | null>;
   setSiteSetting(key: string, value: string | null): Promise<void>;
   recordSearch(word: string): Promise<void>;
-  listPopularSearches(since: Date, limit: number): Promise<PopularSearch[]>;
+  /** Ranks words by week-over-week growth: `count` is searches since `since`, `trend` is the change vs the window before it. */
+  listPopularSearches(since: Date, previousSince: Date, limit: number): Promise<PopularSearch[]>;
   createFeedback(input: FeedbackInput): Promise<{ id: string; createdAt: string }>;
   listMessages(actor: MessageActor | null, cursor: string | undefined, limit: number): Promise<MessagePage>;
   createMessage(actor: MessageActor, input: { content: string; nickname?: string; contact?: string; parentId?: string }): Promise<MessageDto | null>;
@@ -81,16 +82,17 @@ export class MemoryEngagementStore implements EngagementStore {
     this.searches.push({ word, searchedAt: this.now().toISOString() });
   }
 
-  async listPopularSearches(since: Date, limit: number): Promise<PopularSearch[]> {
-    const counts = new Map<string, number>();
+  async listPopularSearches(since: Date, previousSince: Date, limit: number): Promise<PopularSearch[]> {
+    const current = new Map<string, number>();
+    const previous = new Map<string, number>();
     for (const event of this.searches) {
-      if (Date.parse(event.searchedAt) >= since.getTime()) {
-        counts.set(event.word, (counts.get(event.word) ?? 0) + 1);
-      }
+      const at = Date.parse(event.searchedAt);
+      if (at >= since.getTime()) current.set(event.word, (current.get(event.word) ?? 0) + 1);
+      else if (at >= previousSince.getTime()) previous.set(event.word, (previous.get(event.word) ?? 0) + 1);
     }
-    return [...counts.entries()]
-      .map(([word, count]) => ({ word, count }))
-      .sort((left, right) => right.count - left.count || left.word.localeCompare(right.word))
+    return [...current.entries()]
+      .map(([word, count]) => ({ word, count, trend: count - (previous.get(word) ?? 0) }))
+      .sort((left, right) => right.trend - left.trend || right.count - left.count || left.word.localeCompare(right.word))
       .slice(0, limit);
   }
 
@@ -218,16 +220,20 @@ export class SqliteEngagementStore implements EngagementStore {
     })();
   }
 
-  async listPopularSearches(since: Date, limit: number): Promise<PopularSearch[]> {
+  async listPopularSearches(since: Date, previousSince: Date, limit: number): Promise<PopularSearch[]> {
     const db = await this.open();
-    return db.prepare(`
-      SELECT word, COUNT(*) AS count
+    const rows = db.prepare(`
+      SELECT word,
+             SUM(CASE WHEN searched_at >= ? THEN 1 ELSE 0 END) AS cnt,
+             SUM(CASE WHEN searched_at >= ? AND searched_at < ? THEN 1 ELSE 0 END) AS prev
       FROM search_events
       WHERE searched_at >= ?
       GROUP BY word
-      ORDER BY count DESC, word ASC
+      HAVING cnt > 0
+      ORDER BY (cnt - prev) DESC, cnt DESC, word ASC
       LIMIT ?
-    `).all(since.toISOString(), limit) as PopularSearch[];
+    `).all(since.toISOString(), previousSince.toISOString(), since.toISOString(), previousSince.toISOString(), limit) as Array<{ word: string; cnt: number; prev: number }>;
+    return rows.map((row) => ({ word: row.word, count: row.cnt, trend: row.cnt - row.prev }));
   }
 
   async createFeedback(input: FeedbackInput): Promise<{ id: string; createdAt: string }> {

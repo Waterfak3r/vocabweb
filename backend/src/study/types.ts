@@ -117,6 +117,7 @@ export type CatalogUpdateMutationResult =
   | { kind: "not-found" }
   | { kind: "head-required"; headRevisionId: string }
   | { kind: "stale"; headRevisionId: string }
+  | { kind: "open-contributions"; openContributionCount: number }
   | { kind: "source-mismatch"; headRevisionId: string; sourceWordbookId: string };
 export interface CatalogContribution {
   id: string;
@@ -139,15 +140,18 @@ export interface CatalogContribution {
   resolutionNote?: string;
   mergedRevisionId?: string;
 }
-export interface CatalogContributionView extends CatalogContribution {
+export type CatalogContributionView = Omit<
+  CatalogContribution,
+  "sourceWordbookId" | "contributorUserId" | "handledByUserId"
+> & {
   catalogTitle: string;
   canMerge: boolean;
   canClose: boolean;
-}
-export interface CatalogRevisionView extends CatalogRevision {
+};
+export type CatalogRevisionView = Omit<CatalogRevision, "authorUserId" | "committerUserId"> & {
   catalogTitle: string;
   canRevert: boolean;
-}
+};
 export interface CatalogConflict {
   key: string;
   reason: "overlapping-change" | "source-diverged";
@@ -335,6 +339,32 @@ export interface StudyDashboard {
   updatedAt: string;
 }
 
+export interface AccountStudyProfileActivity {
+  id: string;
+  kind: "new" | "flashcard" | "dictation" | "mark";
+  wordbookId: string;
+  wordbookTitle: string;
+  word: string;
+  occurredAt: string;
+  verdict?: LearningVerdict;
+  correct?: boolean;
+  level?: WordLevel;
+  levelAfter?: WordLevel;
+}
+
+export interface AccountStudyProfile {
+  metrics: {
+    wordbookCount: number;
+    wordCount: number;
+    learnedWordCount: number;
+    currentStreak: number;
+    longestStreak: number;
+  };
+  activityWindow: { startDate: string; endDate: string; days: 90 };
+  activity: Array<{ date: string; count: number }>;
+  recentActivity: AccountStudyProfileActivity[];
+}
+
 export type StudyRoundMode = "new" | "review";
 export type StudyRoundScope = "standard" | "backlog" | "ahead";
 export interface StudyRoundTask {
@@ -365,6 +395,10 @@ export interface StudyRound {
   expiresAt: string;
   completedAt?: string;
 }
+/** HTTP/store response view; the current word is derived and never persisted in the round. */
+export interface StudyRoundView extends StudyRound {
+  currentWord: LearningQueueItem | null;
+}
 export interface StartStudyRoundInput {
   wordbookId: string;
   mode: StudyRoundMode;
@@ -389,9 +423,9 @@ export interface StudyRoundTaskOptions {
   options: StudyChoiceOption[];
 }
 export type StudyRoundMutationResult =
-  | { kind: "updated"; round: StudyRound }
+  | { kind: "updated"; round: StudyRoundView }
   | { kind: "not-found" }
-  | { kind: "conflict"; round: StudyRound };
+  | { kind: "conflict"; round: StudyRoundView };
 
 export interface CatalogQuery { q?: string; exam?: CatalogExam; goal?: LearningGoal; sort?: CatalogSort; }
 export interface CreateMyWordbookInput { title: string; description?: string; category?: string; words?: StudyWordEntry[]; }
@@ -471,8 +505,26 @@ export interface BatchWordResult {
 }
 
 export type UserRole = "user" | "admin";
+export type AccountAvatarMimeType = "image/jpeg" | "image/png" | "image/webp";
+export interface AccountAvatar {
+  mimeType: AccountAvatarMimeType;
+  dataBase64: string;
+  /** Random cache-busting token; it changes on every successful replacement. */
+  version: string;
+  updatedAt: string;
+}
+export type AccountAvatarInput = Pick<AccountAvatar, "mimeType" | "dataBase64">;
 /** A registered account. `clientId` is the account's data home (the anonymous id adopted at registration). */
-export interface AccountUser { id: string; username: string; passwordHash: string; clientId: string; role: UserRole; createdAt: string; }
+export interface AccountUser {
+  id: string;
+  username: string;
+  passwordHash: string;
+  clientId: string;
+  role: UserRole;
+  createdAt: string;
+  /** Lightweight metadata only; avatar bytes live behind the dedicated store seam. */
+  avatarVersion?: string;
+}
 
 /** Persistence seam: production SQLite is durable; tests inject the memory store. */
 export interface StudyStore {
@@ -486,6 +538,8 @@ export interface StudyStore {
   setUserRole(username: string, role: UserRole): Promise<AccountUser | null>;
   /** Replaces a password hash and revokes every session except the one making the change. */
   updateUserPassword(userId: string, passwordHash: string, keepSessionTokenHash: string): Promise<AccountUser | null>;
+  getUserAvatar(userId: string): Promise<AccountAvatar | null>;
+  setUserAvatar(userId: string, input: AccountAvatarInput | null): Promise<AccountUser | null>;
   exportUserData(userId: string): Promise<unknown | null>;
   deleteUser(userId: string): Promise<boolean>;
   createSession(tokenHash: string, userId: string, expiresAt: string): Promise<void>;
@@ -597,8 +651,8 @@ export interface StudyStore {
   getImportDraft(clientId: string, id: string): Promise<ImportDraft | null>;
   deleteImportDraft(clientId: string, id: string): Promise<boolean>;
   commitImportDraft(clientId: string, id: string, input: CommitImportDraftInput): Promise<MyWordbookCard | null>;
-  startStudyRound(clientId: string, input: StartStudyRoundInput): Promise<{ round: StudyRound; resumed: boolean } | null>;
-  getStudyRound(clientId: string, id: string): Promise<StudyRound | null>;
+  startStudyRound(clientId: string, input: StartStudyRoundInput): Promise<{ round: StudyRoundView; resumed: boolean } | null>;
+  getStudyRound(clientId: string, id: string): Promise<StudyRoundView | null>;
   getStudyRoundTaskOptions(
     clientId: string,
     id: string,
@@ -609,4 +663,5 @@ export interface StudyStore {
   answerStudyRound(clientId: string, id: string, input: StudyRoundAnswerInput): Promise<StudyRoundMutationResult>;
   recordEvent(clientId: string, input: LearningEventInput): Promise<LearningEvent | null>;
   getDashboard(clientId: string, id: string): Promise<StudyDashboard | null>;
+  getAccountStudyProfile(clientId: string): Promise<AccountStudyProfile>;
 }

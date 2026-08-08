@@ -87,6 +87,41 @@ export function importProblemEntries(entries: readonly ImportDraftEntry[]) {
   return entries.filter((entry) => entry.status === 'invalid' || entry.status === 'duplicate' || entry.status === 'unmatched' || entry.status === 'conflict')
 }
 
+export type ImportCommitOutcome = {
+  wordbook: MyWordbook
+  categorySaved: boolean
+}
+
+type ImportCommitCallbacks = {
+  api: Pick<ImportDraftApi, 'commitImportDraft' | 'updateMyWordbook'>
+  draftId: string
+  decisions: Record<string, ImportConflictResolution>
+  mode: 'append' | 'overwrite'
+  category: string
+  targetWordbookId?: string
+  onCreated: (wordbook: MyWordbook) => void
+  onClose: () => void
+  onPartial: (wordbook: MyWordbook) => void
+}
+
+/** Commits once, preserving a successful wordbook when its optional category write fails. */
+export async function commitImportedDraft({ api, draftId, decisions, mode, category, targetWordbookId, onCreated, onClose, onPartial }: ImportCommitCallbacks): Promise<ImportCommitOutcome> {
+  const committed = await api.commitImportDraft(draftId, decisions, mode)
+  let wordbook = committed
+  let categorySaved = true
+  if (!targetWordbookId && category.trim()) {
+    try {
+      wordbook = await api.updateMyWordbook(committed.id, { category: category.trim() })
+    } catch {
+      categorySaved = false
+    }
+  }
+  onCreated(wordbook)
+  if (categorySaved) onClose()
+  else onPartial(wordbook)
+  return { wordbook, categorySaved }
+}
+
 /**
  * Shared three-step import window. Pages only own opening it and redirecting
  * after onCreated; all file reading, preview, draft creation and conflict
@@ -109,6 +144,9 @@ export function ImportWordbookDialog({ open, api, onClose, onCreated, initialTit
   const [creatingDraft, setCreatingDraft] = useState(false)
   const [commitMode, setCommitMode] = useState<'append' | 'overwrite'>('append')
   const [overwriteImpact, setOverwriteImpact] = useState<{ imported: number; removed: number } | null>(null)
+  const [partialCompletion, setPartialCompletion] = useState(false)
+  const [createdWordbook, setCreatedWordbook] = useState<MyWordbook | null>(null)
+  const commitInFlightRef = useRef(false)
   const dialogRef = useModalDialog<HTMLElement>({ open, onClose, canClose: !busy })
   const wasOpen = useRef(false)
 
@@ -120,6 +158,9 @@ export function ImportWordbookDialog({ open, api, onClose, onCreated, initialTit
     setDescription(initialDescription)
     setCategory(initialCategory)
     setStep(targetWordbookId ? 'source' : 'details')
+    setPartialCompletion(false)
+    setCreatedWordbook(null)
+    commitInFlightRef.current = false
   }, [initialCategory, initialDescription, initialTitle, open, targetWordbookId])
 
   useEffect(() => {
@@ -142,7 +183,7 @@ export function ImportWordbookDialog({ open, api, onClose, onCreated, initialTit
 
   useEffect(() => {
     if (open) return
-    setStep(targetWordbookId ? 'source' : 'details'); setContent(''); setParsed(null); setDraft(null); setGroupDrafts([]); setSavedDrafts([]); setDecisions({}); setProblemPage(1); setError(''); setBusy(false); setCreatingDraft(false); setCommitMode('append'); setOverwriteImpact(null)
+    setStep(targetWordbookId ? 'source' : 'details'); setContent(''); setParsed(null); setDraft(null); setGroupDrafts([]); setSavedDrafts([]); setDecisions({}); setProblemPage(1); setError(''); setBusy(false); setCreatingDraft(false); setCommitMode('append'); setOverwriteImpact(null); setPartialCompletion(false); setCreatedWordbook(null); commitInFlightRef.current = false
     setTitle(initialTitle); setDescription(initialDescription); setCategory(initialCategory)
   }, [initialCategory, initialDescription, initialTitle, open, targetWordbookId])
 
@@ -278,21 +319,34 @@ export function ImportWordbookDialog({ open, api, onClose, onCreated, initialTit
   }
 
   async function commit(mode: 'append' | 'overwrite' = commitMode) {
-    if (!api || !draft) return
+    if (!api || !draft || partialCompletion || commitInFlightRef.current) return
+    commitInFlightRef.current = true
     setBusy(true); setError('')
     try {
-      let wordbook = await api.commitImportDraft(draft.id, decisions, mode)
-      if (!targetWordbookId && category.trim()) {
-        wordbook = await api.updateMyWordbook(wordbook.id, { category: category.trim() })
-      }
-      onCreated(wordbook)
-      onClose()
+      await commitImportedDraft({
+        api,
+        draftId: draft.id,
+        decisions,
+        mode,
+        category,
+        targetWordbookId,
+        onCreated,
+        onClose,
+        onPartial: (wordbook) => {
+          setCreatedWordbook(wordbook)
+          setPartialCompletion(true)
+        },
+      })
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '创建单词本失败，请重试。')
-    } finally { setBusy(false) }
+    } finally {
+      commitInFlightRef.current = false
+      setBusy(false)
+    }
   }
 
   async function requestCommit() {
+    if (partialCompletion || commitInFlightRef.current) return
     if (!api || !draft || commitMode === 'append') {
       await commit('append')
       return
@@ -387,6 +441,11 @@ export function ImportWordbookDialog({ open, api, onClose, onCreated, initialTit
             {STEPS.map((item) => <li className={`${styles.step} ${item.id === step ? styles.active : ''}`} key={item.id}>{item.label}</li>)}
           </ol>
 
+          {partialCompletion ? <section className={styles.partialSuccess} role="status" aria-labelledby="import-partial-title">
+            <strong id="import-partial-title">词条已导入</strong>
+            <p>词条已导入，但分类保存失败；可稍后在词本设置中补充</p>
+            {createdWordbook && <small>已创建「{createdWordbook.title}」，导入内容已经保留。</small>}
+          </section> : <>
           {step === 'details' && <>
             <div className={styles.field}>
               <label htmlFor="import-title">词本名称</label>
@@ -526,12 +585,15 @@ export function ImportWordbookDialog({ open, api, onClose, onCreated, initialTit
             </>}
           </>}
           {error && <p className={styles.error} role="alert">{error}</p>}
+          </>}
         </div>
         <footer className={styles.footer}>
-          {step !== 'details' && !isProcessing && <Button variant="secondary" disabled={busy} onClick={() => { setError(''); setStep(step === 'preview' ? 'source' : 'details') }}>上一步</Button>}
-          {step === 'details' && <Button disabled={busy} onClick={nextDetails}>下一步</Button>}
-          {step === 'source' && <Button disabled={busy} onClick={() => { void createDraft() }}>{busy ? '正在匹配词典…' : '解析并预览'}</Button>}
-          {step === 'preview' && !isProcessing && <Button disabled={busy || !draft} onClick={() => { void requestCommit() }}>{busy ? '正在保存…' : draft?.targetWordbookId ? commitMode === 'overwrite' ? '确认覆盖范围' : `确认并追加全部 ${continuationCount} 批` : '确认并创建单词本'}</Button>}
+          {partialCompletion ? <Button variant="secondary" onClick={onClose}>完成</Button> : <>
+            {step !== 'details' && !isProcessing && <Button variant="secondary" disabled={busy} onClick={() => { setError(''); setStep(step === 'preview' ? 'source' : 'details') }}>上一步</Button>}
+            {step === 'details' && <Button disabled={busy} onClick={nextDetails}>下一步</Button>}
+            {step === 'source' && <Button disabled={busy} onClick={() => { void createDraft() }}>{busy ? '正在匹配词典…' : '解析并预览'}</Button>}
+            {step === 'preview' && !isProcessing && <Button disabled={busy || !draft} onClick={() => { void requestCommit() }}>{busy ? '正在保存…' : draft?.targetWordbookId ? commitMode === 'overwrite' ? '确认覆盖范围' : `确认并追加全部 ${continuationCount} 批` : '确认并创建单词本'}</Button>}
+          </>}
         </footer>
       </section>
       {overwriteImpact && <div className={styles.confirmBackdrop} role="presentation">

@@ -85,6 +85,9 @@
 .processing p { margin: 0; color: var(--muted); }
 .processing progress { width: 100%; height: .65rem; accent-color: var(--accent); }
 .processing small { color: var(--muted); text-align: right; }
+.partialSuccess { display: grid; gap: .65rem; padding: 1.1rem; border: 1px solid var(--gold); border-radius: .7rem; color: var(--ink); background: var(--gold-soft); }
+.partialSuccess p, .partialSuccess small { margin: 0; color: var(--muted); line-height: 1.5; }
+.partialSuccess button { justify-self: start; }
 .savedDrafts { display: grid; gap: .55rem; padding: .85rem; border: 1px solid var(--rule); border-radius: .65rem; background: var(--hover-bg); }
 .savedDrafts h3 { margin: 0; font-size: .9rem; }
 .savedDrafts > div { display: grid; gap: .35rem; max-height: 10rem; overflow: auto; }

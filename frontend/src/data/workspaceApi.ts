@@ -52,6 +52,8 @@ export type AuthUser = {
   role: 'user' | 'admin'
   /** Optional only for a short rolling-deploy window against an older backend. */
   createdAt?: string
+  /** `undefined` means an older backend; `null` means this account has no uploaded avatar. */
+  avatarUrl?: string | null
   capabilities: AuthCapability[]
 }
 export type CatalogExam = 'IELTS' | 'TOEFL' | 'GRE' | '高考' | '四级' | '六级' | '四六级' | '考研'
@@ -105,6 +107,12 @@ export type MyWordbookWord = WordbookItem & {
   nextReviewAt?: string
   recognitionStreak?: RecognitionStreak
 }
+export type LearningQueueItem = MyWordbookWord & {
+  status: WordStatus
+  level: WordLevel
+  reviewIntervalDays: number
+  recognitionStreak: RecognitionStreak
+}
 export type MyWordbookWordsQuery = { page?: number; pageSize?: number; q?: string; level?: WordLevel }
 export type MyWordbookWordsPage = {
   items: MyWordbookWord[]
@@ -150,7 +158,6 @@ export type CatalogContribution = {
   id: string
   catalogId: string
   catalogTitle: string
-  sourceWordbookId: string
   contributor: string
   baseRevisionId: string
   submittedHeadRevisionId: string
@@ -254,6 +261,32 @@ export type StudyDashboard = {
   updatedAt: string
 }
 
+export type AccountStudyProfileActivity = {
+  id: string
+  kind: 'new' | 'flashcard' | 'dictation' | 'mark'
+  wordbookId: string
+  wordbookTitle: string
+  word: string
+  occurredAt: string
+  verdict?: LearningVerdict
+  correct?: boolean
+  level?: WordLevel
+  levelAfter?: WordLevel
+}
+
+export type AccountStudyProfile = {
+  metrics: {
+    wordbookCount: number
+    wordCount: number
+    learnedWordCount: number
+    currentStreak: number
+    longestStreak: number
+  }
+  activityWindow: { startDate: string; endDate: string; days: 90 }
+  activity: Array<{ date: string; count: number }>
+  recentActivity: AccountStudyProfileActivity[]
+}
+
 export type LearningVerdict = 'know' | 'vague' | 'unknown'
 export type LearningEvent =
   | { kind: 'new'; wordbookId: string; word: string; verdict?: LearningVerdict }
@@ -269,7 +302,7 @@ export type StudyRoundTask = {
   wordId: string
   exercise: StudyExerciseType
 }
-export type StudyRound = {
+export type StudyRoundView = {
   id: string
   wordbookId: string
   mode: StudyRoundMode
@@ -289,6 +322,8 @@ export type StudyRound = {
   updatedAt: string
   expiresAt: string
   completedAt?: string
+  /** Derived for transport only; completed rounds have no current word. */
+  currentWord: LearningQueueItem | null
 }
 export type StudyChoiceOption = {
   wordId: string
@@ -652,6 +687,11 @@ function parseAuthUser(value: unknown): AuthUser | null {
   if (!isRecord(value) || !isText(value.username) || !isText(value.clientId)) return null
   if (value.role !== 'user' && value.role !== 'admin') return null
   if (value.createdAt !== undefined && !isText(value.createdAt)) return null
+  if (
+    value.avatarUrl !== undefined
+    && value.avatarUrl !== null
+    && (!isText(value.avatarUrl) || !/^\/api\/account\/avatar\/[A-Za-z0-9_-]{8,128}$/.test(value.avatarUrl))
+  ) return null
   if (!Array.isArray(value.capabilities)) return null
   const allowed: AuthCapability[] = ['site.settings.write', 'messages.moderate', 'messages.contact.read']
   if (!value.capabilities.every((item): item is AuthCapability => typeof item === 'string' && allowed.includes(item as AuthCapability))) return null
@@ -660,6 +700,7 @@ function parseAuthUser(value: unknown): AuthUser | null {
     clientId: value.clientId,
     role: value.role,
     ...(value.createdAt ? { createdAt: value.createdAt } : {}),
+    ...(value.avatarUrl !== undefined ? { avatarUrl: value.avatarUrl } : {}),
     capabilities: [...value.capabilities],
   }
 }
@@ -793,7 +834,6 @@ function parseCatalogContribution(value: unknown): CatalogContribution | null {
     || !isText(value.id)
     || !isText(value.catalogId)
     || !isText(value.catalogTitle)
-    || !isText(value.sourceWordbookId)
     || !isText(value.contributor)
     || !isText(value.baseRevisionId)
     || !isText(value.submittedHeadRevisionId)
@@ -817,7 +857,6 @@ function parseCatalogContribution(value: unknown): CatalogContribution | null {
     id: value.id,
     catalogId: value.catalogId,
     catalogTitle: value.catalogTitle,
-    sourceWordbookId: value.sourceWordbookId,
     contributor: value.contributor,
     baseRevisionId: value.baseRevisionId,
     submittedHeadRevisionId: value.submittedHeadRevisionId,
@@ -1065,13 +1104,92 @@ export function parseStudyDashboard(value: unknown): StudyDashboard | null {
   }
 }
 
+function parseLearningQueueItem(value: unknown): LearningQueueItem | null {
+  const word = parseWord(value)
+  return word
+    && word.status !== undefined
+    && word.level !== undefined
+    && word.reviewIntervalDays !== undefined
+    && word.recognitionStreak !== undefined
+    ? word as LearningQueueItem
+    : null
+}
+
+export function parseAccountStudyProfile(value: unknown): AccountStudyProfile | null {
+  if (!isRecord(value) || !Array.isArray(value.activity) || !Array.isArray(value.recentActivity)) return null
+  const metrics = value.metrics
+  const activityWindow = value.activityWindow
+  if (!isRecord(metrics) || !isRecord(activityWindow)) return null
+  const wordbookCount = metrics.wordbookCount
+  const wordCount = metrics.wordCount
+  const learnedWordCount = metrics.learnedWordCount
+  const currentStreak = metrics.currentStreak
+  const longestStreak = metrics.longestStreak
+  if (!isCount(wordbookCount) || !isCount(wordCount) || !isCount(learnedWordCount) || !isCount(currentStreak) || !isCount(longestStreak)) return null
+  if (
+    !isText(activityWindow.startDate)
+    || !isText(activityWindow.endDate)
+    || activityWindow.days !== 90
+  ) return null
+  const activity = value.activity.map((entry) => (
+    isRecord(entry) && isText(entry.date) && isCount(entry.count)
+      ? { date: entry.date, count: entry.count }
+      : null
+  ))
+  if (activity.some((entry) => entry === null) || activity.length !== 90) return null
+  const recentActivity = value.recentActivity.map((entry) => {
+    if (
+      !isRecord(entry)
+      || !isText(entry.id)
+      || (entry.kind !== 'new' && entry.kind !== 'flashcard' && entry.kind !== 'dictation' && entry.kind !== 'mark')
+      || !isText(entry.wordbookId)
+      || !isText(entry.wordbookTitle)
+      || !isText(entry.word)
+      || !isText(entry.occurredAt)
+    ) return null
+    if (entry.verdict !== undefined && entry.verdict !== 'know' && entry.verdict !== 'vague' && entry.verdict !== 'unknown') return null
+    if (entry.correct !== undefined && typeof entry.correct !== 'boolean') return null
+    if (entry.level !== undefined && !isWordLevel(entry.level)) return null
+    if (entry.levelAfter !== undefined && !isWordLevel(entry.levelAfter)) return null
+    return {
+      id: entry.id,
+      kind: entry.kind,
+      wordbookId: entry.wordbookId,
+      wordbookTitle: entry.wordbookTitle,
+      word: entry.word,
+      occurredAt: entry.occurredAt,
+      verdict: entry.verdict,
+      correct: entry.correct,
+      level: entry.level,
+      levelAfter: entry.levelAfter,
+    }
+  })
+  if (recentActivity.some((entry) => entry === null)) return null
+  return {
+    metrics: {
+      wordbookCount,
+      wordCount,
+      learnedWordCount,
+      currentStreak,
+      longestStreak,
+    },
+    activityWindow: {
+      startDate: activityWindow.startDate,
+      endDate: activityWindow.endDate,
+      days: 90,
+    },
+    activity: activity as AccountStudyProfile['activity'],
+    recentActivity: recentActivity as AccountStudyProfileActivity[],
+  }
+}
+
 function parseStudyRoundTask(value: unknown): StudyRoundTask | null {
   if (!isRecord(value) || !isText(value.id) || !isText(value.wordId)) return null
   if (value.exercise !== 'self-rating' && value.exercise !== 'meaning-choice') return null
   return { id: value.id, wordId: value.wordId, exercise: value.exercise }
 }
 
-function parseStudyRound(value: unknown): StudyRound | null {
+function parseStudyRound(value: unknown): StudyRoundView | null {
   if (
     !isRecord(value)
     || !isText(value.id)
@@ -1099,6 +1217,7 @@ function parseStudyRound(value: unknown): StudyRound | null {
     (entry): entry is StudyExerciseType => entry === 'self-rating' || entry === 'meaning-choice',
   )
   const queue = value.queue.map(parseStudyRoundTask)
+  const currentWord = value.currentWord === null ? null : parseLearningQueueItem(value.currentWord)
   const stringArrays = [
     value.wordIds,
     value.passedTaskKeys,
@@ -1114,6 +1233,9 @@ function parseStudyRound(value: unknown): StudyRound | null {
     || new Set(exerciseTypes).size !== exerciseTypes.length
     || queue.some((task) => task === null)
     || stringArrays.some((array) => !array.every(isText))
+    || (value.currentWord !== null && currentWord === null)
+    || (currentWord !== null && currentWord.id !== queue[0]?.wordId)
+    || (queue.length === 0 && currentWord !== null)
   ) return null
   return {
     id: value.id,
@@ -1135,10 +1257,11 @@ function parseStudyRound(value: unknown): StudyRound | null {
     updatedAt: value.updatedAt,
     expiresAt: value.expiresAt,
     completedAt: value.completedAt,
+    currentWord,
   }
 }
 
-function parseStudyRoundStart(value: unknown): { round: StudyRound; resumed: boolean } | null {
+function parseStudyRoundStart(value: unknown): { round: StudyRoundView; resumed: boolean } | null {
   if (!isRecord(value) || typeof value.resumed !== 'boolean') return null
   const round = parseStudyRound(value.round)
   return round ? { round, resumed: value.resumed } : null
@@ -1429,6 +1552,7 @@ export class WorkspaceApi {
     return result
   }
   getDashboard(id: string) { return this.json(`api/study/dashboard/${encodeURIComponent(id)}`, {}, parseStudyDashboard) }
+  getAccountProfile() { return this.json('api/account/profile', {}, parseAccountStudyProfile) }
   startStudyRound(wordbookId: string, mode: StudyRoundMode, scope: StudyRoundScope = 'standard') {
     return this.json(
       'api/study/rounds',
@@ -1494,6 +1618,16 @@ export class WorkspaceApi {
       method: 'POST',
       body: JSON.stringify({ currentPassword, newPassword }),
     })
+  }
+  uploadAccountAvatar(image: Blob) {
+    return this.json('api/account/avatar', {
+      method: 'PUT',
+      headers: { 'Content-Type': image.type },
+      body: image,
+    }, parseAuthUser)
+  }
+  deleteAccountAvatar() {
+    return this.json('api/account/avatar', { method: 'DELETE' }, parseAuthUser)
   }
   async exportAccount(): Promise<unknown> {
     const response = await this.fetch(new URL('api/account/export', this.baseUrl), this.requestInit({}))

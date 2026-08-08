@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
+import { createAccountAvatar } from "../account-avatar.js";
 import { isValidWordQuery, normalizeWord } from "../words/normalize.js";
 import { isJsonObject } from "./validation.js";
 import {
@@ -21,13 +22,13 @@ import {
 } from "./ladder.js";
 import type { ClientData, State } from "./ladder.js";
 import type {
-  AccountUser, BatchWordInput, BatchWordResult, CatalogAuthor, CatalogCard, CatalogConflict, CatalogContribution, CatalogContributionView,
+  AccountAvatar, AccountAvatarInput, AccountStudyProfile, AccountUser, BatchWordInput, BatchWordResult, CatalogAuthor, CatalogCard, CatalogConflict, CatalogContribution, CatalogContributionView,
   CatalogQuery, CatalogRevision, CatalogRevisionSummary, CatalogRevisionView, CatalogWordChange, CatalogWordbook, CatalogWordsPage, CatalogWordsQuery,
   CatalogUpdateMutationResult, CommitImportDraftInput, ContributionMutationResult, ContributionPreview, CreateCatalogContributionInput, CreateImportDraftInput, CreateMyWordbookInput,
   CursorPage, CursorQuery,
   ImportDraft, ImportDraftEntry, ImportDraftTaskSummary, LearningEvent, LearningEventInput, LearningQueueItem, LevelCounts, MyWordbook, MyWordbookCard, MyWordbookWordsPage, MyWordbookWordsQuery,
   MeaningPreference, ResolveCatalogContributionInput, ResolvedImportDraftEntry, RevertPreview, RevertRevisionInput, ReviewSchedule, RevisionMutationResult,
-  StartStudyRoundInput, StudyChoiceOption, StudyDashboard, StudyRound, StudyRoundAnswerInput, StudyRoundMutationResult,
+  StartStudyRoundInput, StudyChoiceOption, StudyDashboard, StudyRound, StudyRoundAnswerInput, StudyRoundMutationResult, StudyRoundView,
   StudyRoundTask, StudyRoundTaskOptions, StudyStore, StudyWordEntry, SyncedStudySettings, UpdateCatalogWordbookInput, UpdateMyWordbookInput,
   UpdateStudySettingsInput, UpdateWordInput, UpdateWordResult, UploadCatalogWordbookInput, WordbookStudyPreferences, WordbookWord,
   WordLearningStatus, WordLevel,
@@ -264,11 +265,29 @@ export abstract class BaseStore implements StudyStore {
     );
     return clone(user);
   }); }
+  async getUserAvatar(userId: string): Promise<AccountAvatar | null> { return await this.read((state) => {
+    const avatar = state.userAvatars[userId];
+    return avatar ? clone(avatar) : null;
+  }); }
+  async setUserAvatar(userId: string, input: AccountAvatarInput | null): Promise<AccountUser | null> { return await this.mutate((state) => {
+    const user = state.users.find((item) => item.id === userId);
+    if (!user) return null;
+    if (input) {
+      const avatar = createAccountAvatar(input, this.now().toISOString());
+      state.userAvatars[userId] = avatar;
+      user.avatarVersion = avatar.version;
+    } else {
+      delete state.userAvatars[userId];
+      delete user.avatarVersion;
+    }
+    return clone(user);
+  }); }
   async exportUserData(userId: string): Promise<unknown | null> { return await this.read((state) => {
     const user = state.users.find((item) => item.id === userId);
     if (!user) return null;
+    const avatar = state.userAvatars[user.id];
     return {
-      account: { username: user.username, role: user.role, createdAt: user.createdAt },
+      account: { username: user.username, role: user.role, createdAt: user.createdAt, ...(avatar ? { avatar: clone(avatar) } : {}) },
       collection: clone(this.clientView(state, user.clientId)),
       catalogUploads: clone(state.catalog.filter((book) => book.authorUserId === user.id)),
       contributions: clone(state.contributions.filter((contribution) => contribution.contributorUserId === user.id)),
@@ -282,6 +301,7 @@ export abstract class BaseStore implements StudyStore {
     if (index < 0) return false;
     const [user] = state.users.splice(index, 1);
     if (!user) return false;
+    delete state.userAvatars[user.id];
     state.sessions = state.sessions.filter((session) => session.userId !== userId);
     delete state.clients[user.clientId];
     const removedCatalogIds = new Set(
@@ -630,6 +650,12 @@ export abstract class BaseStore implements StudyStore {
     const catalog = state.catalog.find((item) => item.id === id && item.ownerClientId === clientId);
     if (!catalog) return { kind: "not-found" };
     const client = this.client(state, clientId);
+    if (catalog.visibility === "public" && input.visibility !== undefined && input.visibility !== "public") {
+      const openContributionCount = state.contributions.filter(
+        (contribution) => contribution.catalogId === catalog.id && contribution.status === "open",
+      ).length;
+      if (openContributionCount > 0) return { kind: "open-contributions", openContributionCount };
+    }
     if (input.sourceWordbookId !== undefined) {
       if (!input.expectedHeadRevisionId) {
         return { kind: "head-required", headRevisionId: catalog.headRevisionId };
@@ -688,20 +714,6 @@ export abstract class BaseStore implements StudyStore {
       state.revisions.push(revision);
       catalog.headRevisionId = revision.id;
       catalog.updatedAt = at;
-    }
-    if (catalog.visibility !== "public") {
-      const at = this.now().toISOString();
-      for (const contribution of state.contributions) {
-        if (contribution.catalogId !== catalog.id || contribution.status !== "open") continue;
-        contribution.status = "closed";
-        contribution.updatedAt = at;
-        contribution.handledAt = at;
-        contribution.resolutionNote = "词书已停止公开";
-        if (input.author) {
-          contribution.handledByUserId = input.author.userId;
-          contribution.handledBy = input.author.username;
-        }
-      }
     }
     return { kind: "updated", catalog: this.catalogCard(state, catalog, client, clientId) };
   }); }
@@ -1421,7 +1433,20 @@ export abstract class BaseStore implements StudyStore {
     }
     return card(book, client.events);
   }); }
-  async startStudyRound(clientId: string, input: StartStudyRoundInput): Promise<{ round: StudyRound; resumed: boolean } | null> {
+  private studyRoundView(client: ClientData, round: StudyRound): StudyRoundView {
+    const currentWordId = round.queue[0]?.wordId;
+    if (!currentWordId) return { ...clone(round), currentWord: null };
+    const book = client.wordbooks.find((item) => item.id === round.wordbookId && !item.deletedAt);
+    const currentWord = book?.words.find((word) => word.id === currentWordId);
+    if (!book || !currentWord) return { ...clone(round), currentWord: null };
+    const states = ladderStates(
+      client.events.filter((event) => event.wordbookId === book.id && event.wordId === currentWord.id),
+      reviewScheduleOf(book),
+    );
+    return { ...clone(round), currentWord: queueItem(currentWord, ladderOf(states, currentWord.id)) };
+  }
+
+  async startStudyRound(clientId: string, input: StartStudyRoundInput): Promise<{ round: StudyRoundView; resumed: boolean } | null> {
     return await this.mutate((state) => {
       const client = this.client(state, clientId);
       const book = client.wordbooks.find((item) => item.id === input.wordbookId && !item.deletedAt);
@@ -1443,7 +1468,7 @@ export abstract class BaseStore implements StudyStore {
       if (existing) {
         existing.updatedAt = now.toISOString();
         existing.expiresAt = expiresAt;
-        return { round: clone(existing), resumed: true };
+        return { round: this.studyRoundView(client, existing), resumed: true };
       }
 
       const preferences = preferencesOf(book);
@@ -1531,15 +1556,15 @@ export abstract class BaseStore implements StudyStore {
         ...(queue.length === 0 ? { completedAt: at } : {}),
       };
       client.studyRounds.push(round);
-      return { round: clone(round), resumed: false };
+      return { round: this.studyRoundView(client, round), resumed: false };
     });
   }
-  async getStudyRound(clientId: string, id: string): Promise<StudyRound | null> {
+  async getStudyRound(clientId: string, id: string): Promise<StudyRoundView | null> {
     return await this.read((state) => {
       const client = this.clientView(state, clientId);
       const round = client.studyRounds.find((item) => item.id === id && Date.parse(item.expiresAt) > this.now().getTime());
       if (!round || !client.wordbooks.some((book) => book.id === round.wordbookId && !book.deletedAt)) return null;
-      return clone(round);
+      return this.studyRoundView(client, round);
     });
   }
   async getStudyRoundTaskOptions(
@@ -1607,16 +1632,17 @@ export abstract class BaseStore implements StudyStore {
   }
   async rotateStudyRound(clientId: string, id: string, revision: number): Promise<StudyRoundMutationResult> {
     return await this.mutate((state) => {
-      const round = this.client(state, clientId).studyRounds.find((item) => item.id === id);
+      const client = this.client(state, clientId);
+      const round = client.studyRounds.find((item) => item.id === id);
       if (!round || round.completedAt || Date.parse(round.expiresAt) <= this.now().getTime() || round.queue.length === 0) return { kind: "not-found" };
-      if (round.revision !== revision) return { kind: "conflict", round: clone(round) };
+      if (round.revision !== revision) return { kind: "conflict", round: this.studyRoundView(client, round) };
       const firstWordId = round.queue[0]!.wordId;
       const moved = round.queue.filter((task) => task.wordId === firstWordId);
       round.queue = [...round.queue.filter((task) => task.wordId !== firstWordId), ...moved];
       round.revision += 1;
       round.updatedAt = this.now().toISOString();
       round.expiresAt = new Date(this.now().getTime() + STUDY_ROUND_TTL_MS).toISOString();
-      return { kind: "updated", round: clone(round) };
+      return { kind: "updated", round: this.studyRoundView(client, round) };
     });
   }
   async answerStudyRound(clientId: string, id: string, input: StudyRoundAnswerInput): Promise<StudyRoundMutationResult> {
@@ -1624,13 +1650,13 @@ export abstract class BaseStore implements StudyStore {
       const client = this.client(state, clientId);
       const round = client.studyRounds.find((item) => item.id === id);
       if (!round || round.completedAt || Date.parse(round.expiresAt) <= this.now().getTime()) return { kind: "not-found" };
-      if (round.processedOperationIds.includes(input.operationId)) return { kind: "updated", round: clone(round) };
-      if (round.revision !== input.revision || round.queue[0]?.id !== input.taskId) return { kind: "conflict", round: clone(round) };
+      if (round.processedOperationIds.includes(input.operationId)) return { kind: "updated", round: this.studyRoundView(client, round) };
+      if (round.revision !== input.revision || round.queue[0]?.id !== input.taskId) return { kind: "conflict", round: this.studyRoundView(client, round) };
       const task = round.queue[0]!;
       const responseMatches = input.response === "mastered" || (task.exercise === "self-rating"
         ? input.response === "know" || input.response === "vague" || input.response === "unknown"
         : input.response === "correct" || input.response === "incorrect");
-      if (!responseMatches) return { kind: "conflict", round: clone(round) };
+      if (!responseMatches) return { kind: "conflict", round: this.studyRoundView(client, round) };
       const book = client.wordbooks.find((item) => item.id === round.wordbookId && !item.deletedAt);
       const target = book?.words.find((word) => word.id === task.wordId);
       if (!book || !target) return { kind: "not-found" };
@@ -1692,7 +1718,7 @@ export abstract class BaseStore implements StudyStore {
       round.updatedAt = now.toISOString();
       round.expiresAt = new Date(now.getTime() + STUDY_ROUND_TTL_MS).toISOString();
       if (round.queue.length === 0) round.completedAt = round.updatedAt;
-      return { kind: "updated", round: clone(round) };
+      return { kind: "updated", round: this.studyRoundView(client, round) };
     });
   }
   async recordEvent(clientId: string, input: LearningEventInput): Promise<LearningEvent | null> { return await this.mutate((state) => {
@@ -1795,6 +1821,102 @@ export abstract class BaseStore implements StudyStore {
     };
   }); }
 
+  async getAccountStudyProfile(clientId: string): Promise<AccountStudyProfile> { return await this.read((state) => {
+    const client = this.clientView(state, clientId);
+    const now = this.now();
+    const days = 90 as const;
+    const endDate = day(now);
+    const startDate = day(shiftDay(now, -(days - 1)));
+    const wordbooks = client.wordbooks;
+    const eventsByBook = eventsByWordbook(client.events);
+    const titles = new Map(wordbooks.map((book) => [book.id, book.title]));
+    const eventLevels = new Map<string, WordLevel>();
+
+    // Replay every known wordbook, including soft-deleted ones, so recent history
+    // retains the same levelAfter semantics as the per-wordbook dashboard.
+    for (const [wordbookId, events] of eventsByBook) {
+      const book = wordbooks.find((item) => item.id === wordbookId);
+      const replay = ladderReplay(events, reviewScheduleOf(book ?? {}));
+      for (const [eventId, level] of replay.eventLevels) eventLevels.set(eventId, level);
+    }
+
+    const liveWordbooks = wordbooks.filter((book) => !book.deletedAt);
+    let wordCount = 0;
+    let learnedWordCount = 0;
+    for (const book of liveWordbooks) {
+      const events = eventsByBook.get(book.id) ?? [];
+      const progress = progressFromStates(book, ladderStates(events, reviewScheduleOf(book)));
+      wordCount += book.words.length;
+      learnedWordCount += book.words.length - progress.unstudied;
+    }
+
+    const perDay = new Map<string, Set<string>>();
+    for (const event of client.events) {
+      if (event.kind === "mark") continue;
+      const date = day(new Date(event.occurredAt));
+      if (date < startDate || date > endDate) continue;
+      const words = perDay.get(date) ?? new Set<string>();
+      words.add(`${event.wordbookId}\u0000${event.wordId}`);
+      perDay.set(date, words);
+    }
+    const activity = Array.from({ length: days }, (_, index) => {
+      const date = day(shiftDay(now, index - (days - 1)));
+      return { date, count: perDay.get(date)?.size ?? 0 };
+    });
+    let longestStreak = 0;
+    let run = 0;
+    for (const entry of activity) {
+      if (entry.count > 0) run += 1;
+      else run = 0;
+      longestStreak = Math.max(longestStreak, run);
+    }
+    let currentStreak = 0;
+    let cursor = activity.length - 1;
+    // A day with no activity today does not erase yesterday's ongoing streak.
+    if (activity[cursor]?.count === 0) cursor -= 1;
+    while (cursor >= 0 && activity[cursor]!.count > 0) {
+      currentStreak += 1;
+      cursor -= 1;
+    }
+
+    const recentActivity = [...client.events]
+      .filter((event) => !(event.kind === "mark" && event.retainedState !== undefined))
+      // Reverse first so equal-millisecond events retain newest-insertion-first
+      // ordering, matching the selected-wordbook dashboard.
+      .reverse()
+      .sort((left, right) => right.occurredAt.localeCompare(left.occurredAt))
+      .slice(0, 8)
+      .map((event) => {
+        const common = {
+          id: event.id,
+          kind: event.kind,
+          wordbookId: event.wordbookId,
+          wordbookTitle: titles.get(event.wordbookId) ?? "已删除词书",
+          word: event.word,
+          occurredAt: event.occurredAt,
+          levelAfter: eventLevels.get(event.id) ?? 0 as WordLevel,
+        };
+        if (event.kind === "new" || event.kind === "flashcard") {
+          return event.verdict ? { ...common, verdict: event.verdict } : common;
+        }
+        if (event.kind === "dictation") return { ...common, correct: event.correct };
+        return { ...common, level: event.level };
+      });
+
+    return {
+      metrics: {
+        wordbookCount: liveWordbooks.length,
+        wordCount,
+        learnedWordCount,
+        currentStreak,
+        longestStreak,
+      },
+      activityWindow: { startDate, endDate, days },
+      activity,
+      recentActivity,
+    };
+  }); }
+
   // --- Shared state plumbing ---
   private collaborationEnabled(state: State, catalog: CatalogWordbook): boolean {
     if (
@@ -1884,8 +2006,14 @@ export abstract class BaseStore implements StudyStore {
   ): CatalogContributionView {
     const owner = catalog.authorUserId === userId;
     const changes = meaningfulCatalogChanges(contribution.changes);
+    const {
+      sourceWordbookId: _sourceWordbookId,
+      contributorUserId: _contributorUserId,
+      handledByUserId: _handledByUserId,
+      ...publicContribution
+    } = contribution;
     return {
-      ...clone(contribution),
+      ...clone(publicContribution),
       changes: clone(changes),
       stats: catalogDiffStats(changes),
       catalogTitle: catalog.title,
@@ -1902,8 +2030,13 @@ export abstract class BaseStore implements StudyStore {
     userId: string | undefined,
   ): CatalogRevisionView {
     const changes = meaningfulCatalogChanges(revision.changes);
+    const {
+      authorUserId: _authorUserId,
+      committerUserId: _committerUserId,
+      ...publicRevision
+    } = revision;
     return {
-      ...clone(revision),
+      ...clone(publicRevision),
       changes: clone(changes),
       stats: catalogDiffStats(changes),
       catalogTitle: catalog.title,
@@ -1940,13 +2073,13 @@ export abstract class BaseStore implements StudyStore {
     changes: CatalogWordChange[],
     at: string,
   ): void {
-    const deletedWordIds = new Set<string>();
+    let removedWord = false;
     for (const change of changes) {
       const index = source.words.findIndex((word) => normalizeWord(word.word) === change.key);
       if (change.kind === "delete") {
         if (index >= 0) {
-          const [deleted] = source.words.splice(index, 1);
-          if (deleted) deletedWordIds.add(deleted.id);
+          source.words.splice(index, 1);
+          removedWord = true;
         }
       } else if (index >= 0) {
         const retained = source.words[index]!;
@@ -1963,10 +2096,10 @@ export abstract class BaseStore implements StudyStore {
         });
       }
     }
-    if (deletedWordIds.size) {
-      client.events = client.events.filter(
-        (event) => event.wordbookId !== source.id || !deletedWordIds.has(event.wordId),
-      );
+    if (removedWord) {
+      // Collaboration changes alter the current source snapshot, not the learner's
+      // historical effort. Active rounds can reference removed words and must end,
+      // while past events remain available to account history and export.
       client.studyRounds = client.studyRounds.filter((round) => round.wordbookId !== source.id);
     }
     source.updatedAt = at;
@@ -2075,6 +2208,7 @@ export abstract class BaseStore implements StudyStore {
       client.wordbooks.push(source);
       return source;
     }
+    const previousWordIds = new Set(source.words.map((word) => word.id));
     const existing = new Map(source.words.map((word) => [word.word, word]));
     source.title = title;
     source.description = description;
@@ -2085,16 +2219,25 @@ export abstract class BaseStore implements StudyStore {
     });
     const liveWordIds = new Set(source.words.map((word) => word.id));
     client.events = client.events.filter((event) => event.wordbookId !== source.id || liveWordIds.has(event.wordId));
+    if ([...previousWordIds].some((wordId) => !liveWordIds.has(wordId))) {
+      client.studyRounds = client.studyRounds.filter((round) => round.wordbookId !== source.id);
+    }
     source.updatedAt = at;
     return source;
   }
   /** 12 hexadecimal characters = 48 bits; legacy 6–8 character codes remain importable. */
   private shareCode(state: State): string { let code = ""; do { code = randomUUID().replace(/-/g, "").slice(0, 24).toUpperCase(); } while (state.catalog.some((book) => book.shareCode === code)); return code; }
-  private async read<T>(operation: (state: State) => T): Promise<T> { const task = this.queue.then(async () => {
+  /** Serialize implementation-specific operations with ordinary state reads/mutations. */
+  protected async serialize<T>(operation: () => Promise<T>): Promise<T> {
+    const task = this.queue.then(operation);
+    this.queue = task.then(() => undefined, () => undefined);
+    return await task;
+  }
+  private async read<T>(operation: (state: State) => T): Promise<T> { return await this.serialize(async () => {
     await this.refreshBeforeOperation();
     return operation(await this.state());
-  }); this.queue = task.then(() => undefined, () => undefined); return await task; }
-  private async mutate<T>(operation: (state: State) => T): Promise<T> { const task = this.queue.then(async () => {
+  }); }
+  private async mutate<T>(operation: (state: State) => T): Promise<T> { return await this.serialize(async () => {
     await this.refreshBeforeOperation();
     const previous = await this.state();
     const draft = clone(previous);
@@ -2103,7 +2246,7 @@ export abstract class BaseStore implements StudyStore {
     await this.save(draft, previous);
     this.statePromise = Promise.resolve(draft);
     return value;
-  }); this.queue = task.then(() => undefined, () => undefined); return await task; }
+  }); }
   private async state(): Promise<State> {
     if (!this.statePromise) {
       const loading = this.load();

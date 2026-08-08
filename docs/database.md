@@ -16,6 +16,7 @@ Production creates `SqliteStudyStore` and `SqliteEngagementStore` against the sa
 `SqliteStudyStore` is intentionally hybrid:
 
 - `users` and `sessions` are relational and constrained for identity and lifecycle queries.
+- `user_avatars` stores bounded private image BLOBs separately from hot session/user state. SQLite reads a BLOB only for authenticated image delivery or an account export; the random version metadata remains lightweight and supports safe cache invalidation.
 - catalog wordbooks, revisions, and contributions have relational index columns plus JSON snapshots for domain payloads.
 - each anonymous or account data space has one `clients` row containing private learner state as JSON.
 - `metadata` records persistence version information and one-time import state.

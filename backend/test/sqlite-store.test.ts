@@ -8,6 +8,7 @@ import { SqliteStudyStore } from "../src/study/sqlite-store.js";
 import type { WordbookStudyPreferences } from "../src/study/types.js";
 
 const CLIENT = "client-sqlite-0001";
+const AVATAR_BYTES = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]);
 
 async function fixture(t: TestContext) {
   const directory = await mkdtemp(path.join(tmpdir(), "vacab-sqlite-"));
@@ -119,6 +120,37 @@ test("SQLite durably reloads synchronized wordbook and global study settings", a
   assert.deepEqual((await reopened.getMyWordbook(CLIENT, book.id))?.studyPreferences, preferences);
   assert.deepEqual((await reopened.getStudySettings(CLIENT))?.pronunciation, { accent: "us" });
   assert.equal((await reopened.getStudySettings(CLIENT))?.shortcuts.unknown, "a");
+  reopened.close();
+});
+
+test("SQLite persists round ids only and derives the current word after reopening", async (t) => {
+  const files = await fixture(t);
+  const store = new SqliteStudyStore(files.databaseFile);
+  const book = await store.createMyWordbook(CLIENT, {
+    title: "Round view",
+    words: [{
+      word: "resilient",
+      phonetic: "/rɪˈzɪliənt/",
+      source: "user",
+      meanings: [{ pos: "adjective", definition: "able to recover" }],
+    }],
+  });
+  const started = await store.startStudyRound(CLIENT, { wordbookId: book.id, mode: "new" });
+  assert.ok(started?.round.currentWord);
+  const roundId = started.round.id;
+  store.close();
+
+  const inspection = new Database(files.databaseFile, { readonly: true });
+  const persisted = JSON.parse(
+    (inspection.prepare("SELECT data_json FROM clients WHERE client_id = ?").get(CLIENT) as { data_json: string }).data_json,
+  ) as { studyRounds: Array<Record<string, unknown>> };
+  assert.equal(Object.hasOwn(persisted.studyRounds[0]!, "currentWord"), false);
+  inspection.close();
+
+  const reopened = new SqliteStudyStore(files.databaseFile);
+  const restored = await reopened.getStudyRound(CLIENT, roundId);
+  assert.equal(restored?.currentWord?.word, "resilient");
+  assert.equal(restored?.currentWord?.id, restored?.queue[0]?.wordId);
   reopened.close();
 });
 
@@ -283,6 +315,53 @@ test("SQLite reloads cached account state after an external administrator update
   }
 });
 
+test("SQLite reads avatar BLOBs lazily and refreshes account metadata across store instances", async (t) => {
+  const files = await fixture(t);
+  const serverStore = new SqliteStudyStore(files.databaseFile, { now: () => new Date("2026-08-08T08:00:00.000Z") });
+  const writerStore = new SqliteStudyStore(files.databaseFile, { now: () => new Date("2026-08-08T08:01:00.000Z") });
+  try {
+    const created = await serverStore.createUser("AvatarOwner", "scrypt:test-hash", CLIENT);
+    assert.equal(created.kind, "created");
+    if (created.kind !== "created") return;
+    await serverStore.createSession("avatar-session", created.user.id, "2026-09-08T00:00:00.000Z");
+    const first = await serverStore.setUserAvatar(created.user.id, {
+      mimeType: "image/png",
+      dataBase64: AVATAR_BYTES.toString("base64"),
+    });
+    assert.ok(first?.avatarVersion);
+    assert.deepEqual((await serverStore.getUserAvatar(created.user.id))?.dataBase64, AVATAR_BYTES.toString("base64"));
+    assert.equal(
+      (await serverStore.getSession("avatar-session", new Date("2026-08-08T08:00:30.000Z")))?.user.avatarVersion,
+      first?.avatarVersion,
+    );
+
+    const replaced = await writerStore.setUserAvatar(created.user.id, {
+      mimeType: "image/jpeg",
+      dataBase64: Buffer.from([0xff, 0xd8, 0xff, 0xdb]).toString("base64"),
+    });
+    assert.notEqual(replaced?.avatarVersion, first?.avatarVersion);
+    assert.equal(
+      (await serverStore.getSession("avatar-session", new Date("2026-08-08T08:01:30.000Z")))?.user.avatarVersion,
+      replaced?.avatarVersion,
+    );
+
+    const inspection = new Database(files.databaseFile, { readonly: true });
+    assert.deepEqual(
+      inspection.prepare("SELECT typeof(data) AS storage, length(data) AS bytes FROM user_avatars WHERE user_id = ?").get(created.user.id),
+      { storage: "blob", bytes: 4 },
+    );
+    inspection.close();
+
+    assert.equal(await serverStore.deleteUser(created.user.id), true);
+    const afterDelete = new Database(files.databaseFile, { readonly: true });
+    assert.equal((afterDelete.prepare("SELECT COUNT(*) AS count FROM user_avatars").get() as { count: number }).count, 0);
+    afterDelete.close();
+  } finally {
+    serverStore.close();
+    writerStore.close();
+  }
+});
+
 test("SQLite adds a safe user role to databases created before role authorization", async (t) => {
   const files = await fixture(t);
   const legacy = new Database(files.databaseFile);
@@ -305,12 +384,16 @@ test("SQLite adds a safe user role to databases created before role authorizatio
   const user = await store.getUserByUsername("Waterfak3r");
   assert.equal(user?.role, "user");
   assert.equal((await store.setUserRole("Waterfak3r", "admin"))?.role, "admin");
+  assert.ok((await store.setUserAvatar("user-legacy", {
+    mimeType: "image/png",
+    dataBase64: AVATAR_BYTES.toString("base64"),
+  }))?.avatarVersion);
   store.close();
 
   const inspection = new Database(files.databaseFile, { readonly: true });
   assert.deepEqual(
-    inspection.prepare("SELECT role FROM users WHERE id = 'user-legacy'").get(),
-    { role: "admin" },
+    inspection.prepare("SELECT role, (SELECT COUNT(*) FROM user_avatars) AS avatars FROM users WHERE id = 'user-legacy'").get(),
+    { role: "admin", avatars: 1 },
   );
   inspection.close();
 });
@@ -320,12 +403,17 @@ test("SQLite online backups are complete and pass integrity checks", async (t) =
   const backupFile = path.join(files.directory, "backup", "study.sqlite");
   const store = new SqliteStudyStore(files.databaseFile);
   await store.createMyWordbook(CLIENT, { title: "Backed up" });
+  const user = await store.createUser("BackupAvatar", "hash", CLIENT);
+  assert.equal(user.kind, "created");
+  if (user.kind !== "created") return;
+  await store.setUserAvatar(user.user.id, { mimeType: "image/png", dataBase64: AVATAR_BYTES.toString("base64") });
   await store.checkHealth();
   await store.backup(backupFile);
   store.close();
 
   const backup = new SqliteStudyStore(backupFile);
   assert.deepEqual((await backup.listMyWordbooks(CLIENT, false)).map((book) => book.title), ["Backed up"]);
+  assert.equal((await backup.getUserAvatar(user.user.id))?.dataBase64, AVATAR_BYTES.toString("base64"));
   await backup.checkHealth();
   backup.close();
 });

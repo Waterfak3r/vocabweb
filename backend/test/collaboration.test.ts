@@ -111,6 +111,16 @@ test("a full contribution merge preserves same-spelling progress and revert crea
   await store.batchWords(CONTRIBUTOR_CLIENT, joined.id, { action: "delete", wordIds: [beta.id] });
   await store.addWordToMyWordbook(CONTRIBUTOR_CLIENT, joined.id, entry("gamma", "丙"));
 
+  const publisherWordsBeforeMerge = await store.listWords(PUBLISHER_CLIENT, source.id);
+  const publisherBeta = publisherWordsBeforeMerge?.find((word) => word.word === "beta");
+  assert.ok(publisherBeta);
+  await store.recordEvent(PUBLISHER_CLIENT, {
+    kind: "flashcard",
+    wordbookId: source.id,
+    wordId: publisherBeta.id,
+    verdict: "know",
+  });
+
   const preview = await store.getContributionPreview(CONTRIBUTOR_CLIENT, contributor.userId, joined.id);
   assert.ok(preview);
   assert.deepEqual(preview.changes.map((change) => [change.kind, change.key]), [
@@ -138,6 +148,18 @@ test("a full contribution merge preserves same-spelling progress and revert crea
   assert.equal(publisherAfterMerge?.find((word) => word.word === "alpha")?.id, originalAlphaId);
   assert.equal(publisherAfterMerge?.find((word) => word.word === "alpha")?.level, 1);
   assert.equal(publisherAfterMerge?.some((word) => word.word === "beta"), false);
+  assert.equal((await store.getDashboard(PUBLISHER_CLIENT, source.id))?.recentActivity.some(
+    (event) => event.word === "beta",
+  ), true);
+
+  const publisherGamma = publisherAfterMerge?.find((word) => word.word === "gamma");
+  assert.ok(publisherGamma);
+  await store.recordEvent(PUBLISHER_CLIENT, {
+    kind: "new",
+    wordbookId: source.id,
+    wordId: publisherGamma.id,
+    verdict: "know",
+  });
 
   const revisions = await store.listCatalogRevisions(PUBLISHER_CLIENT, publisher.userId, catalog.id, {});
   assert.ok(revisions);
@@ -160,6 +182,9 @@ test("a full contribution merge preserves same-spelling progress and revert crea
     ["alpha", "甲"],
     ["beta", "乙"],
   ]);
+  assert.equal((await store.getDashboard(PUBLISHER_CLIENT, source.id))?.recentActivity.some(
+    (event) => event.word === "gamma",
+  ), true);
 
   const already = await store.revertRevision(PUBLISHER_CLIENT, publisher, catalog.id, mergeRevision.id, {
     expectedHeadRevisionId: reverted.revision.id,

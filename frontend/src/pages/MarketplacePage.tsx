@@ -99,6 +99,12 @@ export function marketplaceTitleError(value: string): string {
   return title.length > MARKETPLACE_TITLE_MAX_LENGTH ? `社区展示名称不能超过 ${MARKETPLACE_TITLE_MAX_LENGTH} 个字符。` : ''
 }
 
+/** A public upload with open suggestions cannot be made less visible safely. */
+export function hasOpenVisibilityChanges(visibility: CatalogVisibility | undefined, openContributionCount: number | undefined): boolean {
+  // Legacy catalog payloads omit visibility but are rendered as public entries.
+  return (visibility === 'public' || visibility === undefined) && (openContributionCount ?? 0) > 0
+}
+
 export function readMarketplaceUrlState(params: URLSearchParams): MarketplaceUrlState {
   const category = params.get('category')
   const sort = params.get('sort')
@@ -531,6 +537,11 @@ export function MarketplacePage() {
 
   async function submitPublish() {
     if (!api || !selectedSource || !publishForm.title.trim()) return
+    if (hasOpenVisibilityChanges(publishTarget?.visibility, publishTarget?.openContributionCount) && publishForm.visibility !== 'public') {
+      setPublishForm((current) => ({ ...current, visibility: 'public' }))
+      setPublishError('还有待处理建议，请先处理后再更改可见性。')
+      return
+    }
     if (publishTarget && !publishTarget.headRevisionId) {
       setPublishStep('details')
       setPublishError('当前上传缺少版本信息，请刷新单词广场后重新打开更新窗口。')
@@ -572,6 +583,13 @@ export function MarketplacePage() {
         setSyncMessage(error.code === 'CATALOG_SOURCE_MISMATCH'
           ? '快照未更新：该上传已绑定另一发布源，请重新打开并使用原发布源。'
           : '快照未更新：广场版本已经变化，请重新打开更新窗口确认最新内容。')
+      } else if (error instanceof WorkspaceApiError && error.code === 'CATALOG_OPEN_CONTRIBUTIONS') {
+        const count = typeof error.details?.openContributionCount === 'number'
+          ? error.details.openContributionCount
+          : publishTarget?.openContributionCount ?? 0
+        setPublishStep('details')
+        setPublishForm((current) => ({ ...current, visibility: 'public' }))
+        setPublishError(`还有 ${count} 条待处理建议，请先处理后再更改可见性。`)
       } else if (input.visibility === 'public' && isAuthRequiredError(error)) {
         setPublishStep('details')
         setPublishError(UPLOAD_LOGIN_HINT)
@@ -612,7 +630,10 @@ export function MarketplacePage() {
 
   async function deleteUpload(book: MarketplaceBook) {
     if (!api) return
-    if (!window.confirm(`从广场删除「${book.title}」？已被其他人加入的副本不受影响。`)) return
+    const contributionWarning = (book.openContributionCount ?? 0) > 0
+      ? `还有 ${book.openContributionCount} 条待处理建议，删除后这些建议也将无法继续处理。`
+      : ''
+    if (!window.confirm(`从广场删除「${book.title}」？${contributionWarning}已被其他人加入的副本不受影响。`)) return
     // refreshRemote drives both the main catalog grid and the derived 我的上传/收藏 rails,
     // and carries the refreshSeq request-race guard.
     try { await api.deleteCatalogUpload(book.id); await refreshRemote(); setSyncMessage(`已从广场删除「${book.title}」。`) } catch { setSyncMessage('删除失败，请稍后重试。') }
@@ -637,6 +658,10 @@ export function MarketplacePage() {
 
   async function changeVisibility(book: MarketplaceBook, visibility: CatalogVisibility) {
     if (!api || book.visibility === visibility || visibilityUpdatingIds.has(book.id)) return
+    if (hasOpenVisibilityChanges(book.visibility, book.openContributionCount) && visibility !== 'public') {
+      setSyncMessage(`还有 ${book.openContributionCount ?? 0} 条待处理建议，请先处理后再更改可见性。`)
+      return
+    }
     if (visibility === 'public' && !isLoggedIn) {
       setSyncMessage(UPLOAD_LOGIN_HINT)
       return
@@ -647,7 +672,12 @@ export function MarketplacePage() {
       await refreshRemote()
       setSyncMessage(`「${book.title}」已设为${VISIBILITY_LABELS[visibility]}。`)
     } catch (error) {
-      if (isAuthRequiredError(error)) setSyncMessage(UPLOAD_LOGIN_HINT)
+      if (error instanceof WorkspaceApiError && error.code === 'CATALOG_OPEN_CONTRIBUTIONS') {
+        const count = typeof error.details?.openContributionCount === 'number'
+          ? error.details.openContributionCount
+          : book.openContributionCount ?? 0
+        setSyncMessage(`还有 ${count} 条待处理建议，请先处理后再更改可见性。`)
+      } else if (isAuthRequiredError(error)) setSyncMessage(UPLOAD_LOGIN_HINT)
       else setSyncMessage('可见性更新失败，请稍后重试。')
     } finally {
       setVisibilityUpdatingIds((ids) => {
@@ -661,7 +691,7 @@ export function MarketplacePage() {
   return (
     <section className="marketplace-page" aria-labelledby="marketplace-title">
       <div className="marketplace-hero">
-        <div><h1 id="marketplace-title">共享单词本广场</h1><p>发现、收藏、分享你的词汇体系</p></div>
+        <div><h1 id="marketplace-title">共享单词本广场</h1><p>发现、收藏、分享好用的词库</p></div>
         <div className="marketplace-tools">
           <form className="market-search" role="search" onSubmit={(event) => { event.preventDefault(); revealSearchResults() }}>
             <label className="sr-only" htmlFor="marketplace-search">搜索词库</label>
@@ -780,7 +810,7 @@ export function MarketplacePage() {
         </div>
       </div>
 
-      {showPublish && <div className="market-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closePublish() }}><section className="market-modal market-publish-modal" role="dialog" aria-modal="true" aria-labelledby="publish-title"><button className="modal-close" type="button" aria-label="关闭" onClick={closePublish}>×</button>{publishLoading && !personalWordbooks.length ? <p className="publish-loading" role="status">正在读取你的个人词本…</p> : <>{publishStep === 'details' ? <><p className="marginal">{publishTarget ? '更新社区快照' : '新建共享词库'}</p><h2 id="publish-title">{publishTarget ? '更新我的上传' : '发布我的词本'}</h2><p>选择词本并填写展示信息。发布的是独立快照，之后修改个人词本不会影响已发布内容。</p><label>选择个人词本<select value={publishForm.sourceWordbookId} onChange={(event) => chooseSourceWordbook(event.target.value)} disabled={!personalWordbooks.length}><option value="">请选择非空词本</option>{personalWordbooks.map((book) => <option key={book.id} value={book.id}>{book.title}（{book.wordCount} 词）</option>)}</select></label>{publishTarget && !publishForm.sourceWordbookId && <p className="publish-source-hint">为避免覆盖错词本，请明确选择这次快照的来源。</p>}<label>社区展示名称<input value={publishForm.title} maxLength={MARKETPLACE_TITLE_MAX_LENGTH} onChange={(event) => setPublishForm((current) => ({ ...current, title: event.target.value }))} placeholder="例如：7 月阅读积累" autoFocus /><small>{publishForm.title.trim().length} / {MARKETPLACE_TITLE_MAX_LENGTH}</small></label><label>简介<textarea value={publishForm.description} maxLength={240} onChange={(event) => setPublishForm((current) => ({ ...current, description: event.target.value }))} placeholder="告诉大家这本词库适合什么场景。" /></label><label>版本说明<input value={publishForm.revisionMessage} maxLength={80} onChange={(event) => setPublishForm((current) => ({ ...current, revisionMessage: event.target.value }))} placeholder={publishTarget ? '例如：补充 7 月阅读词条' : '首次发布'} /></label><div className="publish-meta-fields"><label>考试类型<select value={publishForm.exam} onChange={(event) => setPublishForm((current) => ({ ...current, exam: event.target.value }))}><option value="">不设置</option>{PUBLISH_EXAMS.map((exam) => <option key={exam}>{exam}</option>)}</select></label><label>学习目标<select value={publishForm.goal} onChange={(event) => setPublishForm((current) => ({ ...current, goal: event.target.value }))}><option value="">不设置</option>{PUBLISH_GOALS.map((goal) => <option key={goal}>{goal}</option>)}</select></label></div><fieldset className="publish-visibility"><legend>可见性</legend>{VISIBILITY_OPTIONS.map((option) => { const optionDisabled = option.value === 'public' && !isLoggedIn; return <label key={option.value} className={optionDisabled ? 'is-disabled' : ''}><input type="radio" name="publish-visibility" value={option.value} checked={publishForm.visibility === option.value} disabled={optionDisabled} onChange={() => setPublishForm((current) => ({ ...current, visibility: option.value }))} /><span><strong>{option.label}</strong><small>{option.hint}</small></span></label> })}{!isLoggedIn && <p className="visibility-hint">{UPLOAD_LOGIN_HINT}</p>}</fieldset>{publishError && <p className="publish-error" role="alert">{publishError}</p>}<div className="publish-actions"><button className="market-secondary" type="button" onClick={closePublish}>取消</button><button className="market-primary" type="button" disabled={!personalWordbooks.length} onClick={openPreview}>预览发布</button></div></> : <><p className="marginal">发布预览</p><h2 id="publish-title">确认社区快照</h2><div className="publish-preview"><BookCover tone="blue" label={(publishForm.exam || publishForm.title.slice(0, 5)).toUpperCase()} /><div><strong>{publishForm.title}</strong><span>{selectedSource?.wordCount ?? 0} 词 · {selectedSource?.title}</span><p>{publishForm.description || '暂无简介'}</p><small>{[publishForm.exam, publishForm.goal].filter(Boolean).join(' · ') || '未设置分类'}</small><small>版本说明：{publishForm.revisionMessage || (publishTarget ? '更新词书' : '首次发布')}</small><small>可见性：{VISIBILITY_LABELS[publishForm.visibility]}</small></div></div><p>确认后，社区会保存这本词本的当前副本。以后主动更新快照，也不会改动其他用户已加入的词本。</p>{publishError && <p className="publish-error" role="alert">{publishError}</p>}<div className="publish-actions"><button className="market-secondary" type="button" disabled={publishLoading} onClick={() => setPublishStep('details')}>返回修改</button><button className="market-primary" type="button" disabled={publishLoading} onClick={() => void submitPublish()}>{publishLoading ? '正在发布…' : publishTarget ? '更新社区快照' : '确认发布'}</button></div></>}</>}</section></div>}
+      {showPublish && <div className="market-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closePublish() }}><section className="market-modal market-publish-modal" role="dialog" aria-modal="true" aria-labelledby="publish-title"><button className="modal-close" type="button" aria-label="关闭" onClick={closePublish}>×</button>{publishLoading && !personalWordbooks.length ? <p className="publish-loading" role="status">正在读取你的个人词本…</p> : <>{publishStep === 'details' ? <><p className="marginal">{publishTarget ? '更新社区快照' : '新建共享词库'}</p><h2 id="publish-title">{publishTarget ? '更新我的上传' : '发布我的词本'}</h2><p>选择词本并填写展示信息。发布的是独立快照，之后修改个人词本不会影响已发布内容。</p><label>选择个人词本<select value={publishForm.sourceWordbookId} onChange={(event) => chooseSourceWordbook(event.target.value)} disabled={!personalWordbooks.length}><option value="">请选择非空词本</option>{personalWordbooks.map((book) => <option key={book.id} value={book.id}>{book.title}（{book.wordCount} 词）</option>)}</select></label>{publishTarget && !publishForm.sourceWordbookId && <p className="publish-source-hint">为避免覆盖错词本，请明确选择这次快照的来源。</p>}<label>社区展示名称<input value={publishForm.title} maxLength={MARKETPLACE_TITLE_MAX_LENGTH} onChange={(event) => setPublishForm((current) => ({ ...current, title: event.target.value }))} placeholder="例如：7 月阅读积累" autoFocus /><small>{publishForm.title.trim().length} / {MARKETPLACE_TITLE_MAX_LENGTH}</small></label><label>简介<textarea value={publishForm.description} maxLength={240} onChange={(event) => setPublishForm((current) => ({ ...current, description: event.target.value }))} placeholder="告诉大家这本词库适合什么场景。" /></label><label>版本说明<input value={publishForm.revisionMessage} maxLength={80} onChange={(event) => setPublishForm((current) => ({ ...current, revisionMessage: event.target.value }))} placeholder={publishTarget ? '例如：补充 7 月阅读词条' : '首次发布'} /></label><div className="publish-meta-fields"><label>考试类型<select value={publishForm.exam} onChange={(event) => setPublishForm((current) => ({ ...current, exam: event.target.value }))}><option value="">不设置</option>{PUBLISH_EXAMS.map((exam) => <option key={exam}>{exam}</option>)}</select></label><label>学习目标<select value={publishForm.goal} onChange={(event) => setPublishForm((current) => ({ ...current, goal: event.target.value }))}><option value="">不设置</option>{PUBLISH_GOALS.map((goal) => <option key={goal}>{goal}</option>)}</select></label></div><fieldset className="publish-visibility"><legend>可见性</legend>{VISIBILITY_OPTIONS.map((option) => { const hasPending = hasOpenVisibilityChanges(publishTarget?.visibility, publishTarget?.openContributionCount); const optionDisabled = (option.value !== 'public' && hasPending) || (option.value === 'public' && !isLoggedIn); return <label key={option.value} className={optionDisabled ? 'is-disabled' : ''}><input type="radio" name="publish-visibility" value={option.value} checked={publishForm.visibility === option.value} disabled={optionDisabled} onChange={() => setPublishForm((current) => ({ ...current, visibility: option.value }))} /><span><strong>{option.label}</strong><small>{option.hint}</small></span></label> })}{hasOpenVisibilityChanges(publishTarget?.visibility, publishTarget?.openContributionCount) && publishTarget && <p className="visibility-hint" role="note">还有 {publishTarget.openContributionCount} 条待处理建议，请先处理后再更改可见性。<Link to={`/marketplace/${encodeURIComponent(publishTarget.id)}?tab=contributions`}>处理该词本的建议</Link> · <Link to="/marketplace/contributions">打开协作收件箱</Link></p>}{!isLoggedIn && <p className="visibility-hint">{UPLOAD_LOGIN_HINT}</p>}</fieldset>{publishError && <p className="publish-error" role="alert">{publishError}</p>}<div className="publish-actions"><button className="market-secondary" type="button" onClick={closePublish}>取消</button><button className="market-primary" type="button" disabled={!personalWordbooks.length} onClick={openPreview}>预览发布</button></div></> : <><p className="marginal">发布预览</p><h2 id="publish-title">确认社区快照</h2><div className="publish-preview"><BookCover tone="blue" label={(publishForm.exam || publishForm.title.slice(0, 5)).toUpperCase()} /><div><strong>{publishForm.title}</strong><span>{selectedSource?.wordCount ?? 0} 词 · {selectedSource?.title}</span><p>{publishForm.description || '暂无简介'}</p><small>{[publishForm.exam, publishForm.goal].filter(Boolean).join(' · ') || '未设置分类'}</small><small>版本说明：{publishForm.revisionMessage || (publishTarget ? '更新词书' : '首次发布')}</small><small>可见性：{VISIBILITY_LABELS[publishForm.visibility]}</small></div></div><p>确认后，社区会保存这本词本的当前副本。以后主动更新快照，也不会改动其他用户已加入的词本。</p>{publishError && <p className="publish-error" role="alert">{publishError}</p>}<div className="publish-actions"><button className="market-secondary" type="button" disabled={publishLoading} onClick={() => setPublishStep('details')}>返回修改</button><button className="market-primary" type="button" disabled={publishLoading} onClick={() => void submitPublish()}>{publishLoading ? '正在发布…' : publishTarget ? '更新社区快照' : '确认发布'}</button></div></>}</>}</section></div>}
     </section>
   )
 }
@@ -802,5 +832,5 @@ type CollectionProps = {
 
 function Collection({ title, icon, collection, books, favorites, canPublishPublic = false, updatingVisibilityIds = new Set(), onToggleFavorite, onUpdate, onDelete, onCopyInvite, onSetVisibility }: CollectionProps) {
   const pending = books.reduce((total, book) => total + (book.openContributionCount ?? 0), 0)
-  return <section className="mini-collection"><header><h2><MarketplaceIcon name={icon} />{title}</h2><span className="collection-header-links">{collection === 'uploads' && <Link to="/marketplace/contributions">协作 {pending}</Link>}<Link to={`/marketplace?collection=${collection}`}>查看全部 ›</Link></span></header>{books.length ? <div>{books.slice(0, 2).map((book) => <article key={book.id}><BookCover tone={book.tone} label={book.shortLabel} /><span><strong>{book.title}</strong><small>{book.wordCount || '新建'}词 ｜ {book.author}</small>{(onUpdate || onDelete || onCopyInvite || (onSetVisibility && book.visibility)) && <span className="collection-manage">{onSetVisibility && book.visibility && <select className="collection-visibility" value={book.visibility} aria-label={`修改「${book.title}」的可见性`} disabled={updatingVisibilityIds.has(book.id)} onChange={(event) => onSetVisibility(book.id, event.target.value as CatalogVisibility)}>{VISIBILITY_OPTIONS.map((option) => <option key={option.value} value={option.value} disabled={option.value === 'public' && !canPublishPublic}>{option.label}</option>)}</select>}{onCopyInvite && book.visibility === 'unlisted' && <button className="collection-copy-invite" type="button" onClick={() => onCopyInvite(book.id)}>复制邀请码</button>}{onUpdate && <button className="collection-update" type="button" onClick={() => onUpdate(book.id)}>更新快照</button>}{onDelete && <button className="collection-delete" type="button" onClick={() => onDelete(book.id)}>删除</button>}</span>}</span><button type="button" className={favorites.has(book.id) ? 'liked' : ''} aria-label="切换收藏" onClick={() => onToggleFavorite(book.id)}><MarketplaceIcon name="heart" /></button></article>)}</div> : <p className="collection-empty">还没有内容，去发现一本喜欢的词库吧。</p>}</section>
+  return <section className="mini-collection"><header><h2><MarketplaceIcon name={icon} />{title}</h2><span className="collection-header-links">{collection === 'uploads' && <Link to="/marketplace/contributions">协作 {pending}</Link>}<Link to={`/marketplace?collection=${collection}`}>查看全部 ›</Link></span></header>{books.length ? <div>{books.slice(0, 2).map((book) => { const pendingForBook = book.openContributionCount ?? 0; const visibilityLocked = hasOpenVisibilityChanges(book.visibility, pendingForBook); const warningId = `visibility-warning-${book.id}`; return <article key={book.id}><BookCover tone={book.tone} label={book.shortLabel} /><span><strong>{book.title}</strong><small>{book.wordCount || '新建'}词 ｜ {book.author}</small>{(onUpdate || onDelete || onCopyInvite || (onSetVisibility && book.visibility)) && <span className="collection-manage">{onSetVisibility && book.visibility && <><select className="collection-visibility" value={book.visibility} aria-describedby={visibilityLocked ? warningId : undefined} aria-label={`修改「${book.title}」的可见性`} disabled={updatingVisibilityIds.has(book.id)} onChange={(event) => onSetVisibility(book.id, event.target.value as CatalogVisibility)}>{VISIBILITY_OPTIONS.map((option) => <option key={option.value} value={option.value} disabled={(option.value !== 'public' && visibilityLocked) || (option.value === 'public' && !canPublishPublic)}>{option.label}</option>)}</select>{visibilityLocked && <small className="collection-visibility-warning" id={warningId}>还有 {pendingForBook} 条待处理建议，请先处理后再更改可见性。<Link to={`/marketplace/${encodeURIComponent(book.id)}?tab=contributions`}>处理该词本的建议</Link></small>}</>}{onCopyInvite && book.visibility === 'unlisted' && <button className="collection-copy-invite" type="button" onClick={() => onCopyInvite(book.id)}>复制邀请码</button>}{onUpdate && <button className="collection-update" type="button" onClick={() => onUpdate(book.id)}>更新快照</button>}{onDelete && <button className="collection-delete" type="button" onClick={() => onDelete(book.id)}>删除</button>}</span>}</span><button type="button" className={favorites.has(book.id) ? 'liked' : ''} aria-label="切换收藏" onClick={() => onToggleFavorite(book.id)}><MarketplaceIcon name="heart" /></button></article> })}</div> : <p className="collection-empty">还没有内容，去挑一本喜欢的词库吧。</p>}</section>
 }

@@ -369,6 +369,7 @@ export function WordbookPage() {
   const fullEntriesGeneration = useRef(new Map<string, number>())
   const selectedBookIdRef = useRef('')
   const studyReturnFocusRef = useRef<HTMLElement | null>(null)
+  const studyProgressCommittedRef = useRef(false)
   remoteEntriesRef.current = remoteEntries
   const studyRefreshTimer = useRef<number | null>(null)
   const recycleDialogRef = useModalDialog<HTMLElement>({
@@ -685,6 +686,7 @@ export function WordbookPage() {
   const scheduleStudyProgressRefresh = useCallback(() => {
     const wordbookId = selectedBook?.id
     if (!wordbookId) return
+    studyProgressCommittedRef.current = true
     if (studyRefreshTimer.current !== null) window.clearTimeout(studyRefreshTimer.current)
     studyRefreshTimer.current = window.setTimeout(() => {
       studyRefreshTimer.current = null
@@ -750,18 +752,22 @@ export function WordbookPage() {
 
   async function exitStudy() {
     const returnFocus = studyReturnFocusRef.current
+    const finishedMode = studyMode
+    const wordbookId = selectedBook.id
+    const progressCommitted = studyProgressCommittedRef.current
+    studyProgressCommittedRef.current = false
     if (studyRefreshTimer.current !== null) {
       window.clearTimeout(studyRefreshTimer.current)
       studyRefreshTimer.current = null
     }
     setStudyMode(null)
+    if (progressCommitted && finishedMode !== 'dictation') invalidateFullEntries(wordbookId)
     await Promise.all([
-      refreshMyWordbooks(selectedBook.id),
-      refreshSelectedBook(selectedBook.id, 'all'),
+      refreshMyWordbooks(wordbookId),
+      refreshSelectedBook(wordbookId, finishedMode === 'dictation' ? 'all' : 'dashboard'),
     ])
-    // The forced post-session word refresh temporarily disables study actions.
-    // Retry focus after that refresh commits, because focusing a disabled button
-    // during the modal cleanup is ignored by the browser.
+    // A post-session refresh can temporarily disable the initiating action.
+    // Restore focus only after the relevant compact/full refresh has committed.
     if (studyReturnFocusRef.current !== returnFocus) return
     window.requestAnimationFrame(() => {
       if (studyReturnFocusRef.current !== returnFocus) return
@@ -1103,11 +1109,11 @@ export function WordbookPage() {
     ? reviewBreakdown.protected + reviewBreakdown.regular
     : reviewDueCount
   const reviewDetail = [isDefaultReviewSchedule(reviewSchedule) ? '分层遗忘曲线' : '自定义分层曲线']
-    .concat(timelyReviewCount > 0 ? [`优先到期 ${timelyReviewCount}`] : [])
-    .concat(backlogCount > 0 ? [`历史积压 ${backlogCount}`] : [])
+    .concat(timelyReviewCount > 0 ? [`优先复习 ${timelyReviewCount} 词`] : [])
+    .concat(backlogCount > 0 ? [`历史积压 ${backlogCount} 词`] : [])
     .join(' · ')
   const newDetail = preferences.plan.newWords >= 200
-    ? `高强度计划：短间隔复习会优先保护，避免被旧积压稀释`
+    ? '新词量大：优先安排短间隔复习，避免旧积压拖慢进度'
     : '学习新词，建立印象'
   const entriesForMode = (nextMode: StudyMode) => {
     if (nextMode === 'new') {
@@ -1123,6 +1129,16 @@ export function WordbookPage() {
   const openStudy = async (nextMode: StudyMode, scope: StudyRoundScope = 'standard') => {
     const wordbookId = selectedBook.id
     const returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    studyProgressCommittedRef.current = false
+    if (nextMode === 'new' || nextMode === 'review') {
+      // The server is authoritative for queue availability. Round responses carry
+      // only the active word, so flashcard modes never need the complete wordbook.
+      studyReturnFocusRef.current = returnFocus
+      setStudyScope(scope)
+      setStudyMode(nextMode)
+      return
+    }
+
     let entries: WorkspaceBook['entries'] | null
     try {
       entries = await ensureFullEntries(wordbookId)
@@ -1138,36 +1154,8 @@ export function WordbookPage() {
     // derive this one session from its returned payload rather than the old
     // render's empty `activeEntries` snapshot.
     const loadedStudyEntries = deriveStudyEntries(entries, selectedBook.reviewSchedule)
-    const loadedNewEntries = loadedStudyEntries.unstudiedEntries
-    const loadedReviewAheadEntries = loadedStudyEntries.reviewAheadEntries
     const loadedDictationEntries = loadedStudyEntries.dictationEntries.slice(0, preferences.plan.dictation)
-    if (nextMode === 'review') {
-      const available = scope === 'backlog'
-        ? backlogCount
-        : scope === 'ahead'
-          ? loadedReviewAheadEntries.length
-          : scheduledReviewCount
-      const resumable = activeRound('review', scope)
-      if (!available && !resumable) {
-        setNotice(scope === 'backlog' ? '当前没有历史积压。' : scope === 'ahead' ? '当前没有未到期的可复习单词。' : '今日安排的复习已完成。')
-        return
-      }
-      setStudyScope(scope)
-      setStudyMode('review')
-      return
-    }
-    if (nextMode === 'new') {
-      const available = scope === 'ahead' ? loadedNewEntries.length : loadedNewEntries.slice(0, newPlan.remaining).length
-      const resumable = activeRound('new', scope)
-      if (!available && !resumable) {
-        setNotice(scope === 'ahead' ? '当前词本没有可提前学习的未学习单词。' : '今日新词计划已完成，或当前词本没有未学习单词。')
-        return
-      }
-      setStudyScope(scope)
-      setStudyMode('new')
-      return
-    }
-    if (nextMode === 'dictation' && loadedDictationEntries.length === 0) {
+    if (loadedDictationEntries.length === 0) {
       setNotice('当前模式暂无可学的单词。')
       return
     }
@@ -1496,7 +1484,7 @@ function StudyCalendar({ calendar, loading }: { calendar: StudyDashboard['calend
 }
 
 function StudyStreak({ days, loading }: { days: number | undefined; loading: boolean }) {
-  return <section className="study-streak"><h2><WorkspaceIcon name="fire" />连续学习</h2>{days === undefined ? <p className="workspace-data-state" role={loading ? 'status' : undefined}>{loading ? '正在载入连续学习数据。' : '连续学习数据暂不可用。'}</p> : <><strong>{days} <small>天</small></strong><p>继续加油，养成好习惯！</p><div>{['一','二','三','四','五','六','日'].map((day, index) => <span key={day}><small>{day}</small><i className={index < Math.min(7, days) ? 'complete' : ''}>{index < Math.min(7, days) ? '✓' : ''}</i></span>)}</div></>}</section>
+  return <section className="study-streak"><h2><WorkspaceIcon name="fire" />连续学习</h2>{days === undefined ? <p className="workspace-data-state" role={loading ? 'status' : undefined}>{loading ? '正在载入连续学习数据。' : '连续学习数据暂不可用。'}</p> : <><strong>{days} <small>天</small></strong><p>继续保持！</p><div>{['一','二','三','四','五','六','日'].map((day, index) => <span key={day}><small>{day}</small><i className={index < Math.min(7, days) ? 'complete' : ''}>{index < Math.min(7, days) ? '✓' : ''}</i></span>)}</div></>}</section>
 }
 
 const REVIEW_SCHEDULE_FIELDS: Array<{ key: keyof ReviewSchedule; label: string; detail: string }> = [
@@ -1755,7 +1743,6 @@ function WordbookStudyMode({
       <StudyHeader book={book} mode={mode} onExit={onExit} />
       <SyncedFlashcardRound
         wordbookId={book.id}
-        entries={book.entries}
         mode={mode}
         scope={scope}
         preferences={preferences as FlashcardDisplayPreferences}
