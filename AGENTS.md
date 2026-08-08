@@ -58,8 +58,8 @@ This project runs inside **Herdr**. The main agent is **Codex**; coordination ha
 | Assistant agent | Claude Code | `deepseek-v4-flash` via local proxy | Runs in a Herdr pane started with `herdr agent start ... --kind claude`; inherits `ANTHROPIC_BASE_URL` from `~/.claude/settings.json` |
 
 ### Division of labor
-- **You (Codex sol max)**: own the plan and the code. Do the work you are best at — architecture, backend, reasoning-heavy changes.
-- **Codex subagents (luna)**: short, well-scoped tasks that do not need your full reasoning — quick lookups, targeted refactors, test triage, doc snippets.
+- **You (Codex sol max)**: own the plan and the coordination. Design the approach, split work, integrate results, and decide final calls. Implement directly only when the plan is so intricate that handing it off costs more than writing it.
+- **Codex subagents (luna)**: the implementers. Give each a well-scoped implementation task with acceptance criteria and an output path; they write the code, you review and integrate.
 - **Claude Code (deepseek)**: delegate repetitive or independent work that suits a separate agent: frontend styling passes, cross-checking, mechanical rewrites, review sweeps, parallel experiments.
 
 ### Coordination rules
