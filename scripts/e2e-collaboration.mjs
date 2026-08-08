@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
@@ -275,12 +275,31 @@ async function main() {
     process.stdout.write("\n协作改进、审计、合并与回滚 E2E 通过。\n");
   } finally {
     await browser?.close().catch(() => undefined);
-    if (server.exitCode === null) server.kill();
-    await new Promise((resolveWait) => {
-      if (server.exitCode !== null) resolveWait();
-      else server.once("exit", resolveWait);
+    if (server.exitCode === null) {
+      server.kill("SIGTERM");
+      const exited = await Promise.race([
+        new Promise((resolveExit) => server.once("exit", () => resolveExit(true))),
+        new Promise((resolveWait) => setTimeout(() => resolveWait(false), 5_000)),
+      ]);
+      if (!exited && server.exitCode === null) {
+        if (process.platform === "win32") {
+          spawnSync("taskkill", ["/PID", String(server.pid), "/T", "/F"], { stdio: "ignore" });
+        } else {
+          server.kill("SIGKILL");
+        }
+        if (server.exitCode === null) {
+          await new Promise((resolveExit) => server.once("exit", resolveExit));
+        }
+      }
+    }
+    await rm(tempDir, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    }).catch((error) => {
+      console.warn(`E2E 临时目录清理失败：${error.message}`);
     });
-    await rm(tempDir, { recursive: true, force: true });
   }
 }
 

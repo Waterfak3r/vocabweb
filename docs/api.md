@@ -54,6 +54,7 @@ Keep existing HTTP status meanings and machine error codes backward compatible. 
 - `/api/words` and `/api/pronunciations` — dictionary definitions, suggestions, and pronunciation metadata/audio.
 - `/api/auth` and `/api/account` — session lifecycle, profile security, export, and deletion.
 - `GET /api/account/profile` requires an active session and returns the account's 90-day study metrics, daily activity, streaks, and recent learning history. Its client identity is always taken from the session user, not `X-Vocab-Client-Id`.
+- `GET /api/account/export` downloads a complete data archive. Word content is content-addressed by the same `dictionary_entries` identity used in SQLite persistence: wordbooks and import-draft entries reference `entryId` values into a deduplicated `dictionary` section, catalog uploads keep metadata plus their `sourceWordbookId`, and revisions keep diff keys and stats instead of full word lists.
 - `/api/my` and `/api/study` — personal wordbooks, imports, preferences, dashboards, rounds, and learning events.
 - `/api/catalog` and account contribution routes — public/unlisted wordbooks, favorites, publishing, revisions, contributions, merges, and reverts.
 - search, feedback, site-setting, and message routes — engagement data and threaded communication.

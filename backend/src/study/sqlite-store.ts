@@ -2,8 +2,16 @@ import { mkdir, readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import Database from "better-sqlite3";
 import { createAccountAvatar, decodeAccountAvatar } from "../account-avatar.js";
-import { BaseStore, type StudyResourceLimits } from "./store.js";
-import { EMPTY, migrate, type ClientData, type State } from "./ladder.js";
+import { BaseStore, completedReviewLanes, type StudyResourceLimits, type StudyRoundSelectionContext } from "./store.js";
+import { day, EMPTY, ladderEventLevels, migrate, reviewDue, reviewLane, type State, type WordLadderState } from "./ladder.js";
+import {
+  createPrivateStateSchema,
+  loadPrivateClients,
+  migrateImportDraftEntriesIfNeeded,
+  migratePrivateStateIfNeeded,
+  STUDY_STATE_GENERATION_KEY,
+  syncPrivateClients,
+} from "./sqlite-private-state.js";
 import type { AccountAvatar, AccountAvatarInput, AccountUser, CatalogContribution, CatalogRevision, CatalogWordbook } from "./types.js";
 
 type SqliteStoreOptions = {
@@ -30,11 +38,28 @@ type SessionRow = {
   created_at: string;
 };
 type JsonRow = { data_json: string };
+type StudyStateRow = {
+  wordbook_word_id: string;
+  level: WordLadderState["level"];
+  level_reached_at: string | null;
+  last_studied_at: string | null;
+  recognition_streak: WordLadderState["recognitionStreak"];
+  review_interval_days: number;
+  next_review_at: string | null;
+  ease_factor: number;
+  relearning: 0 | 1;
+};
 
 const LEGACY_IMPORT_KEY = "legacy_json_import_v1";
+class StaleStudyStateError extends Error {
+  constructor() {
+    super("Study state changed before the transaction could commit");
+    this.name = "StaleStudyStateError";
+  }
+}
 
 function same(left: unknown, right: unknown): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
+  return left === right || JSON.stringify(left) === JSON.stringify(right);
 }
 
 function keyed<T>(items: T[], key: (item: T) => string): Map<string, T> {
@@ -53,16 +78,35 @@ function userFromRow(row: UserRow): AccountUser {
   };
 }
 
+function stateFromRow(row: StudyStateRow): WordLadderState {
+  return {
+    level: row.level,
+    ...(row.level_reached_at ? { levelReachedAt: row.level_reached_at } : {}),
+    ...(row.last_studied_at ? { lastStudiedAt: row.last_studied_at } : {}),
+    recognitionStreak: row.recognition_streak,
+    reviewIntervalDays: row.review_interval_days,
+    ...(row.next_review_at ? { nextReviewAt: row.next_review_at } : {}),
+    easeFactor: row.ease_factor,
+    relearning: row.relearning === 1,
+  };
+}
+
+function stateDueTimestamp(state: WordLadderState): number {
+  const value = state.nextReviewAt ?? state.lastStudiedAt;
+  const parsed = value ? Date.parse(value) : 0;
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 /**
- * Hybrid persistence: account/session/catalog fields live in queryable relational
- * rows, while each learner's private collection remains one JSON row. BaseStore
- * keeps the domain semantics; save() writes only rows changed by that transition.
+ * Record-oriented SQLite persistence. BaseStore keeps the domain semantics and a
+ * compatibility view in memory; private wordbooks, words, events, projections,
+ * drafts, and round queues are independently addressable rows on disk.
  */
 export class SqliteStudyStore extends BaseStore {
   private readonly databaseFile: string;
   private readonly legacyJsonFile?: string;
   private database?: Database.Database;
-  private dataVersion?: number;
+  private studyGeneration?: number;
 
   constructor(databaseFile: string, options: SqliteStoreOptions = {}) {
     super(options.now, options.limits);
@@ -73,12 +117,23 @@ export class SqliteStudyStore extends BaseStore {
   close(): void {
     this.database?.close();
     this.database = undefined;
+    this.studyGeneration = undefined;
+    this.clearCachedState();
   }
 
   async checkHealth(): Promise<void> {
-    const db = await this.open();
-    db.prepare("SELECT 1 AS ready").get();
-    db.exec("BEGIN IMMEDIATE; ROLLBACK;");
+    await this.serialize(async () => {
+      const db = await this.open();
+      // Readiness owns the one-time upgrade so traffic is not declared ready while
+      // a legacy private-state document still needs a long write transaction.
+      await this.importLegacyJsonIfNeeded(db);
+      migratePrivateStateIfNeeded(db);
+      migrateImportDraftEntriesIfNeeded(db);
+      await this.refreshBeforeOperation();
+      await this.warmCachedState();
+      db.prepare("SELECT 1 AS ready").get();
+      db.exec("BEGIN IMMEDIATE; ROLLBACK;");
+    });
   }
 
   async backup(destinationFile: string): Promise<void> {
@@ -119,23 +174,29 @@ export class SqliteStudyStore extends BaseStore {
       `).get(userId) as UserRow | undefined;
       if (!row) return null;
       let avatarVersion: string | null = null;
-      if (input) {
-        const avatar = createAccountAvatar(input, this.now().toISOString());
-        const bytes = decodeAccountAvatar(avatar);
-        if (!bytes) throw new Error("Account avatar payload is invalid");
-        db.prepare(`
-          INSERT INTO user_avatars(user_id, mime_type, data, version, updated_at)
-          VALUES (?, ?, ?, ?, ?)
-          ON CONFLICT(user_id) DO UPDATE SET
-            mime_type = excluded.mime_type,
-            data = excluded.data,
-            version = excluded.version,
-            updated_at = excluded.updated_at
-        `).run(userId, avatar.mimeType, bytes, avatar.version, avatar.updatedAt);
-        avatarVersion = avatar.version;
-      } else {
-        db.prepare("DELETE FROM user_avatars WHERE user_id = ?").run(userId);
-      }
+      const avatar = input ? createAccountAvatar(input, this.now().toISOString()) : null;
+      const bytes = avatar ? decodeAccountAvatar(avatar) : null;
+      if (avatar && !bytes) throw new Error("Account avatar payload is invalid");
+      let nextGeneration = this.readStudyGeneration(db);
+      const write = db.transaction(() => {
+        if (avatar && bytes) {
+          db.prepare(`
+            INSERT INTO user_avatars(user_id, mime_type, data, version, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+              mime_type = excluded.mime_type,
+              data = excluded.data,
+              version = excluded.version,
+              updated_at = excluded.updated_at
+          `).run(userId, avatar.mimeType, bytes, avatar.version, avatar.updatedAt);
+          avatarVersion = avatar.version;
+        } else {
+          db.prepare("DELETE FROM user_avatars WHERE user_id = ?").run(userId);
+        }
+        nextGeneration = this.bumpStudyGeneration(db);
+      });
+      write.immediate();
+      this.studyGeneration = nextGeneration;
       this.clearCachedState();
       return userFromRow({ ...row, avatar_version: avatarVersion });
     });
@@ -153,56 +214,170 @@ export class SqliteStudyStore extends BaseStore {
 
   protected async refreshBeforeOperation(): Promise<void> {
     const db = await this.open();
-    const version = (db.pragma("data_version", { simple: true }) as number);
-    if (this.dataVersion !== undefined && version !== this.dataVersion) {
+    const generation = this.readStudyGeneration(db);
+    if (this.studyGeneration !== undefined && generation !== this.studyGeneration) {
       this.clearCachedState();
     }
-    this.dataVersion = version;
+    this.studyGeneration = generation;
+  }
+
+  protected override shouldRetryPersistenceError(error: unknown): boolean {
+    return error instanceof StaleStudyStateError;
+  }
+
+  /** Select only stable wordbook-word ids; entry content stays out of queue construction. */
+  protected override async selectStudyRoundWordIds(context: StudyRoundSelectionContext): Promise<string[] | null> {
+    const db = await this.open();
+    if (context.mode === "new") {
+      const afterById = ladderEventLevels(context.events, context.schedule);
+      const today = day(context.now);
+      const completedToday = new Set(
+        context.events
+          .filter((event) => event.kind === "new" && day(new Date(event.occurredAt)) === today && afterById.get(event.id) === 1)
+          .map((event) => event.wordId),
+      ).size;
+      const limit = context.scope === "ahead"
+        ? Math.min(200, Math.max(1, context.preferences.plan.newWords))
+        : Math.max(0, context.preferences.plan.newWords - completedToday);
+      if (limit === 0) return [];
+      return (db.prepare(`
+        SELECT w.id
+        FROM wordbook_words w
+        LEFT JOIN study_states s
+          ON s.client_id = ?
+          AND s.wordbook_id = w.wordbook_id
+          AND s.wordbook_word_id = w.id
+        WHERE w.client_id = ?
+          AND w.wordbook_id = ?
+          AND w.deleted_at IS NULL
+          AND COALESCE(s.level, 0) = 0
+        ORDER BY w.position
+        LIMIT ?
+      `).all(context.clientId, context.clientId, context.wordbookId, limit) as Array<{ id: string }>).map((row) => row.id);
+    }
+
+    const columns = `
+      s.wordbook_word_id, s.level, s.level_reached_at, s.last_studied_at,
+      s.recognition_streak, s.review_interval_days, s.next_review_at,
+      s.ease_factor, s.relearning
+    `;
+    const base = `
+      FROM study_states s
+      JOIN wordbook_words w
+        ON w.client_id = s.client_id
+        AND w.id = s.wordbook_word_id
+        AND w.wordbook_id = s.wordbook_id
+        AND w.deleted_at IS NULL
+      WHERE s.client_id = ?
+        AND s.wordbook_id = ?
+        AND s.level > 0
+    `;
+    if (context.scope === "ahead") {
+      const future = db.prepare(`
+        SELECT ${columns} ${base}
+          AND s.next_review_at > ?
+        ORDER BY s.next_review_at, w.position
+        LIMIT 200
+      `).all(context.clientId, context.wordbookId, context.now.toISOString()) as StudyStateRow[];
+      const fallback = db.prepare(`
+        SELECT ${columns} ${base}
+          AND s.next_review_at IS NULL
+        ORDER BY s.last_studied_at, w.position
+      `).all(context.clientId, context.wordbookId) as StudyStateRow[];
+      return [...future, ...fallback]
+        .map((row) => ({ id: row.wordbook_word_id, state: stateFromRow(row) }))
+        .filter((item) => !reviewDue(item.state, context.now, context.schedule))
+        .sort((left, right) => stateDueTimestamp(left.state) - stateDueTimestamp(right.state))
+        .slice(0, 200)
+        .map((item) => item.id);
+    }
+
+    const due = db.prepare(`
+      SELECT ${columns} ${base}
+        AND s.next_review_at <= ?
+      ORDER BY s.next_review_at, w.position
+    `).all(context.clientId, context.wordbookId, context.now.toISOString()) as StudyStateRow[];
+    const fallback = db.prepare(`
+      SELECT ${columns} ${base}
+        AND s.next_review_at IS NULL
+      ORDER BY s.last_studied_at, w.position
+    `).all(context.clientId, context.wordbookId) as StudyStateRow[];
+    const lanes: Record<"protected" | "regular" | "backlog", Array<{ id: string; state: WordLadderState }>> = {
+      protected: [],
+      regular: [],
+      backlog: [],
+    };
+    for (const row of [...due, ...fallback]) {
+      const state = stateFromRow(row);
+      const lane = reviewLane(state, context.now, context.schedule);
+      if (lane) lanes[lane].push({ id: row.wordbook_word_id, state });
+    }
+    lanes.protected.sort((left, right) =>
+      Number(right.state.relearning) - Number(left.state.relearning)
+      || stateDueTimestamp(left.state) - stateDueTimestamp(right.state));
+    lanes.regular.sort((left, right) => stateDueTimestamp(left.state) - stateDueTimestamp(right.state));
+    lanes.backlog.sort((left, right) => stateDueTimestamp(left.state) - stateDueTimestamp(right.state));
+    if (context.scope === "backlog") {
+      const batchSize = Math.min(200, Math.max(50, context.preferences.plan.backlogReviews));
+      return lanes.backlog.slice(0, batchSize).map((item) => item.id);
+    }
+    const completed = completedReviewLanes(context.events, context.schedule, day(context.now));
+    const remainingBacklog = Math.max(0, context.preferences.plan.backlogReviews - completed.backlog.size);
+    return [...lanes.protected, ...lanes.regular, ...lanes.backlog.slice(0, remainingBacklog)].map((item) => item.id);
   }
 
   protected async load(): Promise<State> {
     const db = await this.open();
     await this.importLegacyJsonIfNeeded(db);
+    migratePrivateStateIfNeeded(db);
+    migrateImportDraftEntriesIfNeeded(db);
 
-    const clients: Record<string, ClientData> = {};
-    for (const row of db.prepare("SELECT client_id, data_json FROM clients").all() as Array<{ client_id: string; data_json: string }>) {
-      clients[row.client_id] = JSON.parse(row.data_json) as ClientData;
-    }
-    const users = (db.prepare(`
+    const readSnapshot = db.transaction(() => {
+      const clients = loadPrivateClients(db);
+      const users = (db.prepare(`
       SELECT u.id, u.username, u.password_hash, u.client_id, u.role, u.created_at,
              a.version AS avatar_version
       FROM users u
       LEFT JOIN user_avatars a ON a.user_id = u.id
-    `).all() as UserRow[]).map(userFromRow);
-    const sessions = (db.prepare("SELECT token_hash, user_id, expires_at, created_at FROM sessions").all() as SessionRow[])
-      .map((row) => ({
-        tokenHash: row.token_hash,
-        userId: row.user_id,
-        expiresAt: row.expires_at,
-        createdAt: row.created_at,
-      }));
-    const catalog = (db.prepare("SELECT data_json FROM catalog").all() as JsonRow[])
-      .map((row) => JSON.parse(row.data_json) as CatalogWordbook);
-    const revisions = (db.prepare("SELECT data_json FROM catalog_revisions").all() as JsonRow[])
-      .map((row) => JSON.parse(row.data_json) as CatalogRevision);
-    const contributions = (db.prepare("SELECT data_json FROM catalog_contributions").all() as JsonRow[])
-      .map((row) => JSON.parse(row.data_json) as CatalogContribution);
+      `).all() as UserRow[]).map(userFromRow);
+      const sessions = (db.prepare("SELECT token_hash, user_id, expires_at, created_at FROM sessions").all() as SessionRow[])
+        .map((row) => ({
+          tokenHash: row.token_hash,
+          userId: row.user_id,
+          expiresAt: row.expires_at,
+          createdAt: row.created_at,
+        }));
+      const catalog = (db.prepare("SELECT data_json FROM catalog").all() as JsonRow[])
+        .map((row) => JSON.parse(row.data_json) as CatalogWordbook);
+      const revisions = (db.prepare("SELECT data_json FROM catalog_revisions").all() as JsonRow[])
+        .map((row) => JSON.parse(row.data_json) as CatalogRevision);
+      const contributions = (db.prepare("SELECT data_json FROM catalog_contributions").all() as JsonRow[])
+        .map((row) => JSON.parse(row.data_json) as CatalogContribution);
 
-    return migrate({ version: 6, catalog, revisions, contributions, clients, users, userAvatars: {}, sessions });
+      return migrate({ version: 6, catalog, revisions, contributions, clients, users, userAvatars: {}, sessions });
+    });
+    return readSnapshot();
   }
 
   protected async save(state: State, previous?: State): Promise<void> {
     const db = await this.open();
     const before = previous ?? EMPTY();
+    const expectedGeneration = this.studyGeneration ?? this.readStudyGeneration(db);
+    let nextGeneration: number | undefined;
     const write = db.transaction(() => {
-      this.syncClients(db, before, state);
-      this.syncUsers(db, before, state);
-      this.syncCatalog(db, before, state);
-      this.syncRevisions(db, before, state);
-      this.syncContributions(db, before, state);
-      this.syncSessions(db, before, state);
+      if (this.readStudyGeneration(db) !== expectedGeneration) throw new StaleStudyStateError();
+      const changesBefore = (db.prepare("SELECT total_changes() AS count").get() as { count: number }).count;
+      if (before.clients !== state.clients) syncPrivateClients(db, before, state);
+      if (before.users !== state.users) this.syncUsers(db, before, state);
+      if (before.catalog !== state.catalog) this.syncCatalog(db, before, state);
+      if (before.revisions !== state.revisions) this.syncRevisions(db, before, state);
+      if (before.contributions !== state.contributions) this.syncContributions(db, before, state);
+      if (before.sessions !== state.sessions) this.syncSessions(db, before, state);
+      const changesAfter = (db.prepare("SELECT total_changes() AS count").get() as { count: number }).count;
+      if (changesAfter > changesBefore) nextGeneration = this.bumpStudyGeneration(db);
     });
-    write();
+    write.immediate();
+    if (nextGeneration !== undefined) this.studyGeneration = nextGeneration;
   }
 
   private async open(): Promise<Database.Database> {
@@ -294,6 +469,7 @@ export class SqliteStudyStore extends BaseStore {
       CREATE INDEX IF NOT EXISTS catalog_contributions_catalog_status_idx ON catalog_contributions(catalog_id, status, created_at DESC);
       CREATE INDEX IF NOT EXISTS catalog_contributions_contributor_status_idx ON catalog_contributions(contributor_user_id, status, created_at DESC);
     `);
+    db.prepare("INSERT INTO metadata(key, value) VALUES (?, '0') ON CONFLICT(key) DO NOTHING").run(STUDY_STATE_GENERATION_KEY);
     const userColumns = db.prepare("PRAGMA table_info(users)").all() as Array<{ name: string }>;
     if (!userColumns.some((column) => column.name === "role")) {
       db.exec("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('user', 'admin'))");
@@ -306,6 +482,18 @@ export class SqliteStudyStore extends BaseStore {
       db.exec("ALTER TABLE catalog ADD COLUMN head_revision_id TEXT");
     }
     db.exec("CREATE INDEX IF NOT EXISTS catalog_visibility_updated_idx ON catalog(visibility, updated_at DESC)");
+    createPrivateStateSchema(db);
+  }
+
+  private readStudyGeneration(db: Database.Database): number {
+    const row = db.prepare("SELECT value FROM metadata WHERE key = ?").get(STUDY_STATE_GENERATION_KEY) as { value: string } | undefined;
+    const parsed = Number(row?.value ?? 0);
+    return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 0;
+  }
+
+  private bumpStudyGeneration(db: Database.Database): number {
+    db.prepare("UPDATE metadata SET value = CAST(value AS INTEGER) + 1 WHERE key = ?").run(STUDY_STATE_GENERATION_KEY);
+    return this.readStudyGeneration(db);
   }
 
   private async importLegacyJsonIfNeeded(db: Database.Database): Promise<void> {
@@ -328,9 +516,10 @@ export class SqliteStudyStore extends BaseStore {
     }
 
     const importOnce = db.transaction(() => {
+      if (db.prepare("SELECT 1 FROM metadata WHERE key = ?").get(LEGACY_IMPORT_KEY)) return;
       if (legacy) {
         const empty = EMPTY();
-        this.syncClients(db, empty, legacy);
+        this.syncLegacyClients(db, empty, legacy);
         this.syncUsers(db, empty, legacy);
         this.syncUserAvatars(db, empty, legacy);
         this.syncCatalog(db, empty, legacy);
@@ -344,10 +533,11 @@ export class SqliteStudyStore extends BaseStore {
       );
       db.prepare("INSERT INTO metadata(key, value) VALUES ('state_version', '6') ON CONFLICT(key) DO UPDATE SET value = excluded.value").run();
     });
-    importOnce();
+    importOnce.immediate();
   }
 
-  private syncClients(db: Database.Database, before: State, after: State): void {
+  /** Stage legacy JSON rows for the one-time normalized private-state migration. */
+  private syncLegacyClients(db: Database.Database, before: State, after: State): void {
     const upsert = db.prepare("INSERT INTO clients(client_id, data_json) VALUES (?, ?) ON CONFLICT(client_id) DO UPDATE SET data_json = excluded.data_json");
     const remove = db.prepare("DELETE FROM clients WHERE client_id = ?");
     for (const [id, value] of Object.entries(after.clients)) {

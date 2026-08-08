@@ -277,6 +277,18 @@ function bucketByWord(events: LearningEvent[]): Map<string, LearningEvent[]> {
   return buckets;
 }
 
+/** Client retention must not merge identical legacy word ids from different wordbooks. */
+function bucketByLearningTarget(events: LearningEvent[]): Map<string, LearningEvent[]> {
+  const buckets = new Map<string, LearningEvent[]>();
+  for (const event of events) {
+    const key = `${event.wordbookId}\u0000${event.wordId}`;
+    const bucket = buckets.get(key);
+    if (bucket) bucket.push(event); else buckets.set(key, [event]);
+  }
+  for (const bucket of buckets.values()) bucket.sort((a, b) => Date.parse(a.occurredAt) - Date.parse(b.occurredAt));
+  return buckets;
+}
+
 /** Group events by wordbook in one pass so callers can replay each book's history only once. */
 export function eventsByWordbook(events: LearningEvent[]): Map<string, LearningEvent[]> {
   const grouped = new Map<string, LearningEvent[]>();
@@ -301,7 +313,7 @@ export function compactLearningEvents(
   if (!expired.length) return events;
   const retained = events.filter((event) => Date.parse(event.occurredAt) >= cutoff);
   const checkpoints: LearningEvent[] = [];
-  for (const bucket of bucketByWord(expired).values()) {
+  for (const bucket of bucketByLearningTarget(expired).values()) {
     const tail = bucket.at(-1);
     if (!tail) continue;
     const state = replayLadder(bucket, undefined, scheduleForWordbook(tail.wordbookId));

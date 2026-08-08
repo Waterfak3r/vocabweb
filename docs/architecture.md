@@ -67,6 +67,14 @@ During development Vite proxies `/api` to Express. Production builds the SPA int
 3. Routes validate input and call `StudyStore` operations.
 4. The production SQLite store executes the domain transition and persists changed rows transactionally.
 
+### Study Round
+
+1. Starting a round queries only candidate `wordbook_words.id` values. New cards use word order plus the `study_states` level projection; review cards use the indexed due time and retain the protected/regular/backlog rules.
+2. The durable round and its ordered tasks are separate rows. Resuming reads that queue; `currentWord` remains a response-only value derived from the first task id.
+3. Answering uses client-scoped copy-on-write in the domain layer, then atomically appends the small `study_events` row, upserts that word's `study_states` projection, and changes only the affected round/task/operation rows.
+4. `(client_id, wordbook_id, wordbook_words.id)` is the stable learning identity even when spelling or entry content changes. `dictionary_entries.id` is a separate immutable content identity, and private edits stay scoped to one wordbook link.
+5. Multiple store processes use an optimistic generation check inside the SQLite write transaction. A stale transition reloads and retries as a whole, so event order, state projections, and answer idempotency remain atomic.
+
 ## Cross-Package Invariants
 
 - Network access stays in frontend data adapters; routes stay above backend stores.

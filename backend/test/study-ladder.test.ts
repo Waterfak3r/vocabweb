@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   card,
+  compactLearningEvents,
   eventsByWordbook,
   ladderEventLevels,
   ladderReplay,
@@ -40,4 +41,19 @@ test("combined ladder replay matches the independent state and event-level views
   const expectedProgress = progress(book, events.filter((event) => event.wordbookId === book.id));
   assert.deepEqual(progressFromStates(book, combined.states), expectedProgress);
   assert.deepEqual(card(book, [], expectedProgress).progress, expectedProgress);
+});
+
+test("retention checkpoints isolate duplicate word ids across wordbooks", () => {
+  const wordId = "legacy-shared-word";
+  const expired: LearningEvent[] = [
+    { id: "old-a", kind: "mark", level: 4, wordbookId: "book-a", wordId, word: "shared", occurredAt: "2026-01-01T00:00:00.000Z" },
+    { id: "old-b", kind: "mark", level: 3, wordbookId: "book-b", wordId, word: "shared", occurredAt: "2026-01-01T00:00:00.000Z" },
+  ];
+  const compacted = compactLearningEvents(expired, Date.parse("2026-08-01T00:00:00.000Z"));
+  assert.deepEqual(compacted.map((event) => [event.wordbookId, event.wordId, event.kind, event.kind === "mark" ? event.level : null]), [
+    ["book-a", wordId, "mark", 4],
+    ["book-b", wordId, "mark", 3],
+  ]);
+  assert.equal(ladderStates(compacted.filter((event) => event.wordbookId === "book-a")).get(wordId)?.level, 4);
+  assert.equal(ladderStates(compacted.filter((event) => event.wordbookId === "book-b")).get(wordId)?.level, 3);
 });
