@@ -110,6 +110,11 @@ type WorkspaceEntry = WordbookItem & ReviewScheduleEntry & {
   recognitionStreak?: 0 | 1 | 2
 }
 
+type FullEntriesRequest = {
+  generation: number
+  promise: Promise<WorkspaceBook['entries']>
+}
+
 type RecentStudyRow = {
   id: string
   word: string
@@ -165,21 +170,68 @@ function activityResult(activity: StudyDashboard['recentActivity'][number]) {
   return { result: '听写正确', resultTone: 'done' as const }
 }
 
-function toRecentStudyRows(activities: StudyDashboard['recentActivity'], entries: WordbookItem[]): RecentStudyRow[] {
-  const entriesByWord = new Map(entries.map((entry) => [entry.word, entry]))
+function toRecentStudyRows(
+  activities: StudyDashboard['recentActivity'],
+  entriesByWord: ReadonlyMap<string, WordbookItem>,
+  entriesLoaded: boolean,
+): RecentStudyRow[] {
   return activities.slice(0, 5).map((activity) => {
     const entry = entriesByWord.get(activity.word)
     const meaning = entry ? firstAvailableMeaning(entry) : undefined
     return {
       id: activity.id,
       word: activity.word,
-      pos: meaning?.pos || '—',
-      definition: meaning?.definition || '—',
+      pos: meaning?.pos || (entriesLoaded ? '—' : '待加载'),
+      definition: meaning?.definition || (entriesLoaded ? '—' : '开始学习后显示释义'),
       ...activityResult(activity),
       time: formatActivityTime(activity.occurredAt),
     }
   })
 }
+
+type StudyEntryDerivation = {
+  reviewDueEntries: WorkspaceEntry[]
+  reviewAheadEntries: WorkspaceEntry[]
+  reviewDueCount: number
+  reviewAheadCount: number
+  unstudiedEntries: WorkspaceEntry[]
+  dictationEntries: WorkspaceEntry[]
+}
+
+function deriveStudyEntries(entries: WorkspaceEntry[], reviewSchedule: ReviewSchedule): StudyEntryDerivation {
+  const reviewNow = new Date()
+  const isReviewLevel = (entry: WorkspaceEntry) => levelOf(entry) > 0
+  const byReviewPriority = (left: WorkspaceEntry, right: WorkspaceEntry) => reviewPriority(left, reviewSchedule) - reviewPriority(right, reviewSchedule)
+  const reviewDueEntries = entries.filter((entry) => isReviewDue(entry, reviewNow, reviewSchedule)).sort(byReviewPriority)
+  const reviewAheadEntries = entries.filter((entry) => isReviewLevel(entry) && !isReviewDue(entry, reviewNow, reviewSchedule)).sort(byReviewPriority)
+  const dictationEntries = entries
+    .filter((entry) => levelOf(entry) >= 2)
+    .sort((left, right) => {
+      const dueOrder = Number(isReviewDue(right, reviewNow, reviewSchedule)) - Number(isReviewDue(left, reviewNow, reviewSchedule))
+      return dueOrder || reviewPriority(left, reviewSchedule) - reviewPriority(right, reviewSchedule)
+    })
+  return {
+    reviewDueEntries,
+    reviewAheadEntries,
+    reviewDueCount: reviewDueEntries.length,
+    reviewAheadCount: reviewAheadEntries.length,
+    unstudiedEntries: entries.filter((entry) => levelOf(entry) === 0),
+    dictationEntries,
+  }
+}
+
+const EMPTY_WORKSPACE_ENTRIES: WorkspaceEntry[] = []
+const EMPTY_STUDY_ENTRY_DERIVATION: StudyEntryDerivation = {
+  reviewDueEntries: EMPTY_WORKSPACE_ENTRIES,
+  reviewAheadEntries: EMPTY_WORKSPACE_ENTRIES,
+  reviewDueCount: 0,
+  reviewAheadCount: 0,
+  unstudiedEntries: EMPTY_WORKSPACE_ENTRIES,
+  dictationEntries: EMPTY_WORKSPACE_ENTRIES,
+}
+
+const FULL_ENTRIES_LOADING_NOTICE = '正在加载词条，请稍候。'
+const STALE_FULL_ENTRIES_REQUEST = Symbol('stale-full-entries-request')
 
 const WORKSPACE_ICON_PATHS: Record<WorkspaceIconName, ReactNode> = {
     plus: <path d="M12 5v14M5 12h14" />,
@@ -275,6 +327,7 @@ export function WordbookPage() {
   const [cacheClientId] = useState(() => getStudyClientId())
   const [dashboard, setDashboard] = useState<StudyDashboard | null>(null)
   const [remoteEntries, setRemoteEntries] = useState<WorkspaceBook['entries'] | null>(null)
+  const [fullEntriesLoading, setFullEntriesLoading] = useState(false)
   const [dashboardLoading, setDashboardLoading] = useState(false)
   const [studyMode, setStudyMode] = useState<StudyMode | null>(null)
   // New learning and review can both switch from the daily deck to a voluntary ahead deck.
@@ -311,6 +364,11 @@ export function WordbookPage() {
   )
   const dashboardRequest = useRef(0)
   const loadedEntriesWordbookId = useRef<string | null>(null)
+  const remoteEntriesRef = useRef<WorkspaceBook['entries'] | null>(null)
+  const fullEntriesRequests = useRef(new Map<string, FullEntriesRequest>())
+  const fullEntriesGeneration = useRef(new Map<string, number>())
+  const selectedBookIdRef = useRef('')
+  remoteEntriesRef.current = remoteEntries
   const studyRefreshTimer = useRef<number | null>(null)
   const recycleDialogRef = useModalDialog<HTMLElement>({
     open: recycleCandidate !== null,
@@ -348,6 +406,16 @@ export function WordbookPage() {
       })
   }, [bookCategory, bookQuery, bookSort, books])
   const selectedBook = filteredBooks.find((book) => book.id === selectedId) ?? filteredBooks[0]
+  selectedBookIdRef.current = selectedBook?.id ?? ''
+  const activeEntries = selectedBook && loadedEntriesWordbookId.current === selectedBook.id && remoteEntries !== null
+    ? remoteEntries
+    : EMPTY_WORKSPACE_ENTRIES
+  const studyEntryDerivation = useMemo(
+    () => selectedBook
+      ? deriveStudyEntries(activeEntries, selectedBook.reviewSchedule)
+      : EMPTY_STUDY_ENTRY_DERIVATION,
+    [activeEntries, selectedBook?.id, selectedBook?.reviewSchedule],
+  )
 
   const syncBookPreferences = useCallback((
     wordbookId: string,
@@ -434,17 +502,17 @@ export function WordbookPage() {
       return false
     }
     try {
-      const [remote, favorites, uploads] = await Promise.all([
-        api.listMyWordbooks(),
-        api.listFavorites().catch(() => []),
-        api.listUploads().catch(() => []),
-      ])
+      // The book cards are the critical path. Community feeds are useful
+      // sidebar context, but must not hold the whole workspace behind their
+      // network latency.
+      const remote = await api.listMyWordbooks()
       const mapped = remote.map(remoteToWorkspaceBook)
       setBooks(mapped)
-      setFavoriteCatalog(favorites)
-      setUploadCatalog(uploads)
       setSelectedId((current) => preferId ?? (mapped.some((book) => book.id === current) ? current : mapped[0]?.id ?? ''))
       setNotice('')
+      setLoading(false)
+      void api.listFavorites().then(setFavoriteCatalog).catch(() => undefined)
+      void api.listUploads().then(setUploadCatalog).catch(() => undefined)
       return true
     } catch {
       setNotice('单词本加载失败，请确认后端服务可用后重试。')
@@ -455,6 +523,89 @@ export function WordbookPage() {
   }, [api])
 
   useEffect(() => { void refreshMyWordbooks() }, [refreshMyWordbooks])
+
+  const invalidateFullEntries = useCallback((wordbookId: string, clearVisible = true) => {
+    fullEntriesGeneration.current.set(wordbookId, (fullEntriesGeneration.current.get(wordbookId) ?? 0) + 1)
+    invalidateWordbookStudyCache(cacheClientId, wordbookId, undefined, { words: true })
+    if (clearVisible && selectedBookIdRef.current === wordbookId) {
+      setRemoteEntries(null)
+      loadedEntriesWordbookId.current = null
+    }
+  }, [cacheClientId])
+
+  const ensureFullEntries = useCallback(async (
+    requestedWordbookId?: string,
+    force = false,
+  ): Promise<WorkspaceBook['entries'] | null> => {
+    const wordbookId = requestedWordbookId ?? selectedBook?.id
+    if (!api || !wordbookId) {
+      if (!api) setNotice('未配置后端地址，无法读取单词本。')
+      return null
+    }
+
+    if (!force && loadedEntriesWordbookId.current === wordbookId && remoteEntriesRef.current !== null) {
+      return remoteEntriesRef.current
+    }
+    if (!force) {
+      const cachedWords = readCachedWordbookWords(cacheClientId, wordbookId)
+      if (cachedWords) {
+        if (selectedBookIdRef.current === wordbookId) {
+          setRemoteEntries(cachedWords)
+          loadedEntriesWordbookId.current = wordbookId
+        }
+        return cachedWords
+      }
+    }
+
+    const generation = fullEntriesGeneration.current.get(wordbookId) ?? 0
+    const existingRequest = fullEntriesRequests.current.get(wordbookId)
+    if (existingRequest) {
+      if (!force && existingRequest.generation === generation) return existingRequest.promise
+      try {
+        await existingRequest.promise
+      } catch {
+        // A superseded request is expected to reject. Wait for it to leave the
+        // request map before starting the fresh forced/generation-aware load.
+      }
+      return ensureFullEntries(wordbookId, force)
+    }
+
+    setFullEntriesLoading(true)
+    setNotice(FULL_ENTRIES_LOADING_NOTICE)
+    let request: Promise<WorkspaceBook['entries']>
+    request = api.listWords(wordbookId)
+      .then((words) => {
+        if ((fullEntriesGeneration.current.get(wordbookId) ?? 0) !== generation) {
+          throw STALE_FULL_ENTRIES_REQUEST
+        }
+        writeCachedWordbookWords(cacheClientId, wordbookId, words)
+        // A user can switch books while a large response is in flight. Keep
+        // the cache warm, but never put that stale response in the visible book.
+        if (selectedBookIdRef.current === wordbookId) {
+          setRemoteEntries(words)
+          loadedEntriesWordbookId.current = wordbookId
+          setNotice((current) => current === FULL_ENTRIES_LOADING_NOTICE ? '' : current)
+        }
+        return words
+      })
+      .catch((error) => {
+        if (error !== STALE_FULL_ENTRIES_REQUEST && selectedBookIdRef.current === wordbookId) {
+          setNotice('词条加载失败，请稍后重试。')
+        }
+        throw error
+      })
+      .finally(() => {
+        if (fullEntriesRequests.current.get(wordbookId)?.promise === request) {
+          fullEntriesRequests.current.delete(wordbookId)
+        }
+        setFullEntriesLoading(fullEntriesRequests.current.size > 0)
+        if (!fullEntriesRequests.current.has(selectedBookIdRef.current)) {
+          setNotice((current) => current === FULL_ENTRIES_LOADING_NOTICE ? '' : current)
+        }
+      })
+    fullEntriesRequests.current.set(wordbookId, { generation, promise: request })
+    return request
+  }, [api, cacheClientId, selectedBook?.id])
 
   const refreshSelectedBook = useCallback(async (
     requestedWordbookId?: string,
@@ -472,32 +623,24 @@ export function WordbookPage() {
 
     const forceDashboard = refresh === 'dashboard' || refresh === 'all'
     const forceWords = refresh === 'all'
-    if (forceDashboard || forceWords) {
-      invalidateWordbookStudyCache(cacheClientId, wordbookId, undefined, {
-        dashboard: forceDashboard,
-        words: forceWords,
-      })
-    }
+    if (forceDashboard) invalidateWordbookStudyCache(cacheClientId, wordbookId, undefined, { dashboard: true })
+    if (forceWords) invalidateFullEntries(wordbookId, loadedEntriesWordbookId.current !== wordbookId)
     const cachedDashboard = forceDashboard ? null : readCachedWordbookDashboard(cacheClientId, wordbookId)
-    const cachedWords = forceWords ? null : readCachedWordbookWords(cacheClientId, wordbookId)
-    const retainLoadedWords = refresh === 'dashboard' && loadedEntriesWordbookId.current === wordbookId
 
     // Switch all four dashboard-backed cards as one snapshot. A cache hit never
     // falls through to a loading placeholder, while a miss cannot flash another book.
     setDashboard((current) => cachedDashboard ?? (current?.wordbook.id === wordbookId ? current : null))
     setDashboardLoading(!cachedDashboard)
-    if (cachedWords) {
-      setRemoteEntries(cachedWords)
-      loadedEntriesWordbookId.current = wordbookId
-    } else if (loadedEntriesWordbookId.current !== wordbookId) {
+    if (selectedBookIdRef.current === wordbookId && loadedEntriesWordbookId.current !== wordbookId) {
       setRemoteEntries(null)
       loadedEntriesWordbookId.current = null
     }
-
-    if (cachedDashboard && (cachedWords || retainLoadedWords)) return true
+    if (!fullEntriesRequests.current.has(wordbookId)) {
+      setNotice((current) => current === FULL_ENTRIES_LOADING_NOTICE ? '' : current)
+    }
 
     let dashboardSynced = Boolean(cachedDashboard)
-    let wordsSynced = Boolean(cachedWords) || retainLoadedWords
+    let wordsSynced = !forceWords
     let dashboardFailed = false
     let wordsFailed = false
 
@@ -515,19 +658,14 @@ export function WordbookPage() {
             if (dashboardRequest.current === requestId) setDashboardLoading(false)
           })
 
-    // The large word payload is intentionally independent: dashboard, recent
-    // activity, calendar and streak render as soon as their much smaller request ends.
-    const wordsTask = cachedWords || retainLoadedWords
-      ? Promise.resolve()
-      : api.listWords(wordbookId)
-          .then((words) => {
-            if (dashboardRequest.current !== requestId) return
-            writeCachedWordbookWords(cacheClientId, wordbookId, words)
-            setRemoteEntries(words)
-            loadedEntriesWordbookId.current = wordbookId
-            wordsSynced = true
-          })
+    // Full words are loaded only by an explicit action (or an explicit full
+    // refresh after a mutation). The initial route therefore needs only the
+    // compact dashboard request above.
+    const wordsTask = forceWords
+      ? ensureFullEntries(wordbookId, true)
+          .then(() => { wordsSynced = true })
           .catch(() => { wordsFailed = true })
+      : Promise.resolve()
 
     await Promise.all([dashboardTask, wordsTask])
     if (dashboardRequest.current !== requestId) return false
@@ -539,7 +677,7 @@ export function WordbookPage() {
           : '词条加载失败，学习数据已恢复。')
     }
     return dashboardSynced && wordsSynced
-  }, [api, cacheClientId, selectedBook?.id])
+  }, [api, cacheClientId, ensureFullEntries, invalidateFullEntries, selectedBook?.id])
 
   useEffect(() => { void refreshSelectedBook() }, [refreshSelectedBook])
 
@@ -632,8 +770,9 @@ export function WordbookPage() {
     if (!api || !selectedBook) return false
     try {
       await api.updateMyWordbook(selectedBook.id, { reviewSchedule: next })
+      invalidateFullEntries(selectedBook.id)
       await refreshMyWordbooks(selectedBook.id)
-      await refreshSelectedBook(undefined, 'all')
+      await refreshSelectedBook(undefined, 'dashboard')
       setNotice(isDefaultReviewSchedule(next) ? '已恢复默认遗忘曲线。' : '自定义复习方案已保存。')
       return true
     } catch {
@@ -672,15 +811,31 @@ export function WordbookPage() {
     }, { replace: true })
   }
 
-  function importBookFile() {
+  async function importBookFile() {
     if (!selectedBook) return
+    const wordbookId = selectedBook.id
+    let entries: WorkspaceBook['entries'] | null
+    try {
+      entries = await ensureFullEntries(wordbookId)
+    } catch {
+      return
+    }
+    if (!entries || selectedBookIdRef.current !== wordbookId) return
     setImportTargetId(selectedBook.id)
     setShowImporter(true)
   }
 
-  function exportBookFile() {
-    if (!selectedBook || remoteEntries === null) return
-    const blob = new Blob([wordbookToCsv(remoteEntries)], { type: 'text/csv;charset=utf-8' })
+  async function exportBookFile() {
+    if (!selectedBook) return
+    const wordbookId = selectedBook.id
+    let entries: WorkspaceBook['entries'] | null
+    try {
+      entries = await ensureFullEntries(wordbookId)
+    } catch {
+      return
+    }
+    if (!entries || selectedBookIdRef.current !== wordbookId) return
+    const blob = new Blob([wordbookToCsv(entries)], { type: 'text/csv;charset=utf-8' })
     const url = URL.createObjectURL(blob)
     const link = document.createElement('a')
     try {
@@ -697,6 +852,7 @@ export function WordbookPage() {
 
   async function finishImport(created: MyWordbook) {
     const existed = books.some((book) => book.id === created.id)
+    selectedBookIdRef.current = created.id
     const [listSynced, detailSynced] = await Promise.all([
       refreshMyWordbooks(created.id),
       refreshSelectedBook(created.id, 'all'),
@@ -711,7 +867,8 @@ export function WordbookPage() {
     setWordSaving(true)
     try {
       await api.updateWord(selectedBook.id, id, patch)
-      await refreshSelectedBook(undefined, 'all')
+      invalidateFullEntries(selectedBook.id)
+      await refreshSelectedBook(undefined, 'dashboard')
       await refreshMyWordbooks(selectedBook.id)
       setNotice(`已更新「${patch.word}」，未重新处理其他词条。`)
     } finally {
@@ -724,7 +881,8 @@ export function WordbookPage() {
     setWordSaving(true)
     try {
       await api.recordStudyEvent({ kind: 'mark', word, wordbookId: selectedBook.id, level: 4 })
-      await refreshSelectedBook(undefined, 'all')
+      invalidateFullEntries(selectedBook.id)
+      await refreshSelectedBook(undefined, 'dashboard')
       await refreshMyWordbooks(selectedBook.id)
       setNotice(`已把「${word}」标为精通。`)
     } finally {
@@ -735,12 +893,9 @@ export function WordbookPage() {
   async function batchManagedWords(action: BatchWordAction, ids: string[]): Promise<BatchWordResult> {
     if (!api || !selectedBook) throw new Error('Workspace API unavailable')
     const result = await api.batchWords(selectedBook.id, action, ids)
-    if (action === 'delete') {
-      const removed = new Set(result.succeededIds)
-      setRemoteEntries((current) => current?.filter((entry) => !removed.has(entry.id)) ?? current)
-    }
+    invalidateFullEntries(selectedBook.id)
     const [detailsSynced, listSynced] = await Promise.all([
-      refreshSelectedBook(selectedBook.id, 'all'),
+      refreshSelectedBook(selectedBook.id, 'dashboard'),
       refreshMyWordbooks(selectedBook.id),
     ])
     const label = action === 'refresh-meanings' ? '释义更新' : action === 'mark-mastered' ? '批量标熟' : '批量删除'
@@ -872,52 +1027,64 @@ export function WordbookPage() {
     </>
   }
 
-  const activeBook = { ...selectedBook, entries: remoteEntries ?? [] }
-  const progress = dashboard?.wordbook.progress ?? selectedBook.progress
-  const wordCount = dashboard?.wordbook.wordCount ?? selectedBook.wordCount
+  const activeBook = { ...selectedBook, entries: activeEntries }
+  const currentDashboard = dashboard?.wordbook.id === selectedBook.id ? dashboard : null
+  const progress = currentDashboard?.wordbook.progress ?? selectedBook.progress
+  const wordCount = currentDashboard?.wordbook.wordCount ?? selectedBook.wordCount
   const wordLevelTotal = WORD_LEVEL_STATS.reduce((total, stat) => total + progress.levels[stat.key], 0)
   const wordLevelStatistics = WORD_LEVEL_STATS.map((stat) => {
     const count = progress.levels[stat.key]
     return { ...stat, count, share: wordLevelTotal ? Math.round(count / wordLevelTotal * 100) : 0 }
   })
-  const completedNew = dashboard?.todayPlan.new.completed ?? 0
-  const completedReview = dashboard?.todayPlan.review.completed ?? 0
-  const completedDictation = dashboard?.todayPlan.dictation.completed ?? 0
+  const completedNew = currentDashboard?.todayPlan.new.completed ?? 0
+  const completedReview = currentDashboard?.todayPlan.review.completed ?? 0
+  const completedDictation = currentDashboard?.todayPlan.dictation.completed ?? 0
   // 听写训练 draws from L2+ only (must be 熟悉 before spelling), matching its deck
   // and the backend's dictationAvailable = l2 + l3 + l4.
   const dictationEligibleCount = progress.levels.l2 + progress.levels.l3 + progress.levels.l4
   // Adaptive review includes every learned rung, orders the most overdue first, and keeps
   // not-yet-due words in the optional 提前复习 deck.
-  const reviewNow = new Date()
   const reviewSchedule = activeBook.reviewSchedule
-  const isReviewLevel = (entry: WorkspaceEntry) => levelOf(entry) > 0
-  const byReviewPriority = (left: WorkspaceEntry, right: WorkspaceEntry) => reviewPriority(left, reviewSchedule) - reviewPriority(right, reviewSchedule)
-  const reviewDueEntries = activeBook.entries.filter((entry) => isReviewDue(entry, reviewNow, reviewSchedule)).sort(byReviewPriority)
-  const reviewAheadEntries = activeBook.entries.filter((entry) => isReviewLevel(entry) && !isReviewDue(entry, reviewNow, reviewSchedule)).sort(byReviewPriority)
-  const reviewDueCount = reviewDueEntries.length
-  const reviewAheadCount = reviewAheadEntries.length
-  const unstudiedEntries = activeBook.entries.filter((entry) => levelOf(entry) === 0)
+  const {
+    reviewDueEntries,
+    reviewAheadEntries,
+    reviewDueCount,
+    reviewAheadCount,
+    unstudiedEntries,
+    dictationEntries,
+  } = studyEntryDerivation
+  const entriesLoaded = remoteEntries !== null && loadedEntriesWordbookId.current === selectedBook.id
   const newPlan = dailyNewPlan(preferences.plan.newWords, completedNew, progress.unstudied)
-  const reviewBreakdown = dashboard?.reviewBreakdown
-  const scheduledReviewCount = reviewBreakdown?.scheduled ?? reviewDueCount
+  const reviewBreakdown = currentDashboard?.reviewBreakdown
+  const learnedWordCount = progress.levels.l1 + progress.levels.l2 + progress.levels.l3 + progress.levels.l4
+  const legacyReviewRemaining = currentDashboard
+    ? Math.max(0, currentDashboard.todayPlan.review.target - currentDashboard.todayPlan.review.completed)
+    : 0
+  const scheduledReviewCount = reviewBreakdown?.scheduled ?? (entriesLoaded ? reviewDueCount : legacyReviewRemaining)
+  const dashboardReviewDueCount = reviewBreakdown
+    ? reviewBreakdown.protected + reviewBreakdown.regular + reviewBreakdown.backlog
+    : legacyReviewRemaining
+  const reviewAheadAvailable = entriesLoaded
+    ? reviewAheadCount
+    : Math.max(0, learnedWordCount - dashboardReviewDueCount)
   const backlogCount = reviewBreakdown?.backlog ?? 0
   const activeRound = (mode: 'new' | 'review', scope: StudyRoundScope = 'standard') =>
-    dashboard?.activeRounds?.find((round) => round.mode === mode && round.scope === scope)
+    currentDashboard?.activeRounds?.find((round) => round.mode === mode && round.scope === scope)
   const activeNewRound = activeRound('new')
   const activeAheadNew = activeRound('new', 'ahead')
   const activeStandardReview = activeRound('review')
   const activeBacklogReview = activeRound('review', 'backlog')
   const activeAheadReview = activeRound('review', 'ahead')
   const planCounts = {
-    new: dashboard?.todayPlan.new.target ?? newPlan.target,
-    review: dashboard?.todayPlan.review.target ?? scheduledReviewCount + completedReview,
-    dictation: dashboard?.todayPlan.dictation.target
+    new: currentDashboard?.todayPlan.new.target ?? newPlan.target,
+    review: currentDashboard?.todayPlan.review.target ?? scheduledReviewCount + completedReview,
+    dictation: currentDashboard?.todayPlan.dictation.target
       ?? Math.min(preferences.plan.dictation, Math.max(completedDictation, dictationEligibleCount)),
   }
   const newPlanComplete = isDailyPlanComplete(planCounts.new, completedNew)
   const reviewPlanComplete = isDailyPlanComplete(planCounts.review, completedReview)
   // Due L3 words are prioritized by the dictation deck; a mature successful check promotes them.
-  const finalCheckDue = dashboard?.finalCheckDue ?? 0
+  const finalCheckDue = currentDashboard?.finalCheckDue ?? 0
   const dictationDetail = finalCheckDue > 0
     ? `听音拼写，检测掌握 · ${finalCheckDue} 词到期可冲刺精通`
     : '听音拼写，检测掌握'
@@ -936,29 +1103,33 @@ export function WordbookPage() {
       return unstudiedEntries.slice(0, newPlan.remaining)
     }
     if (nextMode === 'review') return reviewDueEntries
-    return activeBook.entries
-      .filter((entry) => levelOf(entry) >= 2)
-      .sort((left, right) => {
-        const dueOrder = Number(isReviewDue(right, reviewNow, reviewSchedule)) - Number(isReviewDue(left, reviewNow, reviewSchedule))
-        return dueOrder || reviewPriority(left, reviewSchedule) - reviewPriority(right, reviewSchedule)
-      })
-      .slice(0, preferences.plan.dictation)
+    return dictationEntries.slice(0, preferences.plan.dictation)
   }
-  const entriesLoading = remoteEntries === null
   const openWordManager = (level: WordManagerLevelFilter = 'all') => {
     setWordManagerLevel(level)
     setShowWordManager(true)
   }
-  const openStudy = (nextMode: StudyMode, scope: StudyRoundScope = 'standard') => {
-    if (entriesLoading) {
-      setNotice('词条正在加载，请稍候再开始学习。')
+  const openStudy = async (nextMode: StudyMode, scope: StudyRoundScope = 'standard') => {
+    const wordbookId = selectedBook.id
+    let entries: WorkspaceBook['entries'] | null
+    try {
+      entries = await ensureFullEntries(wordbookId)
+    } catch {
       return
     }
+    if (!entries || selectedBookIdRef.current !== wordbookId) return
+    // The request resolves before React necessarily commits the state update;
+    // derive this one session from its returned payload rather than the old
+    // render's empty `activeEntries` snapshot.
+    const loadedStudyEntries = deriveStudyEntries(entries, selectedBook.reviewSchedule)
+    const loadedNewEntries = loadedStudyEntries.unstudiedEntries
+    const loadedReviewAheadEntries = loadedStudyEntries.reviewAheadEntries
+    const loadedDictationEntries = loadedStudyEntries.dictationEntries.slice(0, preferences.plan.dictation)
     if (nextMode === 'review') {
       const available = scope === 'backlog'
         ? backlogCount
         : scope === 'ahead'
-          ? reviewAheadCount
+          ? loadedReviewAheadEntries.length
           : scheduledReviewCount
       const resumable = activeRound('review', scope)
       if (!available && !resumable) {
@@ -970,7 +1141,7 @@ export function WordbookPage() {
       return
     }
     if (nextMode === 'new') {
-      const available = scope === 'ahead' ? unstudiedEntries.length : entriesForMode('new').length
+      const available = scope === 'ahead' ? loadedNewEntries.length : loadedNewEntries.slice(0, newPlan.remaining).length
       const resumable = activeRound('new', scope)
       if (!available && !resumable) {
         setNotice(scope === 'ahead' ? '当前词本没有可提前学习的未学习单词。' : '今日新词计划已完成，或当前词本没有未学习单词。')
@@ -980,7 +1151,7 @@ export function WordbookPage() {
       setStudyMode('new')
       return
     }
-    if (nextMode === 'dictation' && entriesForMode('dictation').length === 0) {
+    if (nextMode === 'dictation' && loadedDictationEntries.length === 0) {
       setNotice('当前模式暂无可学的单词。')
       return
     }
@@ -1042,7 +1213,7 @@ export function WordbookPage() {
                   type="button"
                   key={level}
                   data-level={level}
-                  disabled={entriesLoading || count === 0}
+                  disabled={count === 0}
                   aria-label={`${label} ${count} 个，占 ${share}%${count ? '，点击浏览' : ''}`}
                   title={count ? `浏览 ${count} 个${label}词条` : `暂无${label}词条`}
                   onClick={() => openWordManager(level)}
@@ -1058,8 +1229,8 @@ export function WordbookPage() {
             <button type="button" className="overview-plan-settings" onClick={() => setSettingsSection('plan')}><WorkspaceIcon name="settings" />学习计划</button>
             <button type="button" disabled={!wordCount || !api} onClick={() => openWordManager()}><WorkspaceIcon name="edit" />浏览词条</button>
             {selectedBook.sourceCatalogId && <button type="button" disabled={authLoading} onClick={() => { if (!user) { setNotice('请先通过页头账号入口登录，再提交改进。'); return } setContributionBookId(selectedBook.id) }}><WorkspaceIcon name="edit" />提交改进</button>}
-            <button type="button" disabled={remoteEntries === null} onClick={exportBookFile}><WorkspaceIcon name="book" />导出 CSV</button>
-            <button type="button" onClick={importBookFile}><WorkspaceIcon name="plus" />导入文件</button>
+            <button type="button" disabled={!api || fullEntriesLoading} onClick={() => { void exportBookFile() }}><WorkspaceIcon name="book" />导出 CSV</button>
+            <button type="button" disabled={!api || fullEntriesLoading} onClick={() => { void importBookFile() }}><WorkspaceIcon name="plus" />导入文件</button>
           </div>
           <button type="button" className="overview-recycle" onClick={() => moveToRecycle(selectedBook.id)}><WorkspaceIcon name="trash" />移入回收站</button>
         </section>
@@ -1072,18 +1243,18 @@ export function WordbookPage() {
               title="新词学习"
               count={planCounts.new}
               available={newPlanComplete
-                ? Math.max(unstudiedEntries.length, activeAheadNew?.remainingWords ?? 0)
-                : Math.max(entriesForMode('new').length, activeNewRound?.remainingWords ?? 0)}
+                ? Math.max(entriesLoaded ? unstudiedEntries.length : progress.unstudied, activeAheadNew?.remainingWords ?? 0)
+                : Math.max(entriesLoaded ? entriesForMode('new').length : newPlan.remaining, activeNewRound?.remainingWords ?? 0)}
               resume={newPlanComplete ? Boolean(activeAheadNew) : Boolean(activeNewRound)}
-              loading={entriesLoading}
+              loading={fullEntriesLoading}
               completed={completedNew}
               detail={newDetail}
               button="开始学习"
               completedActionLabel="提前学习"
-              onClick={() => openStudy('new', newPlanComplete ? 'ahead' : 'standard')}
+              onClick={() => { void openStudy('new', newPlanComplete ? 'ahead' : 'standard') }}
               onSettings={() => setSettingsSection('new')}
               extraActions={!newPlanComplete && activeAheadNew
-                ? [{ label: `继续提前学习（${activeAheadNew.remainingWords}）`, onClick: () => openStudy('new', 'ahead') }]
+                ? [{ label: `继续提前学习（${activeAheadNew.remainingWords}）`, onClick: () => { void openStudy('new', 'ahead') } }]
                 : []}
             />
             <PlanCard
@@ -1091,10 +1262,10 @@ export function WordbookPage() {
               title="复习巩固"
               count={planCounts.review}
               available={reviewPlanComplete
-                ? Math.max(reviewAheadCount, activeAheadReview?.remainingWords ?? 0)
+                ? Math.max(reviewAheadAvailable, activeAheadReview?.remainingWords ?? 0)
                 : Math.max(scheduledReviewCount, activeStandardReview?.remainingWords ?? 0)}
               resume={reviewPlanComplete ? Boolean(activeAheadReview) : Boolean(activeStandardReview)}
-              loading={entriesLoading}
+              loading={fullEntriesLoading}
               completed={completedReview}
               detail={reviewDetail}
               button="开始复习"
@@ -1103,32 +1274,33 @@ export function WordbookPage() {
               onSettings={() => setSettingsSection('review')}
               extraActions={[
                 ...(backlogCount > 0 || activeBacklogReview
-                  ? [{ label: activeBacklogReview ? `继续清理积压（${activeBacklogReview.remainingWords}）` : `清理积压（${backlogCount}）`, onClick: () => openStudy('review', 'backlog') }]
+                  ? [{ label: activeBacklogReview ? `继续清理积压（${activeBacklogReview.remainingWords}）` : `清理积压（${backlogCount}）`, onClick: () => { void openStudy('review', 'backlog') } }]
                   : []),
                 ...(!reviewPlanComplete && activeAheadReview
-                  ? [{ label: `继续提前复习（${activeAheadReview.remainingWords}）`, onClick: () => openStudy('review', 'ahead') }]
+                  ? [{ label: `继续提前复习（${activeAheadReview.remainingWords}）`, onClick: () => { void openStudy('review', 'ahead') } }]
                   : []),
               ]}
             />
-            <PlanCard icon="headphones" title="听写训练" count={planCounts.dictation} available={entriesForMode('dictation').length} loading={entriesLoading} completed={completedDictation} detail={dictationDetail} button="开始听写" onClick={() => openStudy('dictation')} onSettings={() => setSettingsSection('dictation')} />
+            <PlanCard icon="headphones" title="听写训练" count={planCounts.dictation} available={entriesLoaded ? entriesForMode('dictation').length : Math.min(dictationEligibleCount, preferences.plan.dictation)} loading={fullEntriesLoading} completed={completedDictation} detail={dictationDetail} button="开始听写" onClick={() => { void openStudy('dictation') }} onSettings={() => setSettingsSection('dictation')} />
           </div>
         </section>
 
         <div className="workspace-lower">
           <RecentStudy
-            activities={dashboard?.recentActivity}
+            activities={currentDashboard?.recentActivity}
             entries={activeBook.entries}
+            entriesLoaded={entriesLoaded}
             loading={dashboardLoading}
             onContinue={() => openStudy('review')}
           />
-          <StudyCalendar calendar={dashboard?.calendar} loading={dashboardLoading} />
+          <StudyCalendar calendar={currentDashboard?.calendar} loading={dashboardLoading} />
         </div>
       </div>
 
       <aside className="workspace-rail" aria-label="快捷功能和学习数据">
-        <section className="quick-actions"><h2>快捷功能</h2><QuickAction icon="book" title="单词学习" detail="认识新词，理解含义" onClick={() => openStudy('new')} /><QuickAction icon="repeat" title="复习巩固" detail="复习旧词，加深记忆" onClick={() => openStudy('review')} /><QuickAction icon="headphones" title="听写训练" detail="听音拼写，强化记忆" onClick={() => openStudy('dictation')} /></section>
-        <WeeklyStudyData week={dashboard?.week} loading={dashboardLoading} />
-        <StudyStreak days={dashboard?.streakDays} loading={dashboardLoading} />
+        <section className="quick-actions"><h2>快捷功能</h2><QuickAction icon="book" title="单词学习" detail="认识新词，理解含义" disabled={fullEntriesLoading} onClick={() => { void openStudy('new') }} /><QuickAction icon="repeat" title="复习巩固" detail="复习旧词，加深记忆" disabled={fullEntriesLoading} onClick={() => { void openStudy('review') }} /><QuickAction icon="headphones" title="听写训练" detail="听音拼写，强化记忆" disabled={fullEntriesLoading} onClick={() => { void openStudy('dictation') }} /></section>
+        <WeeklyStudyData week={currentDashboard?.week} loading={dashboardLoading} />
+        <StudyStreak days={currentDashboard?.streakDays} loading={dashboardLoading} />
       </aside>
       {settingsSection && <StudySettingsDialog
         section={settingsSection}
@@ -1246,17 +1418,21 @@ function PlanCard({
     <p>{detail}</p>
     <strong>{remaining}<small>词待完成</small></strong>
     <div className="plan-card-progress"><span className="plan-card-progress-track"><i style={{ width: `${progress}%` }} /></span><span className="plan-card-progress-count">{Math.min(completed, count)}/{count}</span></div>
-    <button type="button" disabled={!startable} onClick={onClick}>{label}</button>
-    {extraActions.length > 0 && <div className="plan-card-extra-actions">{extraActions.map((action) => <button type="button" key={action.label} onClick={action.onClick}>{action.label}</button>)}</div>}
+    <button type="button" disabled={!startable || loading} onClick={onClick}>{label}</button>
+    {extraActions.length > 0 && <div className="plan-card-extra-actions">{extraActions.map((action) => <button type="button" key={action.label} disabled={loading} onClick={action.onClick}>{action.label}</button>)}</div>}
   </article>
 }
 
-function QuickAction({ icon, title, detail, onClick }: { icon: 'book' | 'repeat' | 'headphones' | 'card'; title: string; detail: string; onClick: () => void }) {
-  return <button type="button" onClick={onClick}><span><WorkspaceIcon name={icon} /></span><div><strong>{title}</strong><small>{detail}</small></div><WorkspaceIcon name="chevron" /></button>
+function QuickAction({ icon, title, detail, disabled = false, onClick }: { icon: 'book' | 'repeat' | 'headphones' | 'card'; title: string; detail: string; disabled?: boolean; onClick: () => void }) {
+  return <button type="button" disabled={disabled} onClick={onClick}><span><WorkspaceIcon name={icon} /></span><div><strong>{title}</strong><small>{detail}</small></div><WorkspaceIcon name="chevron" /></button>
 }
 
-function RecentStudy({ activities, entries, loading, onContinue }: { activities: StudyDashboard['recentActivity'] | undefined; entries: WordbookItem[]; loading: boolean; onContinue: () => void }) {
-  const rows = activities ? toRecentStudyRows(activities, entries) : []
+function RecentStudy({ activities, entries, entriesLoaded, loading, onContinue }: { activities: StudyDashboard['recentActivity'] | undefined; entries: WordbookItem[]; entriesLoaded: boolean; loading: boolean; onContinue: () => void }) {
+  const entriesByWord = useMemo(() => new Map(entries.map((entry) => [entry.word, entry])), [entries])
+  const rows = useMemo(
+    () => activities ? toRecentStudyRows(activities, entriesByWord, entriesLoaded) : [],
+    [activities, entriesByWord, entriesLoaded],
+  )
   return <section className="recent-study">
     <header><h2>最近学习</h2><button type="button" onClick={onContinue}>继续学习 ›</button></header>
     {loading && !activities ? <p className="workspace-data-state" role="status">正在载入学习记录。</p> : rows.length ? (

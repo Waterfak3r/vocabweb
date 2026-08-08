@@ -16,7 +16,7 @@ import {
 } from "./collaboration.js";
 import {
   BATCH_SIZE, DEFAULT_WORDBOOK_STUDY_PREFERENCES, RETENTION_MS, card, catalogCard as buildCatalogCard, clone, compactLearningEvents, day, defaultClient,
-  EMPTY, ladderEventLevels, ladderOf, ladderStates, migrate, progress, queueItem, replayLadder, reviewDue, reviewLane, reviewScheduleOf,
+  EMPTY, eventsByWordbook, ladderEventLevels, ladderOf, ladderReplay, ladderStates, migrate, progressFromStates, queueItem, replayLadder, reviewDue, reviewLane, reviewScheduleOf,
   sameMeanings, shiftDay, studiedWord, toCatalogWords, toWordbookWords, visibleTo,
 } from "./ladder.js";
 import type { ClientData, State } from "./ladder.js";
@@ -1081,7 +1081,14 @@ export abstract class BaseStore implements StudyStore {
       return clone(settings);
     });
   }
-  async listMyWordbooks(clientId: string, trash: boolean): Promise<MyWordbookCard[]> { return await this.read((state) => { const client = this.clientView(state, clientId); return client.wordbooks.filter((book) => Boolean(book.deletedAt) === trash).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).map((book) => card(book, client.events)); }); }
+  async listMyWordbooks(clientId: string, trash: boolean): Promise<MyWordbookCard[]> { return await this.read((state) => {
+    const client = this.clientView(state, clientId);
+    const events = eventsByWordbook(client.events);
+    return client.wordbooks
+      .filter((book) => Boolean(book.deletedAt) === trash)
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+      .map((book) => card(book, events.get(book.id) ?? []));
+  }); }
   async createMyWordbook(clientId: string, input: CreateMyWordbookInput): Promise<MyWordbookCard> { return await this.mutate((state) => {
     const at = this.now().toISOString(); const client = this.client(state, clientId);
     const book: MyWordbook = { id: `my-${randomUUID()}`, title: input.title, description: input.description ?? "", ...(input.category ? { category: input.category } : {}), createdAt: at, updatedAt: at, words: toWordbookWords(input.words ?? [], at) };
@@ -1703,7 +1710,8 @@ export abstract class BaseStore implements StudyStore {
     // but still surfaced in recentActivity. Internal retention checkpoints stay invisible.
     const studyEvents = activityEvents.filter((event) => event.kind !== "mark");
     const todayEvents = studyEvents.filter((event) => day(new Date(event.occurredAt)) === today);
-    const afterById = ladderEventLevels(events, schedule);
+    const ladder = ladderReplay(events, schedule);
+    const afterById = ladder.eventLevels;
     const uniqueWords = (items: LearningEvent[], kind?: LearningEvent["kind"]) =>
       new Set(items.filter((event) => !kind || event.kind === kind).map((event) => event.wordId));
     // Count the first judgment that actually crosses L0 -> L1 so daily progress stays word-based.
@@ -1718,7 +1726,7 @@ export abstract class BaseStore implements StudyStore {
     ]);
     const completedReview = completedReviewIds.size;
     const completedDictation = uniqueWords(todayEvents.filter((event) => event.kind === "dictation" && event.correct)).size;
-    const states = ladderStates(events, schedule); const bookProgress = progress(book, events); const { levels } = bookProgress;
+    const states = ladder.states; const bookProgress = progressFromStates(book, states); const { levels } = bookProgress;
     // Availability per contract: 新词学习 from l0, 听写训练 from l2+l3+l4; 复习巩固 is the adaptive DUE count (below).
     const newAvailable = levels.l0; const dictationAvailable = levels.l2 + levels.l3 + levels.l4;
     // Every learned rung stays on the expanding review schedule. finalCheckDue is the L3 subset
@@ -1763,7 +1771,7 @@ export abstract class BaseStore implements StudyStore {
     // Reverse first so equal-millisecond events retain newest-insertion-first
     // ordering under JavaScript's stable sort.
     return {
-      wordbook: card(book, events),
+      wordbook: card(book, events, bookProgress),
       todayPlan: {
         new: {
           target: Math.max(completedNew, Math.min(preferences.plan.newWords, completedNew + newAvailable)),
