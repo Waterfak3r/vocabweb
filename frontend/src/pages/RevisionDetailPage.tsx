@@ -145,7 +145,7 @@ export function RevisionDetailPage() {
               <button type="button" aria-label="关闭" disabled={submitting} onClick={() => setPreview(null)}>×</button>
             </header>
             <div className="collab-modal__body">
-              <p className="collab-state">回滚不会删除历史。确认后将新增一个包含下列反向变化的版本。</p>
+              <p className="collab-state">确认后将新增一个包含下列反向变化的版本。删除的词条会从源词本移除，历史学习记录保留；进行中的该词本学习轮次会结束，需重新开始。</p>
               {preview.conflicts.length > 0 && <p className="collab-error" role="alert">有 {preview.conflicts.length} 个词条已被后续版本修改，当前不能回滚。</p>}
               {preview.alreadyReverted && <p className="collab-warning">这个版本的变化已经全部撤销，不会创建空版本。</p>}
               <label className="collab-revert-message">

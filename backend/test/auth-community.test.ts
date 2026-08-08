@@ -634,13 +634,33 @@ test("collaboration API supports preview, public audit, atomic merge, version hi
       }),
     });
     assert.equal(createResponse.status, 201);
-    const contribution = await createResponse.json() as { id: string; status: string };
+    const contribution = await createResponse.json() as Record<string, unknown> & { id: string; status: string };
+    assert.equal("sourceWordbookId" in contribution, false);
+    assert.equal("contributorUserId" in contribution, false);
+
+    const blockedVisibility = await fetch(`${app.baseUrl}/api/catalog/wordbooks/${catalog.id}`, {
+      method: "PATCH",
+      headers: jsonHeaders(ALICE_CLIENT, publisher.cookie),
+      body: JSON.stringify({ visibility: "private" }),
+    });
+    assert.equal(blockedVisibility.status, 409);
+    assert.deepEqual(await blockedVisibility.json(), {
+      error: {
+        code: "CATALOG_OPEN_CONTRIBUTIONS",
+        message: "Resolve open contributions before changing visibility",
+      },
+      openContributionCount: 1,
+    });
 
     const publicAudit = await fetch(`${app.baseUrl}/api/catalog/wordbooks/${catalog.id}/contributions/${contribution.id}`, {
       headers: jsonHeaders(ANON_CLIENT),
     });
     assert.equal(publicAudit.status, 200);
-    assert.equal((await publicAudit.json() as { status: string }).status, "open");
+    const publicContribution = await publicAudit.json() as Record<string, unknown> & { status: string };
+    assert.equal(publicContribution.status, "open");
+    for (const privateField of ["sourceWordbookId", "contributorUserId", "handledByUserId"]) {
+      assert.equal(privateField in publicContribution, false);
+    }
 
     const mergeResponse = await fetch(`${app.baseUrl}/api/catalog/wordbooks/${catalog.id}/contributions/${contribution.id}/merge`, {
       method: "POST",
@@ -700,7 +720,11 @@ test("collaboration API supports preview, public audit, atomic merge, version hi
       headers: jsonHeaders(ALICE_CLIENT, publisher.cookie),
     });
     assert.equal(revisionsResponse.status, 200);
-    const revisions = await revisionsResponse.json() as { items: Array<{ id: string; kind: string }> };
+    const revisions = await revisionsResponse.json() as { items: Array<Record<string, unknown> & { id: string; kind: string }> };
+    for (const revision of revisions.items) {
+      assert.equal("authorUserId" in revision, false);
+      assert.equal("committerUserId" in revision, false);
+    }
     assert.equal(revisions.items.some((revision) => revision.kind === "update"), false);
     const mergeRevision = revisions.items.find((revision) => revision.kind === "merge")!;
     const revertPreviewResponse = await fetch(`${app.baseUrl}/api/catalog/wordbooks/${catalog.id}/revisions/${mergeRevision.id}/revert-preview`, {

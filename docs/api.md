@@ -51,10 +51,21 @@ Keep existing HTTP status meanings and machine error codes backward compatible. 
 
 - `/api/words` and `/api/pronunciations` — dictionary definitions, suggestions, and pronunciation metadata/audio.
 - `/api/auth` and `/api/account` — session lifecycle, profile security, export, and deletion.
+- `GET /api/account/profile` requires an active session and returns the account's 90-day study metrics, daily activity, streaks, and recent learning history. Its client identity is always taken from the session user, not `X-Vocab-Client-Id`.
 - `/api/my` and `/api/study` — personal wordbooks, imports, preferences, dashboards, rounds, and learning events.
 - `/api/catalog` and account contribution routes — public/unlisted wordbooks, favorites, publishing, revisions, contributions, merges, and reverts.
 - search, feedback, site-setting, and message routes — engagement data and threaded communication.
 - `/api/health/live`, `/api/health/ready`, and `/api/health` — process liveness and dependency readiness.
+
+## Wordbook Change Model
+
+- Personal wordbook edits save immediately; there is no extra commit step for ordinary add, edit, delete, or study actions.
+- Imports are the exception: parsing creates a recoverable draft, and the explicit import commit applies either append or whole-wordbook overwrite semantics.
+- Publishing creates an independent catalog snapshot. Later personal edits stay private until the publisher explicitly previews and publishes another snapshot.
+- Collaborators edit their own joined copy, preview a three-way diff, and submit a contribution. Only the publisher can merge it; merge, publisher updates, and reverts append immutable catalog revisions instead of rewriting revision history.
+- A public wordbook with open contributions cannot become unlisted or private. The API returns `CATALOG_OPEN_CONTRIBUTIONS` with the pending count so clients cannot silently close submitted work.
+- Merge and revert may remove words from the publisher's current source wordbook. Historical learning events remain in account history and export, while active study rounds for that source are ended because they may reference removed words.
+- Contribution and revision response DTOs omit internal account IDs and private source-wordbook IDs. Contributor-owned source IDs appear only in authenticated preview requests that need them.
 
 ## Changing a Contract
 

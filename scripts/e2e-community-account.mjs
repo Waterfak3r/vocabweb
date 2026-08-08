@@ -275,10 +275,10 @@ async function main() {
 
     await owner.getByRole("button", { name: "账号", exact: true }).click();
     await owner.getByRole("menuitem", { name: "个人资料" }).click();
-    await owner.getByRole("heading", { name: "账户资料" }).waitFor();
+    await owner.getByRole("heading", { name: "个人资料" }).waitFor();
     await owner.locator(".account-metrics dd").first().waitFor();
-    assert.deepEqual(await owner.locator(".account-metrics dd").allTextContents(), ["1", "1", "0"]);
-    step("账户资料页展示真实词书、收录词和上传统计");
+    assert.deepEqual(await owner.locator(".account-metrics dd").allTextContents(), ["1", "1", "0", "0", "0"]);
+    step("个人资料页展示真实词书、词量与 90 天学习统计");
     if (captureDir) {
       await owner.setViewportSize({ width: 1440, height: 900 });
       await owner.screenshot({ path: join(captureDir, "account-page-light.png"), fullPage: true });
@@ -558,7 +558,7 @@ async function main() {
     step("重新登录后账号数据恢复");
 
     await owner.goto("/account");
-    await owner.getByRole("heading", { name: "账户资料" }).waitFor();
+    await owner.getByRole("heading", { name: "个人资料" }).waitFor();
     const [download] = await Promise.all([
       owner.waitForEvent("download"),
       owner.getByRole("button", { name: "导出数据", exact: true }).click(),

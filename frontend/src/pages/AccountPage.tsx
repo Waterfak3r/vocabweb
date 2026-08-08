@@ -1,24 +1,21 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import { Link } from 'react-router'
+import { AccountActivityHeatmap } from '../components/account/AccountActivityHeatmap'
 import { AccountDeletionDialog } from '../components/account/AccountDeletionDialog'
+import { AccountRecentActivity } from '../components/account/AccountRecentActivity'
 import { AuthDialog, type AuthMode } from '../components/account/AuthDialog'
 import {
   mapPasswordChangeError,
   validatePasswordChange,
   type PasswordChangeFields,
 } from '../components/account/accountForms'
+import { UserAvatar } from '../components/account/UserAvatar'
 import { PageHeader } from '../components/layout/PageHeader'
 import { Button } from '../components/ui/Button'
 import { TextField } from '../components/ui/TextField'
-import { getWorkspaceApi } from '../data/workspaceApi'
+import { getWorkspaceApi, type AccountStudyProfile } from '../data/workspaceApi'
 import { useAuth } from '../hooks/useAuth'
 import { useDocumentTitle } from '../hooks/useDocumentTitle'
-
-type AccountOverview = {
-  wordbooks: number
-  words: number
-  uploads: number
-}
 
 const EMPTY_PASSWORDS: PasswordChangeFields = {
   currentPassword: '',
@@ -37,13 +34,18 @@ function accountDate(value: string | undefined) {
   }).format(date)
 }
 
+function metricNumber(value: number) {
+  return new Intl.NumberFormat('zh-CN').format(Math.max(0, Number.isFinite(value) ? value : 0))
+}
+
 export function AccountPage() {
-  useDocumentTitle('账户资料')
+  useDocumentTitle('个人资料')
   const { user, loading, login, register } = useAuth()
   const [authMode, setAuthMode] = useState<AuthMode | null>(null)
-  const [overview, setOverview] = useState<AccountOverview | null>(null)
-  const [overviewError, setOverviewError] = useState('')
-  const [overviewVersion, setOverviewVersion] = useState(0)
+  const [profile, setProfile] = useState<AccountStudyProfile | null>(null)
+  const [profileLoading, setProfileLoading] = useState(false)
+  const [profileError, setProfileError] = useState('')
+  const [profileVersion, setProfileVersion] = useState(0)
   const [passwords, setPasswords] = useState<PasswordChangeFields>(EMPTY_PASSWORDS)
   const [passwordAttempted, setPasswordAttempted] = useState(false)
   const [passwordSubmitting, setPasswordSubmitting] = useState(false)
@@ -58,28 +60,30 @@ export function AccountPage() {
 
   useEffect(() => {
     if (!user || !api) {
-      setOverview(null)
+      setProfile(null)
+      setProfileLoading(false)
+      setProfileError('')
       return
     }
+
     let active = true
-    setOverview(null)
-    setOverviewError('')
-    Promise.all([api.listMyWordbooks(), api.listUploads()])
-      .then(([wordbooks, uploads]) => {
-        if (!active) return
-        setOverview({
-          wordbooks: wordbooks.length,
-          words: wordbooks.reduce((total, wordbook) => total + wordbook.wordCount, 0),
-          uploads: uploads.length,
-        })
+    setProfile(null)
+    setProfileLoading(true)
+    setProfileError('')
+    api.getAccountProfile()
+      .then((nextProfile) => {
+        if (active) setProfile(nextProfile)
       })
       .catch(() => {
-        if (active) setOverviewError('学习概览暂时无法加载。')
+        if (active) setProfileError('学习数据暂时无法加载。')
+      })
+      .finally(() => {
+        if (active) setProfileLoading(false)
       })
     return () => {
       active = false
     }
-  }, [api, overviewVersion, user])
+  }, [api, profileVersion, user])
 
   function setPasswordField(field: keyof PasswordChangeFields, value: string) {
     setPasswords((current) => ({ ...current, [field]: value }))
@@ -131,14 +135,14 @@ export function AccountPage() {
     }
   }
 
-  const initial = user ? Array.from(user.username)[0]?.toLocaleUpperCase('zh-CN') ?? '账' : '账'
+  const title = user ? '个人资料' : '账户资料'
 
   return (
     <section className="account-page">
       <PageHeader
-        eyebrow="ACCOUNT"
-        title="账户资料"
-        description="查看账号身份、学习数据和安全设置。"
+        title={title}
+        description={!user && !loading ? '登录后管理账号、学习数据和安全设置。' : undefined}
+        aside={user ? <a className="account-settings-link" href="#account-settings">账户设置</a> : undefined}
       />
 
       {loading ? (
@@ -161,125 +165,157 @@ export function AccountPage() {
           )}
         </div>
       ) : (
-        <div className="account-layout">
-          <aside className="account-identity" aria-label="账号摘要">
-            <div className="account-monogram" aria-hidden="true">{initial}</div>
+        <div className="account-profile">
+          <section className="account-profile-hero" aria-label="账号摘要">
+            <UserAvatar username={user.username} size="lg" className="account-hero-avatar" />
             <div className="account-identity-copy">
               <h2>{user.username}</h2>
               <p>{user.role === 'admin' ? '管理员账号' : '学习者账号'}</p>
             </div>
-            <dl className="account-meta">
-              <div>
-                <dt>注册日期</dt>
-                <dd>{accountDate(user.createdAt)}</dd>
-              </div>
-              <div>
-                <dt>同步状态</dt>
-                <dd>服务器同步</dd>
-              </div>
-            </dl>
-            <div className="account-overview">
-              <h3>学习概览</h3>
-              {overview ? (
-                <dl className="account-metrics">
-                  <div><dt>词书</dt><dd>{overview.wordbooks}</dd></div>
-                  <div><dt>收录词</dt><dd>{overview.words}</dd></div>
-                  <div><dt>我的上传</dt><dd>{overview.uploads}</dd></div>
-                </dl>
-              ) : overviewError ? (
-                <div className="account-overview-error">
-                  <p role="alert">{overviewError}</p>
-                  <button type="button" onClick={() => setOverviewVersion((value) => value + 1)}>重试</button>
-                </div>
-              ) : (
-                <div className="account-metrics-loading" aria-label="正在加载学习概览">
-                  <span /><span /><span />
-                </div>
-              )}
-            </div>
-          </aside>
+          </section>
 
-          <div className="account-sections">
-            <section>
-              <header>
-                <h2>账户信息</h2>
-                <p>用户名是当前账号的登录标识，暂不支持修改。</p>
-              </header>
-              <dl className="account-details">
-                <div><dt>用户名</dt><dd>{user.username}</dd></div>
-                <div><dt>账号类型</dt><dd>{user.role === 'admin' ? '管理员' : '普通用户'}</dd></div>
-                <div><dt>加入时间</dt><dd>{accountDate(user.createdAt)}</dd></div>
+          <section className="account-stats" aria-labelledby="account-stats-title">
+            <h2 id="account-stats-title" className="sr-only">学习概览</h2>
+            {profileLoading ? (
+              <div className="account-metrics-loading" role="status" aria-label="正在加载学习概览">
+                <span /><span /><span /><span /><span />
+              </div>
+            ) : profileError || !profile ? (
+              <div className="account-profile-error">
+                <p role="alert">{profileError || '学习概览暂时无法加载。'}</p>
+                <button type="button" onClick={() => setProfileVersion((value) => value + 1)}>重试</button>
+              </div>
+            ) : (
+              <dl className="account-metrics">
+                <div><dt>词书</dt><dd aria-label={`${metricNumber(profile.metrics.wordbookCount)} 本`}>{metricNumber(profile.metrics.wordbookCount)}</dd></div>
+                <div><dt>收录词</dt><dd aria-label={`${metricNumber(profile.metrics.wordCount)} 个`}>{metricNumber(profile.metrics.wordCount)}</dd></div>
+                <div><dt>已学习</dt><dd aria-label={`${metricNumber(profile.metrics.learnedWordCount)} 个`}>{metricNumber(profile.metrics.learnedWordCount)}</dd></div>
+                <div><dt>90天连续</dt><dd data-unit="天" aria-label={`近 90 天连续学习 ${metricNumber(profile.metrics.currentStreak)} 天`}>{metricNumber(profile.metrics.currentStreak)}</dd></div>
+                <div><dt>90天最长</dt><dd data-unit="天" aria-label={`${metricNumber(profile.metrics.longestStreak)} 天`}>{metricNumber(profile.metrics.longestStreak)}</dd></div>
               </dl>
-            </section>
+            )}
+          </section>
 
-            <section>
-              <header>
-                <h2>修改密码</h2>
-                <p>更新后，其他设备上的登录会立即退出。</p>
-              </header>
-              <form className="account-password-form" onSubmit={changePassword} noValidate>
-                <TextField
-                  label="当前密码"
-                  type="password"
-                  value={passwords.currentPassword}
-                  onChange={(value) => setPasswordField('currentPassword', value)}
-                  autoComplete="current-password"
-                  error={passwordAttempted ? passwordErrors.currentPassword : undefined}
-                />
-                <TextField
-                  label="新密码"
-                  hint="使用 8-72 位字符。"
-                  type="password"
-                  value={passwords.newPassword}
-                  onChange={(value) => setPasswordField('newPassword', value)}
-                  autoComplete="new-password"
-                  error={passwordAttempted ? passwordErrors.newPassword : undefined}
-                />
-                <TextField
-                  label="确认新密码"
-                  type="password"
-                  value={passwords.confirmPassword}
-                  onChange={(value) => setPasswordField('confirmPassword', value)}
-                  autoComplete="new-password"
-                  error={passwordAttempted ? passwordErrors.confirmPassword : undefined}
-                />
-                <div className="account-form-footer">
-                  <Button type="submit" disabled={passwordSubmitting}>
-                    {passwordSubmitting ? '正在保存…' : '更新密码'}
-                  </Button>
-                  <p className={passwordError ? 'account-form-error' : 'account-form-success'} aria-live="polite">
-                    {passwordError || passwordSuccess}
-                  </p>
+          <AccountActivityHeatmap
+            profile={profile}
+            loading={profileLoading}
+            error={profileError}
+            onRetry={() => setProfileVersion((value) => value + 1)}
+            showError={false}
+          />
+          <AccountRecentActivity
+            items={profile?.recentActivity ?? null}
+            loading={profileLoading}
+            error={profileError}
+            onRetry={() => setProfileVersion((value) => value + 1)}
+            showError={false}
+          />
+
+          <section className="account-settings" id="account-settings" aria-labelledby="account-settings-title">
+            <header className="account-settings-header">
+              <h2 id="account-settings-title">账户设置</h2>
+              <p>管理账号信息、安全设置和数据去向。</p>
+            </header>
+
+            <div className="account-settings-ledger">
+              <section className="account-settings-row" aria-labelledby="account-information-title">
+                <header>
+                  <h3 id="account-information-title">账户信息</h3>
+                  <p>查看并管理你的账号基本信息。</p>
+                </header>
+                <dl className="account-details">
+                  <div><dt>用户名</dt><dd>{user.username}</dd></div>
+                  <div><dt>账号类型</dt><dd>{user.role === 'admin' ? '管理员' : '普通用户'}</dd></div>
+                  <div><dt>加入时间</dt><dd>{accountDate(user.createdAt)}</dd></div>
+                </dl>
+              </section>
+
+              <section className="account-settings-row" aria-labelledby="account-password-title">
+                <header>
+                  <h3 id="account-password-title">修改密码</h3>
+                  <p>更新后，其他设备上的登录会立即退出。</p>
+                </header>
+                <form className="account-password-form" onSubmit={changePassword} noValidate>
+                  <TextField
+                    label="当前密码"
+                    type="password"
+                    value={passwords.currentPassword}
+                    onChange={(value) => setPasswordField('currentPassword', value)}
+                    autoComplete="current-password"
+                    placeholder="请输入当前密码"
+                    error={passwordAttempted ? passwordErrors.currentPassword : undefined}
+                  />
+                  <TextField
+                    label="新密码"
+                    hint="使用 8-72 位字符。"
+                    type="password"
+                    value={passwords.newPassword}
+                    onChange={(value) => setPasswordField('newPassword', value)}
+                    autoComplete="new-password"
+                    placeholder="请输入新密码"
+                    error={passwordAttempted ? passwordErrors.newPassword : undefined}
+                  />
+                  <TextField
+                    label="确认新密码"
+                    type="password"
+                    value={passwords.confirmPassword}
+                    onChange={(value) => setPasswordField('confirmPassword', value)}
+                    autoComplete="new-password"
+                    placeholder="请再次输入新密码"
+                    error={passwordAttempted ? passwordErrors.confirmPassword : undefined}
+                  />
+                  <div className="account-form-footer">
+                    <Button type="submit" disabled={passwordSubmitting}>
+                      {passwordSubmitting ? '正在保存…' : '更新密码'}
+                    </Button>
+                    <p className={passwordError ? 'account-form-error' : 'account-form-success'} aria-live="polite">
+                      {passwordError || passwordSuccess}
+                    </p>
+                  </div>
+                </form>
+              </section>
+
+              <section className="account-settings-row" aria-labelledby="account-privacy-title">
+                <header>
+                  <h3 id="account-privacy-title">数据与隐私</h3>
+                  <p>管理你的数据与隐私相关设置。</p>
+                </header>
+                <div className="account-ledger-actions">
+                  <div className="account-ledger-action">
+                    <div>
+                      <strong>导出我的数据</strong>
+                      <p>下载服务器保存的词书与学习记录。</p>
+                    </div>
+                    <Button variant="secondary" disabled={exporting} onClick={() => void exportAccountData()}>
+                      {exporting ? '正在导出…' : '导出数据'}
+                    </Button>
+                  </div>
+                  <div className="account-ledger-action">
+                    <div>
+                      <strong>隐私与数据说明</strong>
+                      <p>了解数据如何存储与使用。</p>
+                    </div>
+                    <Link className="account-ledger-link" to="/privacy">查看说明<span aria-hidden="true">→</span></Link>
+                  </div>
                 </div>
-              </form>
-            </section>
+                <p className="account-export-status" aria-live="polite">{exportStatus}</p>
+              </section>
 
-            <section>
-              <header>
-                <h2>数据与隐私</h2>
-                <p>下载服务器保存的账号、词书、学习记录、发布内容和留言。</p>
-              </header>
-              <div className="account-action-row">
-                <div>
-                  <strong>导出我的数据</strong>
-                  <p>导出为便于阅读和存档的 JSON 文件。</p>
+              <section className="account-settings-row account-danger-section" aria-labelledby="account-danger-title">
+                <header>
+                  <h3 id="account-danger-title">危险操作</h3>
+                  <p>该操作不可逆，请谨慎处理。</p>
+                </header>
+                <div className="account-danger-action">
+                  <div>
+                    <strong>注销账号</strong>
+                    <p>永久删除私人学习数据、会话和发布内容。</p>
+                  </div>
+                  <Button variant="danger" onClick={() => setDeleteOpen(true)}>注销账号<span aria-hidden="true">→</span></Button>
                 </div>
-                <Button variant="secondary" disabled={exporting} onClick={() => void exportAccountData()}>
-                  {exporting ? '正在导出…' : '导出数据'}
-                </Button>
-              </div>
-              <p className="account-export-status" aria-live="polite">{exportStatus}</p>
-              <Link className="account-privacy-link" to="/privacy">查看隐私与数据说明</Link>
-            </section>
-
-            <section className="account-danger-section">
-              <header>
-                <h2>注销账号</h2>
-                <p>永久删除私人学习数据、会话和发布内容。</p>
-              </header>
-              <Button variant="danger" onClick={() => setDeleteOpen(true)}>注销账号</Button>
-            </section>
-          </div>
+              </section>
+            </div>
+          </section>
         </div>
       )}
 

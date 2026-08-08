@@ -162,6 +162,35 @@ describe('WorkspaceApi account contracts', () => {
     await expect(api.me()).resolves.toEqual(legacy)
     await expect(api.me()).rejects.toThrow('Backend response is invalid')
   })
+
+  it('loads the account study profile and rejects an incomplete activity window', async () => {
+    const profile = {
+      metrics: { wordbookCount: 2, wordCount: 12, learnedWordCount: 7, currentStreak: 3, longestStreak: 9 },
+      activityWindow: { startDate: '2026-05-11', endDate: '2026-08-08', days: 90 },
+      activity: Array.from({ length: 90 }, (_, index) => ({ date: new Date(Date.UTC(2026, 4, 11 + index)).toISOString().slice(0, 10), count: index === 89 ? 2 : 0 })),
+      recentActivity: [{
+        id: 'event-1',
+        kind: 'flashcard',
+        wordbookId: 'book-1',
+        wordbookTitle: '我的词书',
+        word: 'resilient',
+        occurredAt: '2026-08-07T08:00:00.000Z',
+        verdict: 'know',
+        levelAfter: 2,
+      }],
+    }
+    const fetch = vi.fn<FetchLike>()
+      .mockResolvedValueOnce(new Response(JSON.stringify(profile)))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ...profile, activity: profile.activity.slice(0, 89) })))
+    const api = new WorkspaceApi('https://api.example.test/', { fetch, clientId: () => 'learner' })
+
+    await expect(api.getAccountProfile()).resolves.toEqual(profile)
+    await expect(api.getAccountProfile()).rejects.toThrow('Backend response is invalid')
+    expect(fetch.mock.calls.map(([url]) => url.toString())).toEqual([
+      'https://api.example.test/api/account/profile',
+      'https://api.example.test/api/account/profile',
+    ])
+  })
 })
 
 describe('WorkspaceApi collaboration contracts', () => {
@@ -179,7 +208,6 @@ describe('WorkspaceApi collaboration contracts', () => {
     id: 'contribution-1',
     catalogId: 'catalog-1',
     catalogTitle: 'Shared',
-    sourceWordbookId: 'my-1',
     contributor: '墨客',
     baseRevisionId: 'revision-1',
     submittedHeadRevisionId: 'revision-1',

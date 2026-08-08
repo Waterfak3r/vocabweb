@@ -117,6 +117,7 @@ export type CatalogUpdateMutationResult =
   | { kind: "not-found" }
   | { kind: "head-required"; headRevisionId: string }
   | { kind: "stale"; headRevisionId: string }
+  | { kind: "open-contributions"; openContributionCount: number }
   | { kind: "source-mismatch"; headRevisionId: string; sourceWordbookId: string };
 export interface CatalogContribution {
   id: string;
@@ -139,15 +140,18 @@ export interface CatalogContribution {
   resolutionNote?: string;
   mergedRevisionId?: string;
 }
-export interface CatalogContributionView extends CatalogContribution {
+export type CatalogContributionView = Omit<
+  CatalogContribution,
+  "sourceWordbookId" | "contributorUserId" | "handledByUserId"
+> & {
   catalogTitle: string;
   canMerge: boolean;
   canClose: boolean;
-}
-export interface CatalogRevisionView extends CatalogRevision {
+};
+export type CatalogRevisionView = Omit<CatalogRevision, "authorUserId" | "committerUserId"> & {
   catalogTitle: string;
   canRevert: boolean;
-}
+};
 export interface CatalogConflict {
   key: string;
   reason: "overlapping-change" | "source-diverged";
@@ -333,6 +337,32 @@ export interface StudyDashboard {
   /** Due L3 words whose next successful dictation can complete the final proficiency step. */
   finalCheckDue: number;
   updatedAt: string;
+}
+
+export interface AccountStudyProfileActivity {
+  id: string;
+  kind: "new" | "flashcard" | "dictation" | "mark";
+  wordbookId: string;
+  wordbookTitle: string;
+  word: string;
+  occurredAt: string;
+  verdict?: LearningVerdict;
+  correct?: boolean;
+  level?: WordLevel;
+  levelAfter?: WordLevel;
+}
+
+export interface AccountStudyProfile {
+  metrics: {
+    wordbookCount: number;
+    wordCount: number;
+    learnedWordCount: number;
+    currentStreak: number;
+    longestStreak: number;
+  };
+  activityWindow: { startDate: string; endDate: string; days: 90 };
+  activity: Array<{ date: string; count: number }>;
+  recentActivity: AccountStudyProfileActivity[];
 }
 
 export type StudyRoundMode = "new" | "review";
@@ -609,4 +639,5 @@ export interface StudyStore {
   answerStudyRound(clientId: string, id: string, input: StudyRoundAnswerInput): Promise<StudyRoundMutationResult>;
   recordEvent(clientId: string, input: LearningEventInput): Promise<LearningEvent | null>;
   getDashboard(clientId: string, id: string): Promise<StudyDashboard | null>;
+  getAccountStudyProfile(clientId: string): Promise<AccountStudyProfile>;
 }

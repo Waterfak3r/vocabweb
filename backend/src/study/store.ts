@@ -21,7 +21,7 @@ import {
 } from "./ladder.js";
 import type { ClientData, State } from "./ladder.js";
 import type {
-  AccountUser, BatchWordInput, BatchWordResult, CatalogAuthor, CatalogCard, CatalogConflict, CatalogContribution, CatalogContributionView,
+  AccountStudyProfile, AccountUser, BatchWordInput, BatchWordResult, CatalogAuthor, CatalogCard, CatalogConflict, CatalogContribution, CatalogContributionView,
   CatalogQuery, CatalogRevision, CatalogRevisionSummary, CatalogRevisionView, CatalogWordChange, CatalogWordbook, CatalogWordsPage, CatalogWordsQuery,
   CatalogUpdateMutationResult, CommitImportDraftInput, ContributionMutationResult, ContributionPreview, CreateCatalogContributionInput, CreateImportDraftInput, CreateMyWordbookInput,
   CursorPage, CursorQuery,
@@ -630,6 +630,12 @@ export abstract class BaseStore implements StudyStore {
     const catalog = state.catalog.find((item) => item.id === id && item.ownerClientId === clientId);
     if (!catalog) return { kind: "not-found" };
     const client = this.client(state, clientId);
+    if (catalog.visibility === "public" && input.visibility !== undefined && input.visibility !== "public") {
+      const openContributionCount = state.contributions.filter(
+        (contribution) => contribution.catalogId === catalog.id && contribution.status === "open",
+      ).length;
+      if (openContributionCount > 0) return { kind: "open-contributions", openContributionCount };
+    }
     if (input.sourceWordbookId !== undefined) {
       if (!input.expectedHeadRevisionId) {
         return { kind: "head-required", headRevisionId: catalog.headRevisionId };
@@ -688,20 +694,6 @@ export abstract class BaseStore implements StudyStore {
       state.revisions.push(revision);
       catalog.headRevisionId = revision.id;
       catalog.updatedAt = at;
-    }
-    if (catalog.visibility !== "public") {
-      const at = this.now().toISOString();
-      for (const contribution of state.contributions) {
-        if (contribution.catalogId !== catalog.id || contribution.status !== "open") continue;
-        contribution.status = "closed";
-        contribution.updatedAt = at;
-        contribution.handledAt = at;
-        contribution.resolutionNote = "词书已停止公开";
-        if (input.author) {
-          contribution.handledByUserId = input.author.userId;
-          contribution.handledBy = input.author.username;
-        }
-      }
     }
     return { kind: "updated", catalog: this.catalogCard(state, catalog, client, clientId) };
   }); }
@@ -1795,6 +1787,102 @@ export abstract class BaseStore implements StudyStore {
     };
   }); }
 
+  async getAccountStudyProfile(clientId: string): Promise<AccountStudyProfile> { return await this.read((state) => {
+    const client = this.clientView(state, clientId);
+    const now = this.now();
+    const days = 90 as const;
+    const endDate = day(now);
+    const startDate = day(shiftDay(now, -(days - 1)));
+    const wordbooks = client.wordbooks;
+    const eventsByBook = eventsByWordbook(client.events);
+    const titles = new Map(wordbooks.map((book) => [book.id, book.title]));
+    const eventLevels = new Map<string, WordLevel>();
+
+    // Replay every known wordbook, including soft-deleted ones, so recent history
+    // retains the same levelAfter semantics as the per-wordbook dashboard.
+    for (const [wordbookId, events] of eventsByBook) {
+      const book = wordbooks.find((item) => item.id === wordbookId);
+      const replay = ladderReplay(events, reviewScheduleOf(book ?? {}));
+      for (const [eventId, level] of replay.eventLevels) eventLevels.set(eventId, level);
+    }
+
+    const liveWordbooks = wordbooks.filter((book) => !book.deletedAt);
+    let wordCount = 0;
+    let learnedWordCount = 0;
+    for (const book of liveWordbooks) {
+      const events = eventsByBook.get(book.id) ?? [];
+      const progress = progressFromStates(book, ladderStates(events, reviewScheduleOf(book)));
+      wordCount += book.words.length;
+      learnedWordCount += book.words.length - progress.unstudied;
+    }
+
+    const perDay = new Map<string, Set<string>>();
+    for (const event of client.events) {
+      if (event.kind === "mark") continue;
+      const date = day(new Date(event.occurredAt));
+      if (date < startDate || date > endDate) continue;
+      const words = perDay.get(date) ?? new Set<string>();
+      words.add(`${event.wordbookId}\u0000${event.wordId}`);
+      perDay.set(date, words);
+    }
+    const activity = Array.from({ length: days }, (_, index) => {
+      const date = day(shiftDay(now, index - (days - 1)));
+      return { date, count: perDay.get(date)?.size ?? 0 };
+    });
+    let longestStreak = 0;
+    let run = 0;
+    for (const entry of activity) {
+      if (entry.count > 0) run += 1;
+      else run = 0;
+      longestStreak = Math.max(longestStreak, run);
+    }
+    let currentStreak = 0;
+    let cursor = activity.length - 1;
+    // A day with no activity today does not erase yesterday's ongoing streak.
+    if (activity[cursor]?.count === 0) cursor -= 1;
+    while (cursor >= 0 && activity[cursor]!.count > 0) {
+      currentStreak += 1;
+      cursor -= 1;
+    }
+
+    const recentActivity = [...client.events]
+      .filter((event) => !(event.kind === "mark" && event.retainedState !== undefined))
+      // Reverse first so equal-millisecond events retain newest-insertion-first
+      // ordering, matching the selected-wordbook dashboard.
+      .reverse()
+      .sort((left, right) => right.occurredAt.localeCompare(left.occurredAt))
+      .slice(0, 8)
+      .map((event) => {
+        const common = {
+          id: event.id,
+          kind: event.kind,
+          wordbookId: event.wordbookId,
+          wordbookTitle: titles.get(event.wordbookId) ?? "已删除词书",
+          word: event.word,
+          occurredAt: event.occurredAt,
+          levelAfter: eventLevels.get(event.id) ?? 0 as WordLevel,
+        };
+        if (event.kind === "new" || event.kind === "flashcard") {
+          return event.verdict ? { ...common, verdict: event.verdict } : common;
+        }
+        if (event.kind === "dictation") return { ...common, correct: event.correct };
+        return { ...common, level: event.level };
+      });
+
+    return {
+      metrics: {
+        wordbookCount: liveWordbooks.length,
+        wordCount,
+        learnedWordCount,
+        currentStreak,
+        longestStreak,
+      },
+      activityWindow: { startDate, endDate, days },
+      activity,
+      recentActivity,
+    };
+  }); }
+
   // --- Shared state plumbing ---
   private collaborationEnabled(state: State, catalog: CatalogWordbook): boolean {
     if (
@@ -1884,8 +1972,14 @@ export abstract class BaseStore implements StudyStore {
   ): CatalogContributionView {
     const owner = catalog.authorUserId === userId;
     const changes = meaningfulCatalogChanges(contribution.changes);
+    const {
+      sourceWordbookId: _sourceWordbookId,
+      contributorUserId: _contributorUserId,
+      handledByUserId: _handledByUserId,
+      ...publicContribution
+    } = contribution;
     return {
-      ...clone(contribution),
+      ...clone(publicContribution),
       changes: clone(changes),
       stats: catalogDiffStats(changes),
       catalogTitle: catalog.title,
@@ -1902,8 +1996,13 @@ export abstract class BaseStore implements StudyStore {
     userId: string | undefined,
   ): CatalogRevisionView {
     const changes = meaningfulCatalogChanges(revision.changes);
+    const {
+      authorUserId: _authorUserId,
+      committerUserId: _committerUserId,
+      ...publicRevision
+    } = revision;
     return {
-      ...clone(revision),
+      ...clone(publicRevision),
       changes: clone(changes),
       stats: catalogDiffStats(changes),
       catalogTitle: catalog.title,
@@ -1940,13 +2039,13 @@ export abstract class BaseStore implements StudyStore {
     changes: CatalogWordChange[],
     at: string,
   ): void {
-    const deletedWordIds = new Set<string>();
+    let removedWord = false;
     for (const change of changes) {
       const index = source.words.findIndex((word) => normalizeWord(word.word) === change.key);
       if (change.kind === "delete") {
         if (index >= 0) {
-          const [deleted] = source.words.splice(index, 1);
-          if (deleted) deletedWordIds.add(deleted.id);
+          source.words.splice(index, 1);
+          removedWord = true;
         }
       } else if (index >= 0) {
         const retained = source.words[index]!;
@@ -1963,10 +2062,10 @@ export abstract class BaseStore implements StudyStore {
         });
       }
     }
-    if (deletedWordIds.size) {
-      client.events = client.events.filter(
-        (event) => event.wordbookId !== source.id || !deletedWordIds.has(event.wordId),
-      );
+    if (removedWord) {
+      // Collaboration changes alter the current source snapshot, not the learner's
+      // historical effort. Active rounds can reference removed words and must end,
+      // while past events remain available to account history and export.
       client.studyRounds = client.studyRounds.filter((round) => round.wordbookId !== source.id);
     }
     source.updatedAt = at;

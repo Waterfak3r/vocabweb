@@ -150,7 +150,6 @@ export type CatalogContribution = {
   id: string
   catalogId: string
   catalogTitle: string
-  sourceWordbookId: string
   contributor: string
   baseRevisionId: string
   submittedHeadRevisionId: string
@@ -252,6 +251,32 @@ export type StudyDashboard = {
   /** Due L3 words whose next successful dictation can complete the final proficiency step. */
   finalCheckDue?: number
   updatedAt: string
+}
+
+export type AccountStudyProfileActivity = {
+  id: string
+  kind: 'new' | 'flashcard' | 'dictation' | 'mark'
+  wordbookId: string
+  wordbookTitle: string
+  word: string
+  occurredAt: string
+  verdict?: LearningVerdict
+  correct?: boolean
+  level?: WordLevel
+  levelAfter?: WordLevel
+}
+
+export type AccountStudyProfile = {
+  metrics: {
+    wordbookCount: number
+    wordCount: number
+    learnedWordCount: number
+    currentStreak: number
+    longestStreak: number
+  }
+  activityWindow: { startDate: string; endDate: string; days: 90 }
+  activity: Array<{ date: string; count: number }>
+  recentActivity: AccountStudyProfileActivity[]
 }
 
 export type LearningVerdict = 'know' | 'vague' | 'unknown'
@@ -793,7 +818,6 @@ function parseCatalogContribution(value: unknown): CatalogContribution | null {
     || !isText(value.id)
     || !isText(value.catalogId)
     || !isText(value.catalogTitle)
-    || !isText(value.sourceWordbookId)
     || !isText(value.contributor)
     || !isText(value.baseRevisionId)
     || !isText(value.submittedHeadRevisionId)
@@ -817,7 +841,6 @@ function parseCatalogContribution(value: unknown): CatalogContribution | null {
     id: value.id,
     catalogId: value.catalogId,
     catalogTitle: value.catalogTitle,
-    sourceWordbookId: value.sourceWordbookId,
     contributor: value.contributor,
     baseRevisionId: value.baseRevisionId,
     submittedHeadRevisionId: value.submittedHeadRevisionId,
@@ -1062,6 +1085,74 @@ export function parseStudyDashboard(value: unknown): StudyDashboard | null {
     ...(activeRounds ? { activeRounds } : {}),
     ...(value.finalCheckDue !== undefined ? { finalCheckDue: value.finalCheckDue } : {}),
     updatedAt: value.updatedAt,
+  }
+}
+
+export function parseAccountStudyProfile(value: unknown): AccountStudyProfile | null {
+  if (!isRecord(value) || !Array.isArray(value.activity) || !Array.isArray(value.recentActivity)) return null
+  const metrics = value.metrics
+  const activityWindow = value.activityWindow
+  if (!isRecord(metrics) || !isRecord(activityWindow)) return null
+  const wordbookCount = metrics.wordbookCount
+  const wordCount = metrics.wordCount
+  const learnedWordCount = metrics.learnedWordCount
+  const currentStreak = metrics.currentStreak
+  const longestStreak = metrics.longestStreak
+  if (!isCount(wordbookCount) || !isCount(wordCount) || !isCount(learnedWordCount) || !isCount(currentStreak) || !isCount(longestStreak)) return null
+  if (
+    !isText(activityWindow.startDate)
+    || !isText(activityWindow.endDate)
+    || activityWindow.days !== 90
+  ) return null
+  const activity = value.activity.map((entry) => (
+    isRecord(entry) && isText(entry.date) && isCount(entry.count)
+      ? { date: entry.date, count: entry.count }
+      : null
+  ))
+  if (activity.some((entry) => entry === null) || activity.length !== 90) return null
+  const recentActivity = value.recentActivity.map((entry) => {
+    if (
+      !isRecord(entry)
+      || !isText(entry.id)
+      || (entry.kind !== 'new' && entry.kind !== 'flashcard' && entry.kind !== 'dictation' && entry.kind !== 'mark')
+      || !isText(entry.wordbookId)
+      || !isText(entry.wordbookTitle)
+      || !isText(entry.word)
+      || !isText(entry.occurredAt)
+    ) return null
+    if (entry.verdict !== undefined && entry.verdict !== 'know' && entry.verdict !== 'vague' && entry.verdict !== 'unknown') return null
+    if (entry.correct !== undefined && typeof entry.correct !== 'boolean') return null
+    if (entry.level !== undefined && !isWordLevel(entry.level)) return null
+    if (entry.levelAfter !== undefined && !isWordLevel(entry.levelAfter)) return null
+    return {
+      id: entry.id,
+      kind: entry.kind,
+      wordbookId: entry.wordbookId,
+      wordbookTitle: entry.wordbookTitle,
+      word: entry.word,
+      occurredAt: entry.occurredAt,
+      verdict: entry.verdict,
+      correct: entry.correct,
+      level: entry.level,
+      levelAfter: entry.levelAfter,
+    }
+  })
+  if (recentActivity.some((entry) => entry === null)) return null
+  return {
+    metrics: {
+      wordbookCount,
+      wordCount,
+      learnedWordCount,
+      currentStreak,
+      longestStreak,
+    },
+    activityWindow: {
+      startDate: activityWindow.startDate,
+      endDate: activityWindow.endDate,
+      days: 90,
+    },
+    activity: activity as AccountStudyProfile['activity'],
+    recentActivity: recentActivity as AccountStudyProfileActivity[],
   }
 }
 
@@ -1429,6 +1520,7 @@ export class WorkspaceApi {
     return result
   }
   getDashboard(id: string) { return this.json(`api/study/dashboard/${encodeURIComponent(id)}`, {}, parseStudyDashboard) }
+  getAccountProfile() { return this.json('api/account/profile', {}, parseAccountStudyProfile) }
   startStudyRound(wordbookId: string, mode: StudyRoundMode, scope: StudyRoundScope = 'standard') {
     return this.json(
       'api/study/rounds',

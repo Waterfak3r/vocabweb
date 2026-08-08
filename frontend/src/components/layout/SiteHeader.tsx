@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { Link, NavLink, useLocation, useNavigate } from 'react-router'
 import { AuthDialog, type AuthMode } from '../account/AuthDialog'
+import { UserAvatar } from '../account/UserAvatar'
 import { useAuth } from '../../hooks/useAuth'
 import { useTheme } from '../../hooks/useTheme'
 import { useModalDialog } from '../../hooks/useModalDialog'
@@ -429,7 +430,7 @@ export function SiteHeader() {
             }}
             onKeyDown={handleTriggerKeyDown}
           >
-            <NavIcon name="account" />
+            {user ? <UserAvatar username={user.username} size="sm" decorative /> : <NavIcon name="account" />}
             账号
             {pendingContributions > 0 && <span className="nav-unread" aria-label={`${pendingContributions} 条待审核建议`}>{pendingContributions > 99 ? '99+' : pendingContributions}</span>}
             <svg className="nav-chevron" viewBox="0 0 16 16" aria-hidden="true">
@@ -442,7 +443,10 @@ export function SiteHeader() {
                 <p>加载中…</p>
               ) : user ? (
                 <>
-                  <p className="account-user">{user.username}</p>
+                  <p className="account-user">
+                    <UserAvatar username={user.username} size="sm" decorative />
+                    <span>{user.username}</span>
+                  </p>
                   <Link role="menuitem" to="/account" onClick={() => setAccountOpen(false)}>个人资料</Link>
                   <Link role="menuitem" to="/marketplace/contributions" onClick={() => setAccountOpen(false)}>
                     协作收件箱{pendingContributions > 0 ? `（${pendingContributions}）` : ''}

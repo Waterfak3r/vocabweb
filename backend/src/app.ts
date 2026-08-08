@@ -22,6 +22,7 @@ import {
 } from "./study/validation.js";
 import type {
   AccountUser,
+  AccountStudyProfile,
   ContributionMutationResult,
   ImportDraft,
   ImportLineInput,
@@ -715,6 +716,18 @@ export function createApp(options: CreateAppOptions = {}) {
     } catch (error) { next(error); }
   });
 
+  app.get("/api/account/profile", async (_request, response, next) => {
+    const user = identityOf(response).user;
+    if (!user) {
+      response.status(401).json(apiError("AUTH_REQUIRED", "No active account session"));
+      return;
+    }
+    try {
+      const profile: AccountStudyProfile = await studyStore.getAccountStudyProfile(user.clientId);
+      response.status(200).json(profile);
+    } catch (error) { next(error); }
+  });
+
   app.post("/api/account/password", enforceLoginRateLimit, async (request, response, next) => {
     const identity = identityOf(response);
     const user = identity.user;
@@ -1264,6 +1277,11 @@ export function createApp(options: CreateAppOptions = {}) {
         response.status(409).json({
           ...apiError("CATALOG_HEAD_STALE", "The public wordbook changed; preview the snapshot again"),
           headRevisionId: result.headRevisionId,
+        });
+      } else if (result.kind === "open-contributions") {
+        response.status(409).json({
+          ...apiError("CATALOG_OPEN_CONTRIBUTIONS", "Resolve open contributions before changing visibility"),
+          openContributionCount: result.openContributionCount,
         });
       } else {
         response.status(409).json({
