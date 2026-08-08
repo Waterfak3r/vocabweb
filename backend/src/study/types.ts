@@ -395,6 +395,10 @@ export interface StudyRound {
   expiresAt: string;
   completedAt?: string;
 }
+/** HTTP/store response view; the current word is derived and never persisted in the round. */
+export interface StudyRoundView extends StudyRound {
+  currentWord: LearningQueueItem | null;
+}
 export interface StartStudyRoundInput {
   wordbookId: string;
   mode: StudyRoundMode;
@@ -419,9 +423,9 @@ export interface StudyRoundTaskOptions {
   options: StudyChoiceOption[];
 }
 export type StudyRoundMutationResult =
-  | { kind: "updated"; round: StudyRound }
+  | { kind: "updated"; round: StudyRoundView }
   | { kind: "not-found" }
-  | { kind: "conflict"; round: StudyRound };
+  | { kind: "conflict"; round: StudyRoundView };
 
 export interface CatalogQuery { q?: string; exam?: CatalogExam; goal?: LearningGoal; sort?: CatalogSort; }
 export interface CreateMyWordbookInput { title: string; description?: string; category?: string; words?: StudyWordEntry[]; }
@@ -627,8 +631,8 @@ export interface StudyStore {
   getImportDraft(clientId: string, id: string): Promise<ImportDraft | null>;
   deleteImportDraft(clientId: string, id: string): Promise<boolean>;
   commitImportDraft(clientId: string, id: string, input: CommitImportDraftInput): Promise<MyWordbookCard | null>;
-  startStudyRound(clientId: string, input: StartStudyRoundInput): Promise<{ round: StudyRound; resumed: boolean } | null>;
-  getStudyRound(clientId: string, id: string): Promise<StudyRound | null>;
+  startStudyRound(clientId: string, input: StartStudyRoundInput): Promise<{ round: StudyRoundView; resumed: boolean } | null>;
+  getStudyRound(clientId: string, id: string): Promise<StudyRoundView | null>;
   getStudyRoundTaskOptions(
     clientId: string,
     id: string,

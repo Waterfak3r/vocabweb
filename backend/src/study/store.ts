@@ -27,7 +27,7 @@ import type {
   CursorPage, CursorQuery,
   ImportDraft, ImportDraftEntry, ImportDraftTaskSummary, LearningEvent, LearningEventInput, LearningQueueItem, LevelCounts, MyWordbook, MyWordbookCard, MyWordbookWordsPage, MyWordbookWordsQuery,
   MeaningPreference, ResolveCatalogContributionInput, ResolvedImportDraftEntry, RevertPreview, RevertRevisionInput, ReviewSchedule, RevisionMutationResult,
-  StartStudyRoundInput, StudyChoiceOption, StudyDashboard, StudyRound, StudyRoundAnswerInput, StudyRoundMutationResult,
+  StartStudyRoundInput, StudyChoiceOption, StudyDashboard, StudyRound, StudyRoundAnswerInput, StudyRoundMutationResult, StudyRoundView,
   StudyRoundTask, StudyRoundTaskOptions, StudyStore, StudyWordEntry, SyncedStudySettings, UpdateCatalogWordbookInput, UpdateMyWordbookInput,
   UpdateStudySettingsInput, UpdateWordInput, UpdateWordResult, UploadCatalogWordbookInput, WordbookStudyPreferences, WordbookWord,
   WordLearningStatus, WordLevel,
@@ -1413,7 +1413,20 @@ export abstract class BaseStore implements StudyStore {
     }
     return card(book, client.events);
   }); }
-  async startStudyRound(clientId: string, input: StartStudyRoundInput): Promise<{ round: StudyRound; resumed: boolean } | null> {
+  private studyRoundView(client: ClientData, round: StudyRound): StudyRoundView {
+    const currentWordId = round.queue[0]?.wordId;
+    if (!currentWordId) return { ...clone(round), currentWord: null };
+    const book = client.wordbooks.find((item) => item.id === round.wordbookId && !item.deletedAt);
+    const currentWord = book?.words.find((word) => word.id === currentWordId);
+    if (!book || !currentWord) return { ...clone(round), currentWord: null };
+    const states = ladderStates(
+      client.events.filter((event) => event.wordbookId === book.id && event.wordId === currentWord.id),
+      reviewScheduleOf(book),
+    );
+    return { ...clone(round), currentWord: queueItem(currentWord, ladderOf(states, currentWord.id)) };
+  }
+
+  async startStudyRound(clientId: string, input: StartStudyRoundInput): Promise<{ round: StudyRoundView; resumed: boolean } | null> {
     return await this.mutate((state) => {
       const client = this.client(state, clientId);
       const book = client.wordbooks.find((item) => item.id === input.wordbookId && !item.deletedAt);
@@ -1435,7 +1448,7 @@ export abstract class BaseStore implements StudyStore {
       if (existing) {
         existing.updatedAt = now.toISOString();
         existing.expiresAt = expiresAt;
-        return { round: clone(existing), resumed: true };
+        return { round: this.studyRoundView(client, existing), resumed: true };
       }
 
       const preferences = preferencesOf(book);
@@ -1523,15 +1536,15 @@ export abstract class BaseStore implements StudyStore {
         ...(queue.length === 0 ? { completedAt: at } : {}),
       };
       client.studyRounds.push(round);
-      return { round: clone(round), resumed: false };
+      return { round: this.studyRoundView(client, round), resumed: false };
     });
   }
-  async getStudyRound(clientId: string, id: string): Promise<StudyRound | null> {
+  async getStudyRound(clientId: string, id: string): Promise<StudyRoundView | null> {
     return await this.read((state) => {
       const client = this.clientView(state, clientId);
       const round = client.studyRounds.find((item) => item.id === id && Date.parse(item.expiresAt) > this.now().getTime());
       if (!round || !client.wordbooks.some((book) => book.id === round.wordbookId && !book.deletedAt)) return null;
-      return clone(round);
+      return this.studyRoundView(client, round);
     });
   }
   async getStudyRoundTaskOptions(
@@ -1599,16 +1612,17 @@ export abstract class BaseStore implements StudyStore {
   }
   async rotateStudyRound(clientId: string, id: string, revision: number): Promise<StudyRoundMutationResult> {
     return await this.mutate((state) => {
-      const round = this.client(state, clientId).studyRounds.find((item) => item.id === id);
+      const client = this.client(state, clientId);
+      const round = client.studyRounds.find((item) => item.id === id);
       if (!round || round.completedAt || Date.parse(round.expiresAt) <= this.now().getTime() || round.queue.length === 0) return { kind: "not-found" };
-      if (round.revision !== revision) return { kind: "conflict", round: clone(round) };
+      if (round.revision !== revision) return { kind: "conflict", round: this.studyRoundView(client, round) };
       const firstWordId = round.queue[0]!.wordId;
       const moved = round.queue.filter((task) => task.wordId === firstWordId);
       round.queue = [...round.queue.filter((task) => task.wordId !== firstWordId), ...moved];
       round.revision += 1;
       round.updatedAt = this.now().toISOString();
       round.expiresAt = new Date(this.now().getTime() + STUDY_ROUND_TTL_MS).toISOString();
-      return { kind: "updated", round: clone(round) };
+      return { kind: "updated", round: this.studyRoundView(client, round) };
     });
   }
   async answerStudyRound(clientId: string, id: string, input: StudyRoundAnswerInput): Promise<StudyRoundMutationResult> {
@@ -1616,13 +1630,13 @@ export abstract class BaseStore implements StudyStore {
       const client = this.client(state, clientId);
       const round = client.studyRounds.find((item) => item.id === id);
       if (!round || round.completedAt || Date.parse(round.expiresAt) <= this.now().getTime()) return { kind: "not-found" };
-      if (round.processedOperationIds.includes(input.operationId)) return { kind: "updated", round: clone(round) };
-      if (round.revision !== input.revision || round.queue[0]?.id !== input.taskId) return { kind: "conflict", round: clone(round) };
+      if (round.processedOperationIds.includes(input.operationId)) return { kind: "updated", round: this.studyRoundView(client, round) };
+      if (round.revision !== input.revision || round.queue[0]?.id !== input.taskId) return { kind: "conflict", round: this.studyRoundView(client, round) };
       const task = round.queue[0]!;
       const responseMatches = input.response === "mastered" || (task.exercise === "self-rating"
         ? input.response === "know" || input.response === "vague" || input.response === "unknown"
         : input.response === "correct" || input.response === "incorrect");
-      if (!responseMatches) return { kind: "conflict", round: clone(round) };
+      if (!responseMatches) return { kind: "conflict", round: this.studyRoundView(client, round) };
       const book = client.wordbooks.find((item) => item.id === round.wordbookId && !item.deletedAt);
       const target = book?.words.find((word) => word.id === task.wordId);
       if (!book || !target) return { kind: "not-found" };
@@ -1684,7 +1698,7 @@ export abstract class BaseStore implements StudyStore {
       round.updatedAt = now.toISOString();
       round.expiresAt = new Date(now.getTime() + STUDY_ROUND_TTL_MS).toISOString();
       if (round.queue.length === 0) round.completedAt = round.updatedAt;
-      return { kind: "updated", round: clone(round) };
+      return { kind: "updated", round: this.studyRoundView(client, round) };
     });
   }
   async recordEvent(clientId: string, input: LearningEventInput): Promise<LearningEvent | null> { return await this.mutate((state) => {
@@ -2174,6 +2188,7 @@ export abstract class BaseStore implements StudyStore {
       client.wordbooks.push(source);
       return source;
     }
+    const previousWordIds = new Set(source.words.map((word) => word.id));
     const existing = new Map(source.words.map((word) => [word.word, word]));
     source.title = title;
     source.description = description;
@@ -2184,6 +2199,9 @@ export abstract class BaseStore implements StudyStore {
     });
     const liveWordIds = new Set(source.words.map((word) => word.id));
     client.events = client.events.filter((event) => event.wordbookId !== source.id || liveWordIds.has(event.wordId));
+    if ([...previousWordIds].some((wordId) => !liveWordIds.has(wordId))) {
+      client.studyRounds = client.studyRounds.filter((round) => round.wordbookId !== source.id);
+    }
     source.updatedAt = at;
     return source;
   }

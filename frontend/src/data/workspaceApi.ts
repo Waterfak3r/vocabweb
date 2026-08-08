@@ -105,6 +105,12 @@ export type MyWordbookWord = WordbookItem & {
   nextReviewAt?: string
   recognitionStreak?: RecognitionStreak
 }
+export type LearningQueueItem = MyWordbookWord & {
+  status: WordStatus
+  level: WordLevel
+  reviewIntervalDays: number
+  recognitionStreak: RecognitionStreak
+}
 export type MyWordbookWordsQuery = { page?: number; pageSize?: number; q?: string; level?: WordLevel }
 export type MyWordbookWordsPage = {
   items: MyWordbookWord[]
@@ -294,7 +300,7 @@ export type StudyRoundTask = {
   wordId: string
   exercise: StudyExerciseType
 }
-export type StudyRound = {
+export type StudyRoundView = {
   id: string
   wordbookId: string
   mode: StudyRoundMode
@@ -314,6 +320,8 @@ export type StudyRound = {
   updatedAt: string
   expiresAt: string
   completedAt?: string
+  /** Derived for transport only; completed rounds have no current word. */
+  currentWord: LearningQueueItem | null
 }
 export type StudyChoiceOption = {
   wordId: string
@@ -1088,6 +1096,17 @@ export function parseStudyDashboard(value: unknown): StudyDashboard | null {
   }
 }
 
+function parseLearningQueueItem(value: unknown): LearningQueueItem | null {
+  const word = parseWord(value)
+  return word
+    && word.status !== undefined
+    && word.level !== undefined
+    && word.reviewIntervalDays !== undefined
+    && word.recognitionStreak !== undefined
+    ? word as LearningQueueItem
+    : null
+}
+
 export function parseAccountStudyProfile(value: unknown): AccountStudyProfile | null {
   if (!isRecord(value) || !Array.isArray(value.activity) || !Array.isArray(value.recentActivity)) return null
   const metrics = value.metrics
@@ -1162,7 +1181,7 @@ function parseStudyRoundTask(value: unknown): StudyRoundTask | null {
   return { id: value.id, wordId: value.wordId, exercise: value.exercise }
 }
 
-function parseStudyRound(value: unknown): StudyRound | null {
+function parseStudyRound(value: unknown): StudyRoundView | null {
   if (
     !isRecord(value)
     || !isText(value.id)
@@ -1190,6 +1209,7 @@ function parseStudyRound(value: unknown): StudyRound | null {
     (entry): entry is StudyExerciseType => entry === 'self-rating' || entry === 'meaning-choice',
   )
   const queue = value.queue.map(parseStudyRoundTask)
+  const currentWord = value.currentWord === null ? null : parseLearningQueueItem(value.currentWord)
   const stringArrays = [
     value.wordIds,
     value.passedTaskKeys,
@@ -1205,6 +1225,9 @@ function parseStudyRound(value: unknown): StudyRound | null {
     || new Set(exerciseTypes).size !== exerciseTypes.length
     || queue.some((task) => task === null)
     || stringArrays.some((array) => !array.every(isText))
+    || (value.currentWord !== null && currentWord === null)
+    || (currentWord !== null && currentWord.id !== queue[0]?.wordId)
+    || (queue.length === 0 && currentWord !== null)
   ) return null
   return {
     id: value.id,
@@ -1226,10 +1249,11 @@ function parseStudyRound(value: unknown): StudyRound | null {
     updatedAt: value.updatedAt,
     expiresAt: value.expiresAt,
     completedAt: value.completedAt,
+    currentWord,
   }
 }
 
-function parseStudyRoundStart(value: unknown): { round: StudyRound; resumed: boolean } | null {
+function parseStudyRoundStart(value: unknown): { round: StudyRoundView; resumed: boolean } | null {
   if (!isRecord(value) || typeof value.resumed !== 'boolean') return null
   const round = parseStudyRound(value.round)
   return round ? { round, resumed: value.resumed } : null

@@ -369,6 +369,7 @@ export function WordbookPage() {
   const fullEntriesGeneration = useRef(new Map<string, number>())
   const selectedBookIdRef = useRef('')
   const studyReturnFocusRef = useRef<HTMLElement | null>(null)
+  const studyProgressCommittedRef = useRef(false)
   remoteEntriesRef.current = remoteEntries
   const studyRefreshTimer = useRef<number | null>(null)
   const recycleDialogRef = useModalDialog<HTMLElement>({
@@ -685,6 +686,7 @@ export function WordbookPage() {
   const scheduleStudyProgressRefresh = useCallback(() => {
     const wordbookId = selectedBook?.id
     if (!wordbookId) return
+    studyProgressCommittedRef.current = true
     if (studyRefreshTimer.current !== null) window.clearTimeout(studyRefreshTimer.current)
     studyRefreshTimer.current = window.setTimeout(() => {
       studyRefreshTimer.current = null
@@ -750,18 +752,22 @@ export function WordbookPage() {
 
   async function exitStudy() {
     const returnFocus = studyReturnFocusRef.current
+    const finishedMode = studyMode
+    const wordbookId = selectedBook.id
+    const progressCommitted = studyProgressCommittedRef.current
+    studyProgressCommittedRef.current = false
     if (studyRefreshTimer.current !== null) {
       window.clearTimeout(studyRefreshTimer.current)
       studyRefreshTimer.current = null
     }
     setStudyMode(null)
+    if (progressCommitted && finishedMode !== 'dictation') invalidateFullEntries(wordbookId)
     await Promise.all([
-      refreshMyWordbooks(selectedBook.id),
-      refreshSelectedBook(selectedBook.id, 'all'),
+      refreshMyWordbooks(wordbookId),
+      refreshSelectedBook(wordbookId, finishedMode === 'dictation' ? 'all' : 'dashboard'),
     ])
-    // The forced post-session word refresh temporarily disables study actions.
-    // Retry focus after that refresh commits, because focusing a disabled button
-    // during the modal cleanup is ignored by the browser.
+    // A post-session refresh can temporarily disable the initiating action.
+    // Restore focus only after the relevant compact/full refresh has committed.
     if (studyReturnFocusRef.current !== returnFocus) return
     window.requestAnimationFrame(() => {
       if (studyReturnFocusRef.current !== returnFocus) return
@@ -1123,6 +1129,16 @@ export function WordbookPage() {
   const openStudy = async (nextMode: StudyMode, scope: StudyRoundScope = 'standard') => {
     const wordbookId = selectedBook.id
     const returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    studyProgressCommittedRef.current = false
+    if (nextMode === 'new' || nextMode === 'review') {
+      // The server is authoritative for queue availability. Round responses carry
+      // only the active word, so flashcard modes never need the complete wordbook.
+      studyReturnFocusRef.current = returnFocus
+      setStudyScope(scope)
+      setStudyMode(nextMode)
+      return
+    }
+
     let entries: WorkspaceBook['entries'] | null
     try {
       entries = await ensureFullEntries(wordbookId)
@@ -1138,36 +1154,8 @@ export function WordbookPage() {
     // derive this one session from its returned payload rather than the old
     // render's empty `activeEntries` snapshot.
     const loadedStudyEntries = deriveStudyEntries(entries, selectedBook.reviewSchedule)
-    const loadedNewEntries = loadedStudyEntries.unstudiedEntries
-    const loadedReviewAheadEntries = loadedStudyEntries.reviewAheadEntries
     const loadedDictationEntries = loadedStudyEntries.dictationEntries.slice(0, preferences.plan.dictation)
-    if (nextMode === 'review') {
-      const available = scope === 'backlog'
-        ? backlogCount
-        : scope === 'ahead'
-          ? loadedReviewAheadEntries.length
-          : scheduledReviewCount
-      const resumable = activeRound('review', scope)
-      if (!available && !resumable) {
-        setNotice(scope === 'backlog' ? '当前没有历史积压。' : scope === 'ahead' ? '当前没有未到期的可复习单词。' : '今日安排的复习已完成。')
-        return
-      }
-      setStudyScope(scope)
-      setStudyMode('review')
-      return
-    }
-    if (nextMode === 'new') {
-      const available = scope === 'ahead' ? loadedNewEntries.length : loadedNewEntries.slice(0, newPlan.remaining).length
-      const resumable = activeRound('new', scope)
-      if (!available && !resumable) {
-        setNotice(scope === 'ahead' ? '当前词本没有可提前学习的未学习单词。' : '今日新词计划已完成，或当前词本没有未学习单词。')
-        return
-      }
-      setStudyScope(scope)
-      setStudyMode('new')
-      return
-    }
-    if (nextMode === 'dictation' && loadedDictationEntries.length === 0) {
+    if (loadedDictationEntries.length === 0) {
       setNotice('当前模式暂无可学的单词。')
       return
     }
@@ -1755,7 +1743,6 @@ function WordbookStudyMode({
       <StudyHeader book={book} mode={mode} onExit={onExit} />
       <SyncedFlashcardRound
         wordbookId={book.id}
-        entries={book.entries}
         mode={mode}
         scope={scope}
         preferences={preferences as FlashcardDisplayPreferences}

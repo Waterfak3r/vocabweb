@@ -122,6 +122,37 @@ test("SQLite durably reloads synchronized wordbook and global study settings", a
   reopened.close();
 });
 
+test("SQLite persists round ids only and derives the current word after reopening", async (t) => {
+  const files = await fixture(t);
+  const store = new SqliteStudyStore(files.databaseFile);
+  const book = await store.createMyWordbook(CLIENT, {
+    title: "Round view",
+    words: [{
+      word: "resilient",
+      phonetic: "/rɪˈzɪliənt/",
+      source: "user",
+      meanings: [{ pos: "adjective", definition: "able to recover" }],
+    }],
+  });
+  const started = await store.startStudyRound(CLIENT, { wordbookId: book.id, mode: "new" });
+  assert.ok(started?.round.currentWord);
+  const roundId = started.round.id;
+  store.close();
+
+  const inspection = new Database(files.databaseFile, { readonly: true });
+  const persisted = JSON.parse(
+    (inspection.prepare("SELECT data_json FROM clients WHERE client_id = ?").get(CLIENT) as { data_json: string }).data_json,
+  ) as { studyRounds: Array<Record<string, unknown>> };
+  assert.equal(Object.hasOwn(persisted.studyRounds[0]!, "currentWord"), false);
+  inspection.close();
+
+  const reopened = new SqliteStudyStore(files.databaseFile);
+  const restored = await reopened.getStudyRound(CLIENT, roundId);
+  assert.equal(restored?.currentWord?.word, "resilient");
+  assert.equal(restored?.currentWord?.id, restored?.queue[0]?.wordId);
+  reopened.close();
+});
+
 test("SQLite exposes constrained, queryable user/session/catalog rows", async (t) => {
   const files = await fixture(t);
   const store = new SqliteStudyStore(files.databaseFile, { now: () => new Date("2026-07-27T00:00:00.000Z") });

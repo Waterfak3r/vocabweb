@@ -57,6 +57,13 @@ Keep existing HTTP status meanings and machine error codes backward compatible. 
 - search, feedback, site-setting, and message routes — engagement data and threaded communication.
 - `/api/health/live`, `/api/health/ready`, and `/api/health` — process liveness and dependency readiness.
 
+### Study Round Payloads
+
+- Study-round start, resume, read, rotate, answer, and conflict responses expose a `StudyRoundView`.
+- `StudyRoundView.currentWord` is the fully validated learning-queue item matching `queue[0].wordId`, or `null` when the queue is empty or its legacy reference is unavailable.
+- `currentWord` is derived from the learner's current wordbook and event history inside the same store snapshot as the round response. It is never persisted in `ClientData.studyRounds`.
+- New-word and flashcard review clients render from `currentWord`; they do not need to download the complete personal wordbook. Full word lists remain separate, explicit operations for import, export, dictation, and word management.
+
 ## Wordbook Change Model
 
 - Personal wordbook edits save immediately; there is no extra commit step for ordinary add, edit, delete, or study actions.

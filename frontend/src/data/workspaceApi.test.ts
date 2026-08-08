@@ -496,6 +496,43 @@ describe('WorkspaceApi meaning-choice language', () => {
     ])
   })
 
+  it('validates a present current word and aligns it with the active round task', async () => {
+    const currentWord = {
+      id: 'word-1',
+      word: 'resilient',
+      phonetic: '/rɪˈzɪliənt/',
+      addedAt: '2026-08-02T00:00:00.000Z',
+      source: 'user',
+      meanings: [{ pos: 'adjective', definition: 'Able to recover.' }],
+      status: 'new',
+      level: 0,
+      reviewIntervalDays: 0,
+      recognitionStreak: 0,
+    }
+    const activeRound = {
+      id: 'round-1', wordbookId: 'my-book', mode: 'new', scope: 'standard', meaningPreference: 'zh',
+      exerciseTypes: ['self-rating'], wordIds: ['word-1'],
+      queue: [{ id: 'task-1', wordId: 'word-1', exercise: 'self-rating' }],
+      passedTaskKeys: [], completedWordIds: [], masteredWordIds: [], vagueWordIds: [], unknownWordIds: [],
+      processedOperationIds: [], revision: 0,
+      createdAt: '2026-08-02T00:00:00.000Z', updatedAt: '2026-08-02T00:00:00.000Z',
+      expiresAt: '2026-08-03T00:00:00.000Z', currentWord,
+    }
+    const fetch = vi.fn<FetchLike>()
+      .mockResolvedValueOnce(new Response(JSON.stringify(activeRound)))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ...activeRound, currentWord: { ...currentWord, id: 'word-2' } })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ...activeRound, currentWord: { ...currentWord, level: undefined } })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ...activeRound, currentWord: null })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ...activeRound, queue: [], completedAt: activeRound.updatedAt, currentWord: null })))
+    const api = new WorkspaceApi('https://api.example.test/', { fetch, clientId: () => 'learner' })
+
+    await expect(api.getStudyRound('round-1')).resolves.toEqual(expect.objectContaining({ currentWord }))
+    await expect(api.getStudyRound('round-1')).rejects.toThrow('Backend response is invalid')
+    await expect(api.getStudyRound('round-1')).rejects.toThrow('Backend response is invalid')
+    await expect(api.getStudyRound('round-1')).resolves.toEqual(expect.objectContaining({ currentWord: null }))
+    await expect(api.getStudyRound('round-1')).resolves.toEqual(expect.objectContaining({ currentWord: null }))
+  })
+
   it('posts the direct mastered action without requiring a card flip', async () => {
     const round = {
       id: 'round-1', wordbookId: 'my-book', mode: 'new', scope: 'standard', meaningPreference: 'zh',
@@ -504,6 +541,7 @@ describe('WorkspaceApi meaning-choice language', () => {
       processedOperationIds: ['operation-1'], revision: 1,
       createdAt: '2026-08-02T00:00:00.000Z', updatedAt: '2026-08-02T00:01:00.000Z',
       expiresAt: '2026-08-03T00:01:00.000Z', completedAt: '2026-08-02T00:01:00.000Z',
+      currentWord: null,
     }
     const fetch = vi.fn<FetchLike>().mockResolvedValue(new Response(JSON.stringify(round)))
     const api = new WorkspaceApi('https://api.example.test/', { fetch, clientId: () => 'learner' })

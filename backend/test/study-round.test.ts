@@ -5,7 +5,7 @@ import type { Server } from "node:http";
 import { test } from "node:test";
 import { createApp } from "../src/app.js";
 import { InMemoryStudyStore } from "../src/study/store.js";
-import type { StudyRound, WordbookStudyPreferences } from "../src/study/types.js";
+import type { StudyRoundView, WordbookStudyPreferences } from "../src/study/types.js";
 
 const CLIENT = "round-client-12345678";
 
@@ -44,6 +44,17 @@ async function register(baseUrl: string) {
     "x-vocab-client-id": CLIENT,
     cookie: response.headers.get("set-cookie")!.split(";")[0]!,
   };
+}
+
+function assertCurrentWord(round: StudyRoundView): void {
+  if (round.queue.length === 0) {
+    assert.equal(round.currentWord, null);
+    return;
+  }
+  assert.equal(round.currentWord?.id, round.queue[0]!.wordId);
+  assert.equal(typeof round.currentWord?.status, "string");
+  assert.equal(typeof round.currentWord?.level, "number");
+  assert.equal(typeof round.currentWord?.reviewIntervalDays, "number");
 }
 
 test("study rounds preserve exact cross-device order and require both enabled exercises", async () => {
@@ -105,7 +116,8 @@ test("study rounds preserve exact cross-device order and require both enabled ex
       body: JSON.stringify({ wordbookId: book.id, mode: "new" }),
     });
     assert.equal(startedResponse.status, 201);
-    let round = (await startedResponse.json() as { round: StudyRound }).round;
+    let round = (await startedResponse.json() as { round: StudyRoundView }).round;
+    assertCurrentWord(round);
     assert.equal(round.wordIds.length, 4);
     assert.equal(round.queue.length, 8);
     assert.deepEqual(round.queue.slice(0, 4).map((task) => task.exercise), Array(4).fill("self-rating"));
@@ -117,10 +129,37 @@ test("study rounds preserve exact cross-device order and require both enabled ex
       body: JSON.stringify({ wordbookId: book.id, mode: "new" }),
     });
     assert.equal(resumedResponse.status, 200);
-    const resumed = await resumedResponse.json() as { round: StudyRound; resumed: boolean };
+    const resumed = await resumedResponse.json() as { round: StudyRoundView; resumed: boolean };
     assert.equal(resumed.resumed, true);
     assert.equal(resumed.round.id, round.id);
     assert.deepEqual(resumed.round.queue, round.queue);
+    assertCurrentWord(resumed.round);
+
+    const fetched = await (await fetch(`${app.baseUrl}/api/study/rounds/${round.id}`, {
+      headers: secondDevice,
+    })).json() as StudyRoundView;
+    assertCurrentWord(fetched);
+
+    const rotateConflictResponse = await fetch(`${app.baseUrl}/api/study/rounds/${round.id}/rotate`, {
+      method: "POST",
+      headers: secondDevice,
+      body: JSON.stringify({ revision: round.revision + 1 }),
+    });
+    assert.equal(rotateConflictResponse.status, 409);
+    assertCurrentWord((await rotateConflictResponse.json() as { round: StudyRoundView }).round);
+
+    const answerConflictResponse = await fetch(`${app.baseUrl}/api/study/rounds/${round.id}/answers`, {
+      method: "POST",
+      headers: secondDevice,
+      body: JSON.stringify({
+        taskId: round.queue[0]!.id,
+        response: "know",
+        operationId: randomUUID(),
+        revision: round.revision + 1,
+      }),
+    });
+    assert.equal(answerConflictResponse.status, 409);
+    assertCurrentWord((await answerConflictResponse.json() as { round: StudyRoundView }).round);
 
     // Pass the recall-judgment lane. No word is complete until its meaning choice also passes.
     for (let index = 0; index < 4; index += 1) {
@@ -135,7 +174,8 @@ test("study rounds preserve exact cross-device order and require both enabled ex
         }),
       });
       assert.equal(answer.status, 200);
-      round = await answer.json() as StudyRound;
+      round = await answer.json() as StudyRoundView;
+      assertCurrentWord(round);
       assert.equal(round.completedWordIds.length, 0);
     }
     assert.equal(round.queue[0]?.exercise, "meaning-choice");
@@ -173,7 +213,8 @@ test("study rounds preserve exact cross-device order and require both enabled ex
         operationId: randomUUID(),
         revision: round.revision,
       }),
-    })).json() as StudyRound;
+    })).json() as StudyRoundView;
+    assertCurrentWord(round);
     assert.ok(round.unknownWordIds.includes(failedTask.wordId));
     assert.equal(round.queue.at(-1)?.wordId, failedTask.wordId);
     assert.notEqual(round.queue.at(-1)?.id, failedTask.id);
@@ -182,17 +223,19 @@ test("study rounds preserve exact cross-device order and require both enabled ex
       method: "POST",
       headers: secondDevice,
       body: JSON.stringify({ wordbookId: book.id, mode: "new" }),
-    })).json() as { round: StudyRound };
+    })).json() as { round: StudyRoundView };
     assert.deepEqual(exactResume.round.queue, round.queue);
+    assertCurrentWord(exactResume.round);
 
     const firstBeforeRotate = round.queue[0]!.wordId;
     round = await (await fetch(`${app.baseUrl}/api/study/rounds/${round.id}/rotate`, {
       method: "POST",
       headers: secondDevice,
       body: JSON.stringify({ revision: round.revision }),
-    })).json() as StudyRound;
+    })).json() as StudyRoundView;
     assert.notEqual(round.queue[0]?.wordId, firstBeforeRotate);
     assert.equal(round.queue.at(-1)?.wordId, firstBeforeRotate);
+    assertCurrentWord(round);
 
     while (round.queue.length) {
       round = await (await fetch(`${app.baseUrl}/api/study/rounds/${round.id}/answers`, {
@@ -204,7 +247,8 @@ test("study rounds preserve exact cross-device order and require both enabled ex
           operationId: randomUUID(),
           revision: round.revision,
         }),
-      })).json() as StudyRound;
+      })).json() as StudyRoundView;
+      assertCurrentWord(round);
     }
     assert.equal(round.completedWordIds.length, 4);
     assert.ok(round.completedAt);
@@ -218,6 +262,50 @@ test("study rounds preserve exact cross-device order and require both enabled ex
   } finally {
     await app.close();
   }
+});
+
+test("an empty study round exposes an explicit null current word", async () => {
+  const store = new InMemoryStudyStore();
+  const book = await store.createMyWordbook(CLIENT, { title: "Empty round", words: [] });
+
+  const started = await store.startStudyRound(CLIENT, { wordbookId: book.id, mode: "new" });
+
+  assert.ok(started);
+  assert.deepEqual(started.round.queue, []);
+  assert.equal(started.round.currentWord, null);
+  assert.ok(started.round.completedAt);
+});
+
+test("seed refreshes retain resolvable rounds and clear rounds whose word ids disappear", async () => {
+  const store = new InMemoryStudyStore();
+  const seedKey = "round-refresh";
+  const sourceId = `my-seed-${seedKey}`;
+  const author = { userId: "seed-author", username: "Seed Author" };
+  await store.upsertSeedCatalog(CLIENT, {
+    seedKey,
+    author,
+    title: "Seed round",
+    words: [entry("resilient")],
+  });
+  const started = await store.startStudyRound(CLIENT, { wordbookId: sourceId, mode: "new" });
+  assert.ok(started);
+
+  await store.upsertSeedCatalog(CLIENT, {
+    seedKey,
+    author,
+    title: "Seed round",
+    words: [{ ...entry("resilient"), meanings: [{ pos: "adjective", definition: "updated definition" }] }],
+  });
+  const retained = await store.getStudyRound(CLIENT, started.round.id);
+  assert.equal(retained?.currentWord?.meanings[0]?.definition, "updated definition");
+
+  await store.upsertSeedCatalog(CLIENT, {
+    seedKey,
+    author,
+    title: "Seed round",
+    words: [entry("durable")],
+  });
+  assert.equal(await store.getStudyRound(CLIENT, started.round.id), null);
 });
 
 test("tiered review protects timely checkpoints and caps historical backlog", async () => {
@@ -366,6 +454,8 @@ test("a vague judgment keeps the rung, shortens the checkpoint, and requeues the
   assert.equal(round.queue.length, 1);
   assert.notEqual(round.queue[0]?.id, originalTask.id);
   assert.deepEqual(round.vagueWordIds, [word.id]);
+  assert.equal(round.currentWord?.id, round.queue[0]?.wordId);
+  assert.equal(round.currentWord?.level, 0);
   assert.equal((await store.listWords(CLIENT, book.id))![0]!.level, 0);
 
   const learned = await store.answerStudyRound(CLIENT, round.id, {
@@ -392,6 +482,8 @@ test("a vague judgment keeps the rung, shortens the checkpoint, and requeues the
   assert.equal(afterVague.reviewIntervalDays, 1);
   assert.equal(afterVague.nextReviewAt, "2026-04-03T08:00:00.000Z");
   assert.equal(review.queue.length, 1);
+  assert.equal(review.currentWord?.level, 1);
+  assert.equal(review.currentWord?.reviewIntervalDays, 1);
 });
 
 test("marking a visible round word mastered skips every remaining exercise and records L4", async () => {
@@ -416,6 +508,7 @@ test("marking a visible round word mastered skips every remaining exercise and r
   });
   assert.equal(result.kind, "updated");
   const updated = result.kind === "updated" ? result.round : initial;
+  assertCurrentWord(updated);
   assert.equal(updated.queue.some((item) => item.wordId === task.wordId), false);
   assert.deepEqual(updated.masteredWordIds, [task.wordId]);
   assert.ok(updated.completedWordIds.includes(task.wordId));
@@ -431,6 +524,7 @@ test("marking a visible round word mastered skips every remaining exercise and r
   });
   assert.equal(repeated.kind, "updated");
   assert.deepEqual(repeated.kind === "updated" ? repeated.round.masteredWordIds : [], [task.wordId]);
+  if (repeated.kind === "updated") assertCurrentWord(repeated.round);
 });
 
 test("the study answer endpoint accepts mastered and returns the next visible word", async () => {
@@ -446,7 +540,8 @@ test("the study answer endpoint accepts mastered and returns the next visible wo
       method: "POST",
       headers: requestHeaders,
       body: JSON.stringify({ wordbookId: created.id, mode: "new" }),
-    })).json() as { round: StudyRound };
+    })).json() as { round: StudyRoundView };
+    assertCurrentWord(started.round);
     const task = started.round.queue[0]!;
     const response = await fetch(`${app.baseUrl}/api/study/rounds/${started.round.id}/answers`, {
       method: "POST",
@@ -459,7 +554,8 @@ test("the study answer endpoint accepts mastered and returns the next visible wo
       }),
     });
     assert.equal(response.status, 200);
-    const updated = await response.json() as StudyRound;
+    const updated = await response.json() as StudyRoundView;
+    assertCurrentWord(updated);
     assert.deepEqual(updated.masteredWordIds, [task.wordId]);
     assert.equal(updated.queue.some((item) => item.wordId === task.wordId), false);
     assert.equal(updated.queue[0]?.wordId === task.wordId, false);

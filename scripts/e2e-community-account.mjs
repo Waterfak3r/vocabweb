@@ -343,6 +343,15 @@ async function main() {
     await owner.waitForTimeout(50);
     assert.equal(await createTrigger.evaluate((trigger) => trigger === document.activeElement), true);
 
+    let fullWordListRequests = 0;
+    let roundStartRequests = 0;
+    const observeStudyRequests = (request) => {
+      const url = new URL(request.url());
+      if (/^\/api\/my\/wordbooks\/[^/]+\/words$/.test(url.pathname)) fullWordListRequests += 1;
+      if (url.pathname === "/api/study/rounds" && request.method() === "POST") roundStartRequests += 1;
+    };
+    owner.on("request", observeStudyRequests);
+
     const studyTrigger = owner.locator(".plan-card", { hasText: "新词学习" }).first().locator("button:not(.plan-card-settings)").first();
     await studyTrigger.click();
     const studyDialog = owner.getByRole("dialog", { name: "新词学习悬浮窗口" });
@@ -351,11 +360,26 @@ async function main() {
     await studyDialog.getByRole("button", { name: "关闭学习窗口" }).focus();
     await owner.keyboard.press("Shift+Tab");
     assert.equal(await studyDialog.evaluate((dialog) => dialog.contains(document.activeElement)), true);
+    await studyDialog.getByRole("button", { name: "认识", exact: true }).click();
+    await studyDialog.getByText("看词选义", { exact: false }).waitFor();
+    await owner.waitForTimeout(200);
     await owner.keyboard.press("Escape");
     await studyDialog.waitFor({ state: "hidden" });
     await owner.waitForTimeout(50);
     assert.equal(await studyTrigger.evaluate((trigger) => trigger === document.activeElement), true);
     assert.notEqual(await owner.evaluate(() => document.body.style.overflow), "hidden");
+
+    const reviewTrigger = owner.locator(".quick-actions > button", { hasText: "复习巩固" });
+    await reviewTrigger.click();
+    const reviewDialog = owner.getByRole("dialog", { name: "复习巩固悬浮窗口" });
+    await reviewDialog.waitFor();
+    await reviewDialog.getByRole("button", { name: "关闭学习窗口" }).click();
+    await reviewDialog.waitFor({ state: "hidden" });
+    await owner.waitForTimeout(50);
+    owner.off("request", observeStudyRequests);
+    assert.equal(roundStartRequests, 2, "新词和复习应分别由轮次接口选词");
+    assert.equal(fullWordListRequests, 0, "新词或复习不应读取整个单词本");
+
     const wordManagerTrigger = owner.getByRole("button", { name: "浏览词条", exact: true });
     await wordManagerTrigger.click();
     const wordManagerDialog = owner.getByRole("dialog", { name: targetBookTitle });
@@ -370,7 +394,7 @@ async function main() {
     await owner.waitForTimeout(50);
     assert.equal(await wordManagerTrigger.evaluate((trigger) => trigger === document.activeElement), true);
     assert.notEqual(await owner.evaluate(() => document.body.style.overflow), "hidden");
-    step("新建、学习与词条管理弹窗均锁定焦点、页面滚动并恢复触发按钮");
+    step("新词与复习仅读取当前轮次词条，弹窗焦点和页面滚动保持正确");
 
     const identityBeforeReset = await owner.evaluate(() => {
       localStorage.setItem("vocab-ielts:theme:v1", "dark");

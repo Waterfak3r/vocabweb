@@ -11,17 +11,15 @@ import {
   getWorkspaceApi,
   type LearningVerdict,
   type StudyChoiceOption,
-  type StudyRound,
+  type StudyRoundView,
   type StudyRoundMode,
   type StudyRoundScope,
 } from '../../data/workspaceApi'
-import type { WordbookItem } from '../../domain/types'
 import { useKeyboardShortcuts } from '../../hooks/useKeyboardShortcuts'
 import { usePronounce } from '../../hooks/usePronounce'
 
 type SyncedFlashcardRoundProps = {
   wordbookId: string
-  entries: WordbookItem[]
   mode: StudyRoundMode
   scope: StudyRoundScope
   preferences: FlashcardDisplayPreferences
@@ -38,9 +36,17 @@ function scopeLabel(scope: StudyRoundScope, mode: StudyRoundMode) {
   return '今日任务'
 }
 
+function emptyRoundCopy(scope: StudyRoundScope, mode: StudyRoundMode) {
+  if (mode === 'new') return scope === 'ahead'
+    ? { title: '暂无可提前学习的新词', body: '当前词本里的未学习单词已经安排完毕。' }
+    : { title: '今日新词已完成', body: '当前没有需要学习的新词，可以稍后再来。' }
+  if (scope === 'backlog') return { title: '没有历史积压', body: '当前无需清理逾期复习任务。' }
+  if (scope === 'ahead') return { title: '暂无可提前复习的单词', body: '当前单词都还未进入可提前复习的范围。' }
+  return { title: '今日复习已完成', body: '当前没有到期的复习任务。' }
+}
+
 export function SyncedFlashcardRound({
   wordbookId,
-  entries,
   mode,
   scope,
   preferences,
@@ -51,7 +57,7 @@ export function SyncedFlashcardRound({
   onClose,
 }: SyncedFlashcardRoundProps) {
   const api = getWorkspaceApi()
-  const [round, setRound] = useState<StudyRound | null>(null)
+  const [round, setRound] = useState<StudyRoundView | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [resumeDecisionPending, setResumeDecisionPending] = useState(false)
@@ -89,10 +95,7 @@ export function SyncedFlashcardRound({
   }, [start])
 
   const task = round?.queue[0]
-  const current = useMemo(
-    () => entries.find((entry) => entry.id === task?.wordId),
-    [entries, task?.wordId],
-  )
+  const current = round?.currentWord ?? null
   const { pronounce, stop } = usePronounce(current?.word ?? '', .85, accent)
 
   useEffect(() => {
@@ -136,11 +139,12 @@ export function SyncedFlashcardRound({
     try {
       const latest = await api.getStudyRound(roundId)
       setRound(latest)
+      onProgressCommitted?.()
       setError('另一台设备刚刚更新了本轮进度，已切换到最新题目。')
     } catch {
       setError('本轮进度已在另一台设备结束或过期，请重新打开学习。')
     }
-  }, [api])
+  }, [api, onProgressCommitted])
 
   const commit = useCallback(async (response: LearningVerdict | 'correct' | 'incorrect' | 'mastered') => {
     if (!api || !round || !task || busy) return
@@ -246,6 +250,10 @@ export function SyncedFlashcardRound({
         <Button variant="secondary" disabled={busy} onClick={() => { void rotateAndResume() }}>换个词开始</Button>
       </div>
     </div>
+  }
+  if (round.wordIds.length === 0) {
+    const copy = emptyRoundCopy(round.scope, round.mode)
+    return <EmptyState title={copy.title} body={copy.body} action={<Button onClick={onClose}>关闭窗口</Button>} />
   }
   if (round.queue.length === 0 || round.completedAt) {
     const summaryDetails = [
