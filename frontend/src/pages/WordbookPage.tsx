@@ -368,6 +368,7 @@ export function WordbookPage() {
   const fullEntriesRequests = useRef(new Map<string, FullEntriesRequest>())
   const fullEntriesGeneration = useRef(new Map<string, number>())
   const selectedBookIdRef = useRef('')
+  const studyReturnFocusRef = useRef<HTMLElement | null>(null)
   remoteEntriesRef.current = remoteEntries
   const studyRefreshTimer = useRef<number | null>(null)
   const recycleDialogRef = useModalDialog<HTMLElement>({
@@ -748,6 +749,7 @@ export function WordbookPage() {
   }
 
   async function exitStudy() {
+    const returnFocus = studyReturnFocusRef.current
     if (studyRefreshTimer.current !== null) {
       window.clearTimeout(studyRefreshTimer.current)
       studyRefreshTimer.current = null
@@ -757,6 +759,15 @@ export function WordbookPage() {
       refreshMyWordbooks(selectedBook.id),
       refreshSelectedBook(selectedBook.id, 'all'),
     ])
+    // The forced post-session word refresh temporarily disables study actions.
+    // Retry focus after that refresh commits, because focusing a disabled button
+    // during the modal cleanup is ignored by the browser.
+    if (studyReturnFocusRef.current !== returnFocus) return
+    window.requestAnimationFrame(() => {
+      if (studyReturnFocusRef.current !== returnFocus) return
+      studyReturnFocusRef.current = null
+      if (returnFocus?.isConnected) returnFocus.focus()
+    })
   }
 
   function savePreferences(next: WordbookStudyPreferences) {
@@ -1111,6 +1122,7 @@ export function WordbookPage() {
   }
   const openStudy = async (nextMode: StudyMode, scope: StudyRoundScope = 'standard') => {
     const wordbookId = selectedBook.id
+    const returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
     let entries: WorkspaceBook['entries'] | null
     try {
       entries = await ensureFullEntries(wordbookId)
@@ -1118,6 +1130,10 @@ export function WordbookPage() {
       return
     }
     if (!entries || selectedBookIdRef.current !== wordbookId) return
+    // Loading a large book disables the trigger before the modal mounts, which
+    // makes the browser drop focus. Preserve the initiating control explicitly
+    // so the shared dialog hook can restore it when the study window closes.
+    studyReturnFocusRef.current = returnFocus
     // The request resolves before React necessarily commits the state update;
     // derive this one session from its returned payload rather than the old
     // render's empty `activeEntries` snapshot.
@@ -1323,6 +1339,7 @@ export function WordbookPage() {
         preferences={preferences.modes[studyMode]}
         shortcuts={shortcuts}
         accent={pronunciationPreferences.accent}
+        returnFocus={studyReturnFocusRef.current}
         onProgressCommitted={scheduleStudyProgressRefresh}
         onClose={() => void exitStudy()}
       />}
@@ -1684,6 +1701,7 @@ function StudySessionDialog({
   preferences,
   shortcuts,
   accent,
+  returnFocus,
   onProgressCommitted,
   onClose,
 }: {
@@ -1693,6 +1711,7 @@ function StudySessionDialog({
   preferences: FlashcardDisplayPreferences | DictationDisplayPreferences
   shortcuts: StudyShortcutPreferences
   accent: EnglishAccent
+  returnFocus: HTMLElement | null
   onProgressCommitted?: () => void
   onClose: () => void
 }) {
@@ -1700,7 +1719,7 @@ function StudySessionDialog({
   const guardedCloseRef = useRef<() => void>(onClose)
   const requestClose = useCallback(() => guardedCloseRef.current(), [])
   const registerCloseGuard = useCallback((handler: () => void) => { guardedCloseRef.current = handler }, [])
-  const dialogRef = useModalDialog<HTMLElement>({ open: true, onClose: requestClose })
+  const dialogRef = useModalDialog<HTMLElement>({ open: true, onClose: requestClose, returnFocus })
 
   return <div className="workspace-modal-backdrop study-session-backdrop" role="presentation">
     <section ref={dialogRef} className="workspace-study-modal" role="dialog" aria-modal="true" aria-label={`${mode === 'new' ? '新词学习' : mode === 'review' ? '复习巩固' : '听写训练'}悬浮窗口`} tabIndex={-1}>

@@ -100,10 +100,16 @@ function watchPage(page, label, errors) {
     ].some((path) => request.url().endsWith(path));
     // Closing a study surface intentionally tears down its Audio element. If
     // the same-origin pronunciation redirect is still resolving, Chromium
-    // reports that media cancellation as an aborted request.
+    // reports either the original route or its final Youdao URL as aborted.
     const requestUrl = new URL(request.url());
-    const cancelledPronunciation = request.method() === "GET"
-      && /^\/api\/pronunciations\/[^/]+\/audio$/.test(requestUrl.pathname);
+    const youdaoPronunciation = requestUrl.origin === "https://dict.youdao.com"
+      && requestUrl.pathname === "/dictvoice"
+      && requestUrl.searchParams.has("audio")
+      && (requestUrl.searchParams.get("type") === "1" || requestUrl.searchParams.get("type") === "2");
+    const cancelledPronunciation = request.method() === "GET" && (
+      /^\/api\/pronunciations\/[^/]+\/audio$/.test(requestUrl.pathname)
+      || youdaoPronunciation
+    );
     if ((completedMutation || cancelledPronunciation) && request.failure()?.errorText === "net::ERR_ABORTED") return;
     errors.push(`[${label}] requestfailed: ${request.method()} ${request.url()} (${request.failure()?.errorText ?? "unknown"})`);
   });
