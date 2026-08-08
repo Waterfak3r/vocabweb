@@ -10,6 +10,7 @@ import {
 import { FixedWindowRateLimiter, type RateLimiter } from "./http/rate-limit.js";
 import { isChineseSuggestionQuery, type WordSuggestionLookup } from "./providers/local-dictionary.js";
 import { WiktApiProvider } from "./providers/wiktapi.js";
+import { YoudaoPronunciationProvider } from "./providers/youdao.js";
 import { CsvLocalChineseDictionary, type LocalChineseLookup } from "./study/local-dictionary.js";
 import { JsonFileStudyStore, StudyResourceLimitError } from "./study/store.js";
 import {
@@ -244,11 +245,11 @@ export function createApp(options: CreateAppOptions = {}) {
   const pronunciationLookupGb = options.pronunciationLookups?.gb
     ?? options.pronunciationLookup
     ?? options.wordLookup
-    ?? new WordService(new WiktApiProvider({ accent: "gb" }));
+    ?? new WordService(new YoudaoPronunciationProvider({ accent: "gb" }));
   const pronunciationLookupUs = options.pronunciationLookups?.us
     ?? options.pronunciationLookup
     ?? options.wordLookup
-    ?? new WordService(new WiktApiProvider({ accent: "us" }));
+    ?? new WordService(new YoudaoPronunciationProvider({ accent: "us" }));
   const wordSuggestionLookup = options.wordSuggestionLookup ?? {
     async suggest() { return []; },
   };

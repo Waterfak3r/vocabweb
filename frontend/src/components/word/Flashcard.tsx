@@ -1,5 +1,6 @@
 import type { WordbookItem } from '../../domain/types'
 import type { StudyDisplayPreferences } from '../../data/studyPreferences'
+import type { EnglishAccent } from '../../data/pronunciationPreferences'
 import { selectPreferredMeanings } from '../../domain/meaningSelection'
 import { MeaningList } from './MeaningList'
 import { PronounceButton } from './PronounceButton'
@@ -11,6 +12,7 @@ export type FlashcardProps = {
   onFlip: () => void
   onMastered?: () => void
   preferences?: StudyDisplayPreferences
+  accent?: EnglishAccent
 }
 
 export function preferredMeanings(
@@ -29,6 +31,7 @@ export function Flashcard({
   flipped,
   onFlip,
   onMastered,
+  accent,
   preferences = {
     meaningPreference: 'zh',
     showExamples: true,
@@ -75,7 +78,7 @@ export function Flashcard({
       )}
 
       <div className={styles.cardActions}>
-        <PronounceButton word={item.word} />
+        <PronounceButton word={item.word} accent={accent} />
       </div>
     </div>
   )

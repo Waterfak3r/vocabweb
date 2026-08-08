@@ -1,10 +1,12 @@
 import { usePronounce } from '../../hooks/usePronounce'
+import type { EnglishAccent } from '../../data/pronunciationPreferences'
 import { IconButton } from '../ui/IconButton'
 
 export type PronounceButtonProps = {
   word: string
   /** Slower default suits dictation */
   rate?: number
+  accent?: EnglishAccent
   /** Extra accessible context, e.g. "播放 resilient 的发音" */
   label?: string
 }
@@ -28,8 +30,8 @@ function SpeakerGlyph() {
   )
 }
 
-export function PronounceButton({ word, rate, label }: PronounceButtonProps) {
-  const { pronounce, state, statusText } = usePronounce(word, rate)
+export function PronounceButton({ word, rate, accent, label }: PronounceButtonProps) {
+  const { pronounce, state, statusText } = usePronounce(word, rate, accent)
 
   return (
     <span className="pronounce">

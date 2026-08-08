@@ -40,7 +40,7 @@ During development Vite proxies `/api` to Express. Production builds the SPA int
 - `backend/src/study/types.ts` defines the backend domain/store contract; `store.ts` contains domain behavior and compatibility stores; `sqlite-store.ts` supplies production persistence.
 - `backend/src/auth.ts` owns password hashing, session tokens, and cookie utilities; `authorization.ts` maps roles to capabilities.
 - `backend/src/engagement/store.ts` isolates search analytics, feedback, site settings, messages, and message notifications behind an engagement-store interface.
-- `backend/src/words/` contains normalization, provider-facing types, caching, and lookup service logic. `providers/` contains local SQLite and remote WiktApi adapters.
+- `backend/src/words/` contains normalization, provider-facing types, caching, and lookup service logic. `providers/` contains the local SQLite dictionary, the remote WiktAPI definition fallback, and the Youdao pronunciation adapter.
 
 ## Primary Data Flows
 
@@ -51,6 +51,12 @@ During development Vite proxies `/api` to Express. Production builds the SPA int
 3. The word service checks its bounded in-process cache.
 4. The production provider queries the generated local dictionary first and optionally falls back to WiktApi.
 5. The frontend validates the response DTO before exposing it to components.
+
+### Pronunciation Playback
+
+1. The UI starts a same-origin `/api/pronunciations/:word/audio?accent=gb|us` media request inside the playback gesture.
+2. Express selects the requested accent and redirects to the corresponding Youdao pronunciation URL; British uses `type=1` and American uses `type=2`.
+3. If online media cannot play, the frontend falls back to Web Speech with `en-GB` or `en-US`. It binds a system voice only when that exact locale exists, so an opposite-accent voice is not mislabeled as the requested accent.
 
 ### Synced Workspace Data
 

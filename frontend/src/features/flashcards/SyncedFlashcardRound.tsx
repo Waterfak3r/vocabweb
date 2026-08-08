@@ -284,6 +284,7 @@ export function SyncedFlashcardRound({
         }}
         onMastered={() => { void commit('mastered') }}
         preferences={preferences}
+        accent={accent}
       />
       {pendingVerdict ? <div className={`study-answer-feedback ${pendingVerdict}`}>
         <strong>{pendingVerdict === 'vague' ? '已记为模糊' : '已记为不认识'}</strong>

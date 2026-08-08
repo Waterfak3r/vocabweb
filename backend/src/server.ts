@@ -5,6 +5,7 @@ import { loadConfig } from "./config.js";
 import { FixedWindowRateLimiter } from "./http/rate-limit.js";
 import { SqliteEngagementStore } from "./engagement/store.js";
 import { WiktApiProvider } from "./providers/wiktapi.js";
+import { YoudaoPronunciationProvider } from "./providers/youdao.js";
 import { SqliteLocalDictionaryProvider } from "./providers/local-dictionary.js";
 import { FallbackDictionaryProvider } from "./providers/fallback-dictionary.js";
 import { SqliteStudyStore } from "./study/sqlite-store.js";
@@ -21,15 +22,11 @@ const wordLookup = new WordService(provider, {
   cacheTtlMs: config.wordCacheTtlMs,
   cacheMaxEntries: config.wordCacheMaxEntries,
 });
-const pronunciationLookup = new WordService(remoteProvider, {
+const pronunciationLookup = new WordService(new YoudaoPronunciationProvider({ accent: "gb" }), {
   cacheTtlMs: config.wordCacheTtlMs,
   cacheMaxEntries: config.wordCacheMaxEntries,
 });
-const americanPronunciationLookup = new WordService(new WiktApiProvider({
-  baseUrl: config.wiktApiBaseUrl,
-  timeoutMs: config.wiktApiTimeoutMs,
-  accent: "us",
-}), {
+const americanPronunciationLookup = new WordService(new YoudaoPronunciationProvider({ accent: "us" }), {
   cacheTtlMs: config.wordCacheTtlMs,
   cacheMaxEntries: config.wordCacheMaxEntries,
 });

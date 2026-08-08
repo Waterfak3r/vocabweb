@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, type FormEvent } from 'react'
+import type { EnglishAccent } from '../../data/pronunciationPreferences'
 import type { DictationDisplayPreferences } from '../../data/studyPreferences'
 import { selectPreferredMeanings } from '../../domain/meaningSelection'
 import type { DictationGrade, WordbookItem } from '../../domain/types'
@@ -21,6 +22,7 @@ export type DictationPromptProps = {
   currentStreak?: number
   requiredStreak?: number
   preferences?: DictationDisplayPreferences
+  accent?: EnglishAccent
 }
 
 export function spellingCharacters(given: string, expected: string) {
@@ -102,6 +104,7 @@ export function DictationPrompt({
   isLast,
   currentStreak = 0,
   requiredStreak = 3,
+  accent,
   preferences = {
     meaningPreference: 'zh',
     showExamples: true,
@@ -135,6 +138,7 @@ export function DictationPrompt({
           <PronounceButton
             word={item.word}
             rate={0.78}
+            accent={accent}
             label={`播放第 ${item.word} 题发音`}
           />
           <Button variant="secondary" size="sm" onClick={onPlay}>

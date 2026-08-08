@@ -28,6 +28,11 @@ export function SourcesPage() {
         <p>仅当本地词典没有英文释义时查询，不覆盖 Open English WordNet 或离线 Wiktionary 已有义项。</p>
         <a href="https://wiktapi.dev/" target="_blank" rel="noreferrer">访问在线服务</a>
       </article>
+      <article>
+        <h2>有道词典（在线发音）</h2>
+        <p>用于提供明确区分的英式和美式发音音频；音频服务不可用时，应用才回退到浏览器语音合成。</p>
+        <a href="https://dict.youdao.com/" target="_blank" rel="noreferrer">访问在线服务</a>
+      </article>
     </section>
   )
 }

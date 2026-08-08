@@ -31,12 +31,11 @@ export function normalizeSpokenEnglish(value: string): string {
     .trim()
 }
 
-function preferredEnglishVoice(voices: SpeechSynthesisVoice[], accent: EnglishAccent): SpeechSynthesisVoice | undefined {
+export function preferredEnglishVoice(voices: SpeechSynthesisVoice[], accent: EnglishAccent): SpeechSynthesisVoice | undefined {
   const language = accent === 'us' ? 'en-us' : 'en-gb'
-  return voices.find((voice) => voice.lang.toLowerCase() === language && voice.localService)
-    ?? voices.find((voice) => voice.lang.toLowerCase() === language)
-    ?? voices.find((voice) => voice.lang.toLowerCase().startsWith('en-') && voice.localService)
-    ?? voices.find((voice) => voice.lang.toLowerCase().startsWith('en-'))
+  const matchesLanguage = (voice: SpeechSynthesisVoice) => voice.lang.toLowerCase().replace(/_/g, '-') === language
+  return voices.find((voice) => matchesLanguage(voice) && voice.localService)
+    ?? voices.find(matchesLanguage)
 }
 
 export function speakEnglishWord(
