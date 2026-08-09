@@ -1527,7 +1527,7 @@ export class WorkspaceApi {
   commitImportDraft(id: string, resolutions: Record<string, ImportConflictResolution> = {}, mode: 'append' | 'overwrite' = 'append') { return notifyImportDraftsAfter(this.json(`api/my/import-drafts/${encodeURIComponent(id)}/commit`, { method: 'POST', body: JSON.stringify({ mode, resolutions }) }, parseMyWordbook, 120_000)) }
   deleteMyWordbook(id: string) { return invalidateMarketplaceAfter(this.empty(`api/my/wordbooks/${encodeURIComponent(id)}`, { method: 'DELETE' })) }
   restoreMyWordbook(id: string) { return invalidateMarketplaceAfter(this.json(`api/my/wordbooks/${encodeURIComponent(id)}/restore`, { method: 'POST' }, parseMyWordbook)) }
-  listWords(id: string, status?: WordStatus) { const url = new URL(`api/my/wordbooks/${encodeURIComponent(id)}/words`, this.baseUrl); if (status) url.searchParams.set('status', status); return this.list(url, parseWord, 'word list') }
+  listWords(id: string, status?: WordStatus) { const url = new URL(`api/my/wordbooks/${encodeURIComponent(id)}/words`, this.baseUrl); if (status) url.searchParams.set('status', status); return this.list(url, parseWord, 'word list', 120_000) }
   listWordPage(id: string, query: MyWordbookWordsQuery = {}) {
     const url = new URL(`api/my/wordbooks/${encodeURIComponent(id)}/words/page`, this.baseUrl)
     if (query.page !== undefined) url.searchParams.set('page', String(query.page))
@@ -1545,6 +1545,7 @@ export class WorkspaceApi {
         `api/my/wordbooks/${encodeURIComponent(wordbookId)}/words/batch`,
         { method: 'POST', body: JSON.stringify({ action, wordIds: chunk }) },
         (value) => parseBatchWordResult(value, action),
+        120_000,
       )
       result.succeededIds.push(...completed.succeededIds)
       result.failed.push(...completed.failed)
@@ -1630,7 +1631,9 @@ export class WorkspaceApi {
     return this.json('api/account/avatar', { method: 'DELETE' }, parseAuthUser)
   }
   async exportAccount(): Promise<unknown> {
-    const response = await this.fetch(new URL('api/account/export', this.baseUrl), this.requestInit({}))
+    // A full account export can carry tens of megabytes; give it a long timeout
+    // instead of the 8s default so the download is not aborted mid-transfer.
+    const response = await this.fetch(new URL('api/account/export', this.baseUrl), this.requestInit({}, 120_000))
     if (!response.ok) throw await responseError(response)
     try { return await response.json() } catch { throw new Error('Backend response is not valid JSON.') }
   }
