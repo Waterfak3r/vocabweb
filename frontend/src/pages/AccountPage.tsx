@@ -261,7 +261,7 @@ export function AccountPage() {
             <h2 id="account-stats-title" className="sr-only">学习概览</h2>
             {profileLoading ? (
               <div className="account-metrics-loading" role="status" aria-label="正在加载学习概览">
-                <span /><span /><span /><span /><span />
+                <span /><span /><span />
               </div>
             ) : profileError || !profile ? (
               <div className="account-profile-error">
@@ -273,26 +273,27 @@ export function AccountPage() {
                 <div><dt>词书</dt><dd aria-label={`${metricNumber(profile.metrics.wordbookCount)} 本`}>{metricNumber(profile.metrics.wordbookCount)}</dd></div>
                 <div><dt>收录词</dt><dd aria-label={`${metricNumber(profile.metrics.wordCount)} 个`}>{metricNumber(profile.metrics.wordCount)}</dd></div>
                 <div><dt>已学习</dt><dd aria-label={`${metricNumber(profile.metrics.learnedWordCount)} 个`}>{metricNumber(profile.metrics.learnedWordCount)}</dd></div>
-                <div><dt>90天连续</dt><dd data-unit="天" aria-label={`近 90 天连续学习 ${metricNumber(profile.metrics.currentStreak)} 天`}>{metricNumber(profile.metrics.currentStreak)}</dd></div>
-                <div><dt>90天最长</dt><dd data-unit="天" aria-label={`${metricNumber(profile.metrics.longestStreak)} 天`}>{metricNumber(profile.metrics.longestStreak)}</dd></div>
               </dl>
             )}
           </section>
 
-          <AccountActivityHeatmap
-            profile={profile}
-            loading={profileLoading}
-            error={profileError}
-            onRetry={() => setProfileVersion((value) => value + 1)}
-            showError={false}
-          />
-          <AccountRecentActivity
-            items={profile?.recentActivity ?? null}
-            loading={profileLoading}
-            error={profileError}
-            onRetry={() => setProfileVersion((value) => value + 1)}
-            showError={false}
-          />
+          {(profileLoading || profile) && (
+            <>
+              <AccountActivityHeatmap
+                profile={profile}
+                loading={profileLoading}
+                error={profileError}
+                onRetry={() => setProfileVersion((value) => value + 1)}
+              />
+              <AccountRecentActivity
+                items={profile?.recentActivity ?? null}
+                loading={profileLoading}
+                error={profileError}
+                onRetry={() => setProfileVersion((value) => value + 1)}
+                showError={false}
+              />
+            </>
+          )}
 
           <section className="account-settings" id="account-settings" aria-labelledby="account-settings-title">
             <header className="account-settings-header">

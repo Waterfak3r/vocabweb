@@ -28,6 +28,16 @@ function step(message) {
   process.stdout.write(`✓ ${message}\n`);
 }
 
+function shiftDateKey(value, amount) {
+  const [year, month, day] = value.split("-").map(Number);
+  const date = new Date(year, month - 1, day + amount);
+  return [
+    date.getFullYear(),
+    String(date.getMonth() + 1).padStart(2, "0"),
+    String(date.getDate()).padStart(2, "0"),
+  ].join("-");
+}
+
 function findChrome() {
   const candidates = [
     process.env.PLAYWRIGHT_CHROME_PATH,
@@ -278,8 +288,66 @@ async function main() {
     await owner.getByRole("menuitem", { name: "个人资料" }).click();
     await owner.getByRole("heading", { name: "个人资料" }).waitFor();
     await owner.locator(".account-metrics dd").first().waitFor();
-    assert.deepEqual(await owner.locator(".account-metrics dd").allTextContents(), ["1", "1", "0", "0", "0"]);
-    step("个人资料页展示真实词书、词量与 90 天学习统计");
+    assert.deepEqual(await owner.locator(".account-metrics dd").allTextContents(), ["1", "1", "0"]);
+    const dailyView = owner.getByRole("button", { name: "每日视图" });
+    const weeklyView = owner.getByRole("button", { name: "每周视图" });
+    const cumulativeView = owner.getByRole("button", { name: "累计视图" });
+    assert.equal(await dailyView.getAttribute("aria-pressed"), "true");
+    await weeklyView.click();
+    await owner.locator(".account-weekly-chart").waitFor();
+    assert.equal(await weeklyView.getAttribute("aria-pressed"), "true");
+    await cumulativeView.click();
+    await owner.locator(".account-cumulative-chart").waitFor();
+    assert.equal(await cumulativeView.getAttribute("aria-pressed"), "true");
+    await dailyView.click();
+    await owner.locator(".account-heatmap-grid").waitFor();
+    const customRangeButton = owner.getByRole("button", { name: "自定义时间范围" });
+    assert.equal(await customRangeButton.getAttribute("aria-expanded"), "false");
+    await customRangeButton.click();
+    const customRangeForm = owner.locator("#account-activity-custom-range");
+    await customRangeForm.waitFor();
+    assert.equal(await customRangeButton.getAttribute("aria-expanded"), "true");
+    assert.equal(await owner.evaluate(() => document.activeElement?.id), "account-activity-custom-start");
+    if (captureDir) {
+      const activity = owner.locator(".account-activity");
+      await owner.setViewportSize({ width: 1440, height: 900 });
+      await activity.screenshot({ path: join(captureDir, "account-activity-custom-range-desktop-light.png") });
+      await owner.getByRole("button", { name: "切换到黑夜模式" }).click();
+      await owner.waitForFunction(() => document.documentElement.dataset.theme === "dark");
+      await owner.waitForTimeout(220);
+      await activity.screenshot({ path: join(captureDir, "account-activity-custom-range-desktop-dark.png") });
+      await owner.getByRole("button", { name: "切换到白天模式" }).click();
+      await owner.waitForFunction(() => document.documentElement.dataset.theme === "light");
+      await owner.waitForTimeout(220);
+      await owner.setViewportSize({ width: 390, height: 844 });
+      await activity.screenshot({ path: join(captureDir, "account-activity-custom-range-mobile-light.png") });
+      await owner.setViewportSize({ width: 1280, height: 720 });
+    }
+    await owner.keyboard.press("Escape");
+    assert.equal(await customRangeButton.getAttribute("aria-expanded"), "false");
+    await customRangeButton.click();
+    await customRangeForm.waitFor();
+    const customStart = owner.getByLabel("开始日期");
+    const customEnd = owner.getByLabel("结束日期");
+    const minimumActivityDate = await customStart.getAttribute("min");
+    assert.ok(minimumActivityDate);
+    await customStart.fill(minimumActivityDate);
+    await customEnd.fill(shiftDateKey(minimumActivityDate, 13));
+    await customRangeForm.getByRole("button", { name: "应用", exact: true }).click();
+    assert.equal(await customRangeButton.getAttribute("aria-pressed"), "true");
+    await owner.locator(".account-activity-day-detail").waitFor();
+    assert.match((await owner.locator(".account-heatmap-meta > p").textContent()) ?? "", /14 天/);
+    if (captureDir) {
+      const activity = owner.locator(".account-activity");
+      await owner.setViewportSize({ width: 1440, height: 900 });
+      await activity.screenshot({ path: join(captureDir, "account-activity-custom-range-applied-desktop-light.png") });
+      await owner.setViewportSize({ width: 390, height: 844 });
+      await activity.screenshot({ path: join(captureDir, "account-activity-custom-range-applied-mobile-light.png") });
+      await owner.setViewportSize({ width: 1280, height: 720 });
+    }
+    await owner.getByRole("button", { name: "90 天", exact: true }).click();
+    assert.equal(await owner.getByRole("button", { name: "90 天", exact: true }).getAttribute("aria-pressed"), "true");
+    step("个人资料页展示真实学习统计并可切换每日、每周与累计视图");
 
     const avatarInput = owner.getByLabel("选择头像图片");
     const avatarFile = { name: "avatar.png", mimeType: "image/png", buffer: avatarPng };
