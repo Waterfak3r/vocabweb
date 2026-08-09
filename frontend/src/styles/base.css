@@ -4,10 +4,24 @@ body {
   color: var(--ink);
   font-family: var(--font-sans);
   font-size: var(--text-base);
-  line-height: 1.65;
+  line-height: 1.6;
+  letter-spacing: 0.002em;
   font-optical-sizing: auto;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+  transition: background-color 180ms var(--ease-paper), color 180ms var(--ease-paper);
+}
+
+body::before {
+  position: fixed;
+  z-index: 1000;
+  inset: 0;
+  background: url('/textures/paper-grain.svg') repeat;
+  background-size: 11.25rem 11.25rem;
+  content: '';
+  mix-blend-mode: var(--paper-grain-blend);
+  opacity: var(--paper-grain-opacity);
+  pointer-events: none;
 }
 
 @media (max-width: 640px) {
@@ -22,8 +36,11 @@ body {
 h1,
 h2,
 h3 {
-  line-height: 1.2;
+  color: var(--ink-strong);
+  font-family: var(--font-display);
+  line-height: 1.16;
   font-weight: 600;
+  text-wrap: balance;
 }
 
 a {
@@ -32,6 +49,7 @@ a {
 }
 
 a:hover {
+  text-decoration: underline;
   text-underline-offset: 0.2em;
 }
 
@@ -60,4 +78,8 @@ kbd {
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
+}
+
+@media (prefers-contrast: more), print {
+  body::before { display: none; }
 }

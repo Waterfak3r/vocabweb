@@ -58,7 +58,7 @@
   font: inherit;
   font-size: var(--text-sm);
 }
-.workspace-book-tools > div { display: grid; grid-template-columns: 1fr 1fr; gap: .35rem; }
+.workspace-book-tools > div { display: grid; grid-template-columns: minmax(0, 1fr); gap: .35rem; }
 .workspace-sidebar-heading { display: flex; align-items: center; justify-content: space-between; gap: .75rem; margin: 1.65rem .1rem .6rem; }
 .workspace-sidebar-heading h2 { display: flex; align-items: center; gap: .4rem; margin: 0; font-size: .95rem; }
 .workspace-sidebar-heading h2 span { color: var(--muted); font: 600 .68rem var(--font-mono); }
@@ -376,8 +376,11 @@
 .collection-visibility { min-height: 1.7rem; padding: .1rem 1.2rem .1rem .35rem; border: 1px solid var(--rule); border-radius: .3rem; background: var(--input-bg); color: var(--ink); font: inherit; font-size: .7rem; font-weight: 700; cursor: pointer; }
 .collection-visibility:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent); }
 
-/* Dark theme: keep the pastel cover art from glaring against the ink background */
-[data-theme='dark'] .workspace-cover { filter: brightness(.72) saturate(.9); }
+/* Graphite paper: keep pastel cover art from glaring against the charcoal stock. */
+[data-theme='graphite'] .workspace-cover,
+[data-theme='dusk'] .workspace-cover,
+[data-theme='city-pop'] .workspace-cover,
+[data-theme='classic-dark'] .workspace-cover { filter: brightness(.72) saturate(.9); }
 
 /* Synced learning rounds: three-way recall, durable resume, and similar-word choices. */
 .plan-card-extra-actions {
@@ -597,4 +600,134 @@
   .study-answer-feedback { grid-template-columns: 1fr; justify-items: center; text-align: center; }
   .meaning-choice-stage > header { padding-inline: 2.6rem; }
   .meaning-choice-feedback { align-items: stretch; flex-direction: column; }
+}
+
+/* V2 workspace: keep navigation compact and reserve elevation for active work. */
+.workspace-page {
+  grid-template-columns: 16rem minmax(0, 1fr) 21rem;
+  gap: 1.25rem;
+  min-height: calc(100vh - 9rem);
+  margin: -2.75rem auto 0;
+  padding: .5rem 0 1.5rem;
+}
+
+.workspace-page-empty {
+  grid-template-columns: 16rem minmax(0, 1fr);
+}
+
+.workspace-sidebar {
+  position: sticky;
+  top: 6.5rem;
+  min-height: 0;
+  padding: 0 1.5rem 1.25rem 0;
+  border: 0;
+  border-right: 1px solid var(--rule);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.workspace-book-picker {
+  display: block;
+}
+
+.workspace-book-tools,
+.workspace-catalog-group,
+.workspace-recycle { flex: 0 0 auto; }
+
+.workspace-book-list {
+  display: grid;
+  align-content: start;
+  gap: .3rem;
+}
+
+.workspace-create {
+  min-height: 2.75rem;
+  border-radius: var(--radius-sm);
+  box-shadow: none;
+}
+
+.workspace-book-tools > input,
+.workspace-book-tools select {
+  border-radius: var(--radius-sm);
+  background: var(--input-bg);
+}
+
+.workspace-book-list > button { border-radius: var(--radius-sm); }
+
+.workspace-book-list > button.selected {
+  box-shadow: inset 3px 0 var(--accent);
+}
+
+.workspace-recycle { margin-top: 1.5rem; }
+
+.workspace-empty-page {
+  width: min(44rem, 100%);
+  margin: clamp(2rem, 8vh, 6rem) auto;
+  padding: clamp(1.5rem, 4vw, 3rem);
+  border: 0;
+  border-left: 3px solid var(--accent);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.workspace-overview {
+  border: 0;
+  border-radius: var(--radius-md);
+  background: var(--surface-solid);
+  box-shadow: none;
+}
+
+.workspace-plan,
+.recent-study,
+.study-calendar,
+.quick-actions,
+.workspace-data,
+.study-streak {
+  border: 0;
+  border-top: 1px solid var(--rule);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.plan-card {
+  border: 0;
+  border-left: 3px solid var(--accent);
+  border-radius: 0;
+  background: var(--surface-solid);
+}
+
+.quick-actions > button {
+  border-radius: var(--radius-sm);
+  background: transparent;
+}
+
+@media (max-width: 1240px) {
+  .workspace-page {
+    grid-template-columns: 14rem minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 880px) {
+  .workspace-page,
+  .workspace-page-empty {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .workspace-sidebar {
+    position: static;
+    max-height: none;
+    padding: 0 0 1.25rem;
+    border-right: 0;
+    border-bottom: 1px solid var(--rule);
+  }
+}
+
+@media (max-width: 640px) {
+  .workspace-empty-page {
+    margin: 1rem auto 2rem;
+    padding: 1.5rem 1rem;
+  }
 }

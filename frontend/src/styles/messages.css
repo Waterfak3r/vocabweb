@@ -1,5 +1,5 @@
 .messages-page {
-  width: min(58rem, calc(100% - 2rem));
+  width: min(62rem, calc(100% - 2rem));
   margin: 0 auto;
   padding: 4rem 0 7rem;
 }
@@ -12,15 +12,15 @@
 .message-composer {
   display: grid;
   gap: 0.85rem;
-  padding: 1.5rem;
-  border: 1px solid var(--rule);
-  border-radius: var(--radius-lg);
-  background: var(--surface);
-  box-shadow: var(--shadow-soft);
+  padding: 1.4rem 0 1.55rem;
+  border-top: 1px solid var(--rule);
+  border-bottom: 1px solid var(--rule);
 }
 .message-composer-heading, .message-composer-footer { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
 .message-composer-heading strong { font-family: var(--font-serif); font-size: var(--text-lg); }
 .message-composer label { display: grid; gap: 0.35rem; color: var(--muted); font-size: var(--text-sm); }
+.message-composer label > span:not(.sr-only) { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.45rem; }
+.message-composer label small { color: var(--muted); font-size: var(--text-xs); font-weight: 400; }
 .message-composer input, .message-composer textarea, .message-edit textarea { width: 100%; padding: 0.75rem 0.9rem; border: 1px solid var(--input-border); border-radius: var(--radius-md); background: var(--input-bg); color: var(--ink); resize: vertical; }
 .message-composer-footer span { color: var(--muted); font-size: var(--text-xs); }
 .message-composer-footer button, .messages-more { padding: 0.65rem 1.1rem; border-radius: var(--radius-md); background: var(--accent); color: var(--on-accent); }
@@ -51,5 +51,5 @@
   .messages-page { padding-top: 2.5rem; }
   .message-depth-1 { margin-left: 1rem; }
   .message-depth-2 { margin-left: 2rem; }
-  .message-composer { padding: 1rem; }
+  .message-composer { padding-block: 1.1rem 1.25rem; }
 }

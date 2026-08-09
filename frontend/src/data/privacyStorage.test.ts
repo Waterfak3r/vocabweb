@@ -14,7 +14,8 @@ describe('clearBrowserPreferences', () => {
   it('preserves the anonymous data identity while clearing app preferences', () => {
     const storage = new MemoryStorage()
     storage.setItem(STUDY_CLIENT_ID_STORAGE_KEY, 'anonymous-client')
-    storage.setItem('vocab-ielts:theme:v1', 'dark')
+    storage.setItem('vocab-ielts:theme:v1', 'graphite')
+    storage.setItem('vocab-ielts:theme-quick-switch:v1', '["dusk","city-pop"]')
     storage.setItem('vocab-message-nickname-v1', '访客')
     storage.setItem('unrelated', 'keep')
 
@@ -22,6 +23,7 @@ describe('clearBrowserPreferences', () => {
 
     expect(storage.getItem(STUDY_CLIENT_ID_STORAGE_KEY)).toBe('anonymous-client')
     expect(storage.getItem('vocab-ielts:theme:v1')).toBeNull()
+    expect(storage.getItem('vocab-ielts:theme-quick-switch:v1')).toBeNull()
     expect(storage.getItem('vocab-message-nickname-v1')).toBeNull()
     expect(storage.getItem('unrelated')).toBe('keep')
   })
