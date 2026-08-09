@@ -1,6 +1,35 @@
 # Vacabweb 背单词
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![CI](https://github.com/Waterfak3r/vocabweb/actions/workflows/ci.yml/badge.svg)](https://github.com/Waterfak3r/vocabweb/actions/workflows/ci.yml)
+[![Release & Deploy](https://github.com/Waterfak3r/vocabweb/actions/workflows/docker.yml/badge.svg)](https://github.com/Waterfak3r/vocabweb/actions/workflows/docker.yml)
+[![Node](https://img.shields.io/badge/node-%3E%3D22.12-blue)](package.json)
+
 本地优先的查词 + 背单词应用：生产后端预载 OEWN 2025 英文释义与 ECDICT 中文释义，仅在本地英文未命中时使用在线词典补充；在线发音优先播放有道词典提供的英音或美音，音频不可用时才回退浏览器语音。React 前端支持中英文释义切换、单词本、单词卡和听写。Express 后端还提供账号同步、账户资料与改密、学习统计、单词社区与公开楼中楼留言板。
+
+## ✨ 功能亮点
+
+- **本地优先词典** — 预载 OEWN 2025 英文释义与 ECDICT 中文释义的 SQLite 双语词典；本地未命中时才按需回退在线词典（WiktApi），离线也基本可用
+- **双发音轨道** — 有道英音 / 美音在线发音，失败自动回退浏览器语音合成
+- **自适应学习** — 单词卡（自评 / 释义选择）与听写训练，基于熟练度阶梯的复习间隔与每日计划
+- **账号同步** — scrypt 密码、HttpOnly 会话 Cookie、匿名数据合并、头像、改密、全量数据导出
+- **学习统计** — 学习概览、活跃日历、连续天数、复习队列
+- **单词社区** — 词书市场（公开 / 邀请码 / 私密）、收藏与按周趋势排序、协作修订与贡献审核、楼中楼留言板
+- **内容寻址去重** — 单词内容以 SHA-256 内容哈希归一化存储，词书、导入草稿与账号导出共享同一份字典条目
+- **单二进制部署** — 后端进程同时托管 API 与前端静态页，Node 直跑或 Docker + Caddy 自动 HTTPS
+
+## 📑 目录
+
+- [目录结构](#目录结构)
+- [快速开始](#快速开始)
+- [部署](#部署)
+  - [Node 直跑](#方式一node-直跑任意-osnode-2212--24x)
+  - [Docker](#方式二docker推荐用于服务器)
+  - [环境变量](#环境变量)
+  - [管理员初始化](#管理员初始化)
+  - [数据备份](#数据备份)
+- [校验](#校验)
+- [更多文档](#更多文档)
 
 ## 目录结构
 
@@ -141,3 +170,11 @@ npm run test:e2e:community-account
 - [docs/api.md](docs/api.md) — API 参考
 - [docs/database.md](docs/database.md) — 数据库设计
 - [docs/development.md](docs/development.md) — 开发与 E2E 流程
+
+## 参与贡献
+
+欢迎提交 issue 与 PR。开发环境、E2E 与编码约定见 [docs/development.md](docs/development.md) 与 [CONTRIBUTING.md](CONTRIBUTING.md)。
+
+## 许可
+
+[MIT](LICENSE)
