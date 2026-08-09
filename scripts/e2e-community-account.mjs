@@ -532,7 +532,10 @@ async function main() {
     await studyTrigger.click();
     const studyDialog = owner.getByRole("dialog", { name: "新词学习悬浮窗口" });
     await studyDialog.waitFor();
-    assert.equal(await studyDialog.evaluate((dialog) => dialog.contains(document.activeElement)), true);
+    await owner.waitForFunction(
+      (dialog) => dialog.contains(document.activeElement),
+      await studyDialog.elementHandle(),
+    );
     await studyDialog.getByRole("button", { name: "关闭学习窗口" }).focus();
     await owner.keyboard.press("Shift+Tab");
     assert.equal(await studyDialog.evaluate((dialog) => dialog.contains(document.activeElement)), true);
