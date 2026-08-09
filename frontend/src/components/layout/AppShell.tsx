@@ -25,7 +25,7 @@ export function AppShell() {
         <SiteHeader />
         {persistFailed && (
           <p className="storage-warning" role="alert">
-            本地存储不可用，最近的更改不会被保存——请检查浏览器隐私模式或存储空间。
+            本地存储不可用，最近的更改不会被保存。请检查浏览器隐私模式或存储空间。
           </p>
         )}
         <main

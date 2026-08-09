@@ -1,71 +1,96 @@
-/* WeCreate Vocab · Marginalia — design tokens */
+/* WeCreate Vocab v2: quiet reference-desk design tokens */
+
+@font-face {
+  font-family: 'Vacab Source Han Serif';
+  src: url('/fonts/source-han-serif-cn-ui-regular.woff') format('woff');
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Vacab Source Han Serif';
+  src: url('/fonts/source-han-serif-cn-ui-semibold.woff') format('woff');
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+}
+
 :root {
   color-scheme: light;
 
-  /* Paper & ink */
-  --bg: #fdf9f4;
-  --bg-glow: radial-gradient(circle at 50% -15%, #fffefa 0, rgba(255, 254, 250, 0.72) 34%, transparent 64%);
-  --surface: rgba(255, 253, 250, 0.88);
-  --surface-solid: #fffdfa;
-  --ink: #0d2238;
-  --muted: #687381;
-  --rule: #e7ded2;
+  /* Paper: warm stock, graphite ink, one restrained vermilion accent. */
+  --bg: #f1eee7;
+  --bg-glow: none;
+  --surface: #e7e3da;
+  --surface-solid: #faf8f2;
+  --surface-raised: #fffdf7;
+  --surface-sunken: #e1ddd3;
+  --ink: #25231f;
+  --ink-strong: #14130f;
+  --muted: #6b675f;
+  --rule: #d0cbc0;
 
-  /* Cambridge blue — the only brand accent */
-  --accent: #0d385b;
-  --accent-hover: #092c49;
-  --accent-strong: #0d385b;
-  --accent-soft: #e5eef4;
-  --on-accent: #fdf9f4;
-  --gold: #af9064;
-  --gold-strong: #7a5f33;
-  --gold-soft: #f4ede2;
+  --accent: #a84a32;
+  --accent-hover: #8d3c29;
+  --accent-strong: #923e2a;
+  --accent-soft: #ecdcd4;
+  --on-accent: #fffaf4;
+  --gold: #a84a32;
+  --gold-strong: #923e2a;
+  --gold-soft: #ecdcd4;
 
-  /* Semantic — result states only, never brand */
-  --success: #2f5d50;
-  --success-soft: #dce8e1;
-  --danger: #8b3a2f;
-  --danger-soft: #f0ddd7;
+  /* Semantic colors are reserved for result states. */
+  --success: #38684d;
+  --success-soft: #dce8df;
+  --danger: #9b3c35;
+  --danger-soft: #efddda;
 
   /* Controls */
-  --input-bg: #ffffff;
-  --input-border: #c5ccd4;
-  --hover-bg: #f7f5f1;
-  --track: #ece7de;
+  --input-bg: #fbf9f3;
+  --input-border: #c2bdb2;
+  --hover-bg: #e8e4db;
+  --track: #dcd7cd;
+
+  /* A fixed rasterized grain tile prevents the interface feeling digitally flat. */
+  --paper-grain-opacity: 0.09;
+  --paper-grain-blend: multiply;
 
   /* Type */
-  --font-serif: 'Source Serif 4 Variable', 'Source Serif 4', 'Noto Serif SC', 'Songti SC', 'SimSun', serif;
+  --font-display: 'Vacab Source Han Serif', 'Source Serif 4 Variable', 'Noto Serif SC', 'Songti SC', serif;
+  --font-serif: var(--font-display);
   --font-sans: 'Source Sans 3 Variable', 'Source Sans 3', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
   --font-mono: 'IBM Plex Mono', ui-monospace, 'Cascadia Mono', Consolas, monospace;
 
   --text-xs: 0.75rem;
-  --text-sm: 0.8125rem;
+  --text-sm: 0.875rem;
   --text-base: 1rem;
   --text-md: 1.125rem;
   --text-lg: 1.375rem;
   --text-xl: 1.75rem;
   --text-2xl: 2.5rem;
-  --text-3xl: clamp(2.5rem, 6vw, 3.5rem);
+  --text-3xl: clamp(2.75rem, 6vw, 4.25rem);
 
   /* Chrome */
-  --radius-sm: 4px;
-  --radius-md: 8px;
-  --radius-lg: 12px;
-  --shadow-soft: 0 2px 8px rgba(39, 31, 20, 0.05), 0 10px 24px rgba(39, 31, 20, 0.025);
-  --shadow-modal: 0 1.4rem 4rem rgba(13, 39, 60, 0.24);
+  --radius-sm: 3px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+  --shadow-soft: 0 1px 1px rgb(24 28 22 / 5%), 0 12px 30px rgb(24 28 22 / 7%);
+  --shadow-modal: 0 1.5rem 4.5rem rgb(24 28 22 / 20%);
+  --shadow-strong: var(--shadow-modal);
 
   /* Reading measure */
-  --page-width: 96.25rem;
+  --page-width: 90rem;
 
   /* Motion */
   --ease-paper: cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 @media (min-width: 901px) {
-  /* 75% desktop density without CSS zoom/transform; mobile keeps the 16px root. */
+  /* Keep the original compact desktop rhythm without browser zoom or transforms. */
   html { font-size: 12px; }
+
   :root {
-    /* Preserve readable 12–14px supporting/body copy while compacting geometry. */
     --text-xs: 1rem;
     --text-sm: 1.083rem;
     --text-base: 1.167rem;
@@ -77,15 +102,187 @@
   }
 }
 
-/* Ink dark — the same desk at night, lamplight on dark navy */
-[data-theme='dark'] {
+/* Graphite paper: warm charcoal stock rather than a conventional dark mode. */
+[data-theme='graphite'] {
+  color-scheme: dark;
+
+  --bg: #191916;
+  --surface: #22221e;
+  --surface-solid: #282722;
+  --surface-raised: #302e28;
+  --surface-sunken: #131310;
+  --ink: #e6e1d6;
+  --ink-strong: #f4efe4;
+  --muted: #aaa59a;
+  --rule: #444139;
+
+  --accent: #c66e4f;
+  --accent-hover: #da8060;
+  --accent-strong: #e29a7d;
+  --accent-soft: #3d2a22;
+  --on-accent: #1d100b;
+  --gold: #c66e4f;
+  --gold-strong: #e29a7d;
+  --gold-soft: #3d2a22;
+
+  --success: #83b18d;
+  --success-soft: #233127;
+  --danger: #e28a7e;
+  --danger-soft: #3e2420;
+
+  --input-bg: #1d1d19;
+  --input-border: #4e4a41;
+  --hover-bg: #2b2a24;
+  --track: #35332c;
+
+  --paper-grain-opacity: 0.21;
+  --paper-grain-blend: soft-light;
+
+  --shadow-soft: 0 1px 0 rgb(255 255 255 / 3%), 0 18px 40px rgb(5 4 2 / 24%);
+  --shadow-modal: 0 1.5rem 5rem rgb(5 4 2 / 58%);
+  --shadow-strong: var(--shadow-modal);
+}
+
+/* Dusk: aubergine shadows with the last coral light of the day. */
+[data-theme='dusk'] {
+  color-scheme: dark;
+
+  --bg: #211821;
+  --bg-glow: radial-gradient(circle at 50% -12%, #583746 0, rgb(88 55 70 / 48%) 31%, transparent 66%);
+  --surface: #2b202b;
+  --surface-solid: #322532;
+  --surface-raised: #3a2a39;
+  --surface-sunken: #181117;
+  --ink: #f1e4d5;
+  --ink-strong: #fff3e4;
+  --muted: #bfa7a7;
+  --rule: #57404f;
+
+  --accent: #d68161;
+  --accent-hover: #ec9671;
+  --accent-strong: #efad88;
+  --accent-soft: #4b2c32;
+  --on-accent: #241316;
+  --gold: #d8aa68;
+  --gold-strong: #edc680;
+  --gold-soft: #453526;
+
+  --success: #8ab49a;
+  --success-soft: #28372d;
+  --danger: #ef8f82;
+  --danger-soft: #492827;
+
+  --input-bg: #261c27;
+  --input-border: #684c60;
+  --hover-bg: #392a37;
+  --track: #493544;
+
+  --paper-grain-opacity: 0.12;
+  --paper-grain-blend: soft-light;
+
+  --shadow-soft: 0 1px 0 rgb(255 231 213 / 4%), 0 18px 42px rgb(17 8 15 / 30%);
+  --shadow-modal: 0 1.5rem 5rem rgb(15 7 13 / 62%);
+  --shadow-strong: var(--shadow-modal);
+}
+
+/* City Pop: midnight waterfront, coral neon, and sea-glass signage. */
+[data-theme='city-pop'] {
+  color-scheme: dark;
+
+  --bg: #101b35;
+  --bg-glow:
+    radial-gradient(circle at 82% -14%, rgb(233 111 136 / 30%) 0, transparent 46%),
+    radial-gradient(circle at 12% -8%, rgb(83 191 195 / 22%) 0, transparent 42%);
+  --surface: #172642;
+  --surface-solid: #1c2e4d;
+  --surface-raised: #23395b;
+  --surface-sunken: #0b1428;
+  --ink: #f5eadc;
+  --ink-strong: #fff8ec;
+  --muted: #a9bdd0;
+  --rule: #344e6d;
+
+  --accent: #e96f88;
+  --accent-hover: #fa8299;
+  --accent-strong: #ff9eb0;
+  --accent-soft: #41263f;
+  --on-accent: #1d1020;
+  --gold: #62c3c0;
+  --gold-strong: #84d6d2;
+  --gold-soft: #173b49;
+
+  --success: #76c8ad;
+  --success-soft: #173b39;
+  --danger: #ff9a91;
+  --danger-soft: #47283a;
+
+  --input-bg: #12213c;
+  --input-border: #426080;
+  --hover-bg: #233b5d;
+  --track: #2b4565;
+
+  --paper-grain-opacity: 0.07;
+  --paper-grain-blend: soft-light;
+
+  --shadow-soft: 0 1px 0 rgb(133 221 220 / 4%), 0 20px 46px rgb(4 8 23 / 34%);
+  --shadow-modal: 0 1.5rem 5rem rgb(4 8 23 / 68%);
+  --shadow-strong: var(--shadow-modal);
+}
+
+/* Original pre-redesign light palette, including its soft blue radial glow. */
+[data-theme='classic-light'] {
+  color-scheme: light;
+
+  --bg: #fdf9f4;
+  --bg-glow: radial-gradient(circle at 50% -15%, #fffefa 0, rgb(255 254 250 / 72%) 34%, transparent 64%);
+  --surface: rgb(255 253 250 / 88%);
+  --surface-solid: #fffdfa;
+  --surface-raised: #ffffff;
+  --surface-sunken: #f4ede2;
+  --ink: #0d2238;
+  --ink-strong: #081a2d;
+  --muted: #687381;
+  --rule: #e7ded2;
+
+  --accent: #0d385b;
+  --accent-hover: #092c49;
+  --accent-strong: #0d385b;
+  --accent-soft: #e5eef4;
+  --on-accent: #fdf9f4;
+  --gold: #af9064;
+  --gold-strong: #7a5f33;
+  --gold-soft: #f4ede2;
+
+  --success: #2f5d50;
+  --success-soft: #dce8e1;
+  --danger: #8b3a2f;
+  --danger-soft: #f0ddd7;
+
+  --input-bg: #ffffff;
+  --input-border: #c5ccd4;
+  --hover-bg: #f7f5f1;
+  --track: #ece7de;
+
+  --paper-grain-opacity: 0;
+  --paper-grain-blend: normal;
+
+  --shadow-soft: 0 2px 8px rgb(39 31 20 / 5%), 0 10px 24px rgb(39 31 20 / 2.5%);
+  --shadow-modal: 0 1.4rem 4rem rgb(13 39 60 / 24%);
+  --shadow-strong: var(--shadow-modal);
+}
+
+/* Original pre-redesign dark palette: lamplight on deep navy. */
+[data-theme='classic-dark'] {
   color-scheme: dark;
 
   --bg: #0c1622;
-  --bg-glow: radial-gradient(circle at 50% -15%, #152a40 0, rgba(21, 42, 64, 0.55) 34%, transparent 64%);
-  --surface: rgba(23, 38, 55, 0.88);
+  --bg-glow: radial-gradient(circle at 50% -15%, #152a40 0, rgb(21 42 64 / 55%) 34%, transparent 64%);
+  --surface: rgb(23 38 55 / 88%);
   --surface-solid: #172638;
+  --surface-raised: #1d3046;
+  --surface-sunken: #08111b;
   --ink: #eae5d9;
+  --ink-strong: #f7f2e7;
   --muted: #95a4b4;
   --rule: #2b4059;
 
@@ -108,6 +305,10 @@
   --hover-bg: #1b3047;
   --track: #27394e;
 
-  --shadow-soft: 0 2px 8px rgba(0, 0, 0, 0.45), 0 10px 24px rgba(0, 0, 0, 0.35);
-  --shadow-modal: 0 1.4rem 4rem rgba(0, 0, 0, 0.55);
+  --paper-grain-opacity: 0;
+  --paper-grain-blend: normal;
+
+  --shadow-soft: 0 2px 8px rgb(0 0 0 / 45%), 0 10px 24px rgb(0 0 0 / 35%);
+  --shadow-modal: 0 1.4rem 4rem rgb(0 0 0 / 55%);
+  --shadow-strong: var(--shadow-modal);
 }

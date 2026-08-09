@@ -186,29 +186,11 @@ export function HomePage() {
     <section className="page" aria-labelledby="home-title">
       <div className="home-lede">
         <div className="home-copy">
-          <div className="home-title-row">
-            <svg className="quill-mark" viewBox="0 0 48 56" aria-hidden="true">
-              <path d="M40.5 3.5C27.2 7.5 15.6 18.6 11 34.7l-7 13.8 13.8-7C33.5 36.7 44.8 25 48.5 11.6c.8-2.9-1.4-8.9-8-8.1Z" />
-              <path d="M9.5 40.5 24 42.2M13 34.4l7.1 7.2" />
-              <path d="M16 46.1 6 50.5h13.3" />
-            </svg>
-            <div>
-              <h1 className="home-title" id="home-title">
-                按自己的方式背单词
-              </h1>
-              <p className="home-subtitle">查词、收藏、复习，按你的节奏来</p>
-            </div>
-          </div>
+          <h1 className="home-title" id="home-title">
+            按自己的方式背单词
+          </h1>
+          <p className="home-subtitle">查词、收藏、复习，按你的节奏来</p>
         </div>
-        <svg className="book-sketch" viewBox="0 0 320 150" aria-hidden="true">
-          <g fill="none" stroke="currentColor" strokeWidth="1.15">
-            <path d="M28 45c46-15 79-3 125 30v59c-42-25-79-38-125-24z" />
-            <path d="M292 45c-46-15-79-3-139 30v59c49-25 93-38 139-24z" />
-            <path d="M153 75v59M36 53c41-10 72 2 117 28M284 53c-41-10-78 2-131 28" />
-            <path d="M253 23 213 111l12 5 42-86zM213 111l-4 17 16-12" />
-            <path d="M258 27l8 4M44 118c44-2 76 7 109 23M276 118c-47-2-82 7-123 23" />
-          </g>
-        </svg>
       </div>
 
       <div className="search-panel">
@@ -305,7 +287,7 @@ export function HomePage() {
         </form>
 
         <div className="chip-row" aria-label="近 7 天热门搜索">
-          <span className="chip-label" aria-hidden="true">♨&nbsp; 近 7 天热门</span>
+          <span className="chip-label">近 7 天热门</span>
           {popular.map(({ word, count, trend }) => (
             <button
               key={word}

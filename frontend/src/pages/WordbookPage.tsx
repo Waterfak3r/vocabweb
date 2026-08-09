@@ -141,7 +141,7 @@ const WORD_LEVEL_STATS = [
 
 function formatActivityTime(value: string) {
   const date = new Date(value)
-  return Number.isNaN(date.getTime()) ? '—' : date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+  return Number.isNaN(date.getTime()) ? '暂无' : date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
 }
 
 // 结果 column speaks the ladder's vocabulary: successful study shows the proficiency
@@ -181,8 +181,8 @@ function toRecentStudyRows(
     return {
       id: activity.id,
       word: activity.word,
-      pos: meaning?.pos || (entriesLoaded ? '—' : '待加载'),
-      definition: meaning?.definition || (entriesLoaded ? '—' : '开始学习后显示释义'),
+      pos: meaning?.pos || (entriesLoaded ? '暂无' : '待加载'),
+      definition: meaning?.definition || (entriesLoaded ? '暂无' : '开始学习后显示释义'),
       ...activityResult(activity),
       time: formatActivityTime(activity.occurredAt),
     }
@@ -1559,7 +1559,7 @@ function StudySettingsDialog({
     }
     const parsed = parseReviewSchedule(scheduleDraft)
     if (!parsed) {
-      setScheduleError('各间隔需为 1–3650 天，并满足：初识 ≤ 熟悉 ≤ 掌握 ≤ 精通 ≤ 最长间隔，答错回访 ≤ 最长间隔。')
+      setScheduleError('各间隔需为 1 到 3650 天，并满足：初识 ≤ 熟悉 ≤ 掌握 ≤ 精通 ≤ 最长间隔，答错回访 ≤ 最长间隔。')
       return
     }
     setScheduleSaving(true)

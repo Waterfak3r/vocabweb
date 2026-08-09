@@ -25,7 +25,7 @@ const POS_ABBREVIATIONS: Record<string, string> = {
   interjection: 'excl.',
   numeral: 'num.',
   article: 'art.',
-  unknown: '—',
+  unknown: '暂无',
 }
 
 export function PosBadge({ pos }: { pos: string }) {

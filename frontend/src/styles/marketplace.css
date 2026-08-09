@@ -138,6 +138,182 @@
 .collection-visibility-warning a,
 .visibility-hint a { color: var(--accent-strong); font-weight: 700; text-decoration: underline; }
 
-/* Dark theme: dim the pastel cover art and hero decoration */
-[data-theme='dark'] .book-cover { filter: brightness(.72) saturate(.9); }
-[data-theme='dark'] .hero-books { opacity: .3; }
+/* Graphite paper: dim pastel cover art against the charcoal stock. */
+[data-theme='graphite'] .book-cover,
+[data-theme='dusk'] .book-cover,
+[data-theme='city-pop'] .book-cover,
+[data-theme='classic-dark'] .book-cover { filter: brightness(.72) saturate(.9); }
+[data-theme='graphite'] .hero-books,
+[data-theme='dusk'] .hero-books,
+[data-theme='city-pop'] .hero-books,
+[data-theme='classic-dark'] .hero-books { opacity: .3; }
+
+/* V2 marketplace: catalog first, chrome second. */
+.marketplace-page {
+  gap: 2rem;
+  margin-top: 0;
+  padding-bottom: 3rem;
+}
+
+.marketplace-hero {
+  min-height: 0;
+  padding: 0 0 2rem;
+  overflow: visible;
+  border-bottom: 1px solid var(--rule);
+}
+
+.marketplace-hero h1 { font-size: clamp(2.6rem, 4vw, 4.5rem); }
+
+.marketplace-tools { align-items: stretch; }
+
+.market-search {
+  border-radius: var(--radius-sm);
+  box-shadow: none;
+}
+
+.market-search button,
+.market-primary,
+.market-secondary {
+  border-radius: var(--radius-sm);
+  box-shadow: none;
+}
+
+.hero-books { display: none; }
+
+.marketplace-layout {
+  grid-template-columns: minmax(15rem, 17rem) minmax(0, 1fr);
+  gap: clamp(1.5rem, 2.5vw, 3rem);
+}
+
+.market-filter {
+  position: sticky;
+  top: 6.5rem;
+  padding: 0 1.5rem 1.5rem 0;
+  border: 0;
+  border-right: 1px solid var(--rule);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.market-filter-count {
+  height: auto;
+  min-width: 0;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+}
+
+.market-content {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.category-tabs {
+  gap: 0;
+  border-bottom: 1px solid var(--rule);
+}
+
+.category-tabs button {
+  min-height: 3rem;
+  padding-inline: 0.8rem;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
+}
+
+.category-tabs button.active {
+  border-color: var(--accent);
+  background: transparent;
+  color: var(--accent-strong);
+}
+
+.view-controls select,
+.view-controls button { border-radius: var(--radius-sm); }
+
+.market-book-grid {
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
+.market-book-card,
+.market-book-card:nth-child(n + 5) {
+  grid-template-columns: 5rem minmax(0, 1fr);
+  min-height: 11.5rem;
+  padding: 0.75rem;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: var(--surface-solid);
+  box-shadow: none;
+}
+
+.market-book-card .book-cover {
+  width: 4rem;
+  height: 6.9rem;
+}
+
+.market-book-card .book-cover span { font-size: 1rem; }
+
+.market-card-body { padding: 0.05rem 0 0.05rem 0.25rem; }
+.market-card-body h2 { margin-top: 0.25rem; font-size: 1rem; }
+.market-card-body > p {
+  display: -webkit-box;
+  min-height: 0;
+  margin-top: 0.25rem;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.market-card-body > p:empty { display: none; }
+.market-card-body small { margin-top: 0.45rem; }
+.market-card-actions { gap: 0.35rem; margin-top: auto; padding-top: 0.45rem; }
+.join-book { flex: 0 0 auto; padding-inline: 0.65rem; white-space: nowrap; }
+
+.market-book-card.is-focused { box-shadow: inset 0 0 0 2px var(--accent); }
+
+.mini-collection {
+  padding: 1.25rem 0 0;
+  border: 0;
+  border-top: 1px solid var(--rule);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.mini-collection article {
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: var(--surface-solid);
+}
+
+@media (max-width: 880px) {
+  .marketplace-layout { grid-template-columns: minmax(0, 1fr); }
+
+  .market-filter {
+    position: static;
+    padding: 1rem 0;
+    border-right: 0;
+    border-bottom: 1px solid var(--rule);
+  }
+}
+
+@media (max-width: 640px) {
+  .marketplace-page { gap: 1.5rem; }
+  .marketplace-hero { padding-bottom: 1.5rem; }
+  .marketplace-hero h1 { font-size: clamp(2.35rem, 13vw, 3.5rem); }
+  .market-filter { padding-inline: 0; }
+  .market-content { padding: 0; }
+  .category-tabs button { min-height: 2.75rem; }
+  .market-book-card,
+  .market-book-card:nth-child(n + 5) {
+    grid-template-columns: 4.5rem minmax(0, 1fr);
+    min-height: 10.5rem;
+    padding: 0.75rem;
+  }
+  .market-book-card .book-cover { width: 3.7rem; height: 6.3rem; }
+}

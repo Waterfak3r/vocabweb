@@ -101,8 +101,8 @@ export function MessagesPage() {
           <strong>{replying ? `回复 ${replying.author}` : user ? `以 ${user.username} 留言` : '写下你的留言'}</strong>
           {replying && <button type="button" onClick={() => setReplying(undefined)}>取消回复</button>}
         </div>
-        {!authLoading && !user && <label>昵称<input value={nickname} minLength={2} maxLength={30} onChange={(event) => setNickname(event.target.value)} placeholder="2–30 个字符" /></label>}
-        <label>联系方式 <small>选填，仅站长可见</small><input value={contact} maxLength={200} onChange={(event) => setContact(event.target.value)} placeholder="邮箱、QQ 或其他联系方式" /></label>
+        {!authLoading && !user && <label>昵称<input value={nickname} minLength={2} maxLength={30} onChange={(event) => setNickname(event.target.value)} placeholder="2 到 30 个字符" /></label>}
+        <label><span>联系方式 <small>选填，仅站长可见</small></span><input value={contact} maxLength={200} onChange={(event) => setContact(event.target.value)} placeholder="邮箱、QQ 或其他联系方式" /></label>
         <label>
           <span className="sr-only">留言内容</span>
           <textarea value={content} maxLength={1000} rows={5} onChange={(event) => setContent(event.target.value)} placeholder={replying ? `回复 @${replying.author}` : '欢迎提出建议，也可以聊聊你的学习体验。'} />
