@@ -169,9 +169,13 @@ async function publish(page, visibility, title) {
 }
 
 async function openAuth(page, action) {
-  await page.getByRole("button", { name: "账号", exact: true }).click();
+  await openAccountMenu(page);
   await page.getByRole("menuitem", { name: action, exact: true }).click();
   return page.getByRole("dialog", { name: action });
+}
+
+async function openAccountMenu(page) {
+  await page.getByRole("button", { name: "打开账号菜单", exact: true }).click();
 }
 
 async function signIn(page, passwordValue = password) {
@@ -179,7 +183,7 @@ async function signIn(page, passwordValue = password) {
   await dialog.getByLabel("用户名").fill(username);
   await dialog.getByLabel("密码", { exact: true }).fill(passwordValue);
   await dialog.getByRole("button", { name: "登录", exact: true }).click();
-  await page.getByRole("button", { name: "账号", exact: true }).click();
+  await openAccountMenu(page);
   await page.getByText(username, { exact: true }).waitFor();
   await page.keyboard.press("Escape");
 }
@@ -238,6 +242,27 @@ async function main() {
     await owner.getByRole("heading", { level: 1 }).waitFor();
     step("无效地址保留原路径并展示可恢复的 404 页面");
 
+    await owner.getByRole("link", { name: "账号", exact: true }).click();
+    await owner.waitForURL((url) => url.pathname === "/account");
+    await owner.getByRole("heading", { name: "账户资料" }).waitFor();
+    assert.equal(await owner.locator("label.account-style-option").count(), 6);
+    await owner.getByLabel("快切风格一").selectOption("dusk");
+    await owner.getByLabel("快切风格二").selectOption("city-pop");
+    await owner.locator('label.account-style-option', { hasText: "黄昏" }).click();
+    await owner.waitForFunction(() => document.documentElement.dataset.theme === "dusk");
+    await owner.getByRole("button", { name: "切换到City Pop风格" }).click();
+    await owner.waitForFunction(() => document.documentElement.dataset.theme === "city-pop");
+    assert.equal(await owner.locator('label.account-style-option', { hasText: "City Pop" }).locator('input').isChecked(), true);
+    assert.equal(
+      await owner.evaluate(() => localStorage.getItem("vocab-ielts:theme-quick-switch:v1")),
+      JSON.stringify(["dusk", "city-pop"]),
+    );
+    await owner.getByLabel("快切风格一").selectOption("paper");
+    await owner.getByLabel("快切风格二").selectOption("graphite");
+    await owner.locator('label.account-style-option', { hasText: "纸白" }).click();
+    await owner.goto("/");
+    step("匿名用户可从账号入口配置两套导航快切风格");
+
     const created = await api(owner, "/api/my/wordbooks", {
       method: "POST",
       body: JSON.stringify({
@@ -275,7 +300,7 @@ async function main() {
       await owner.setViewportSize({ width: 1280, height: 720 });
     }
     await register.getByRole("button", { name: "注册", exact: true }).click();
-    await owner.getByRole("button", { name: "账号", exact: true }).click();
+    await openAccountMenu(owner);
     await owner.getByText(username, { exact: true }).waitFor();
     await owner.keyboard.press("Escape");
     const afterRegister = await api(owner, "/api/my/wordbooks");
@@ -284,11 +309,39 @@ async function main() {
     await owner.getByText(sourceTitle, { exact: true }).first().waitFor();
     step("注册成功，匿名词本完整保留");
 
-    await owner.getByRole("button", { name: "账号", exact: true }).click();
-    await owner.getByRole("menuitem", { name: "个人资料" }).click();
+    await owner.getByRole("link", { name: "账号", exact: true }).click();
+    await owner.waitForURL((url) => url.pathname === "/account");
     await owner.getByRole("heading", { name: "个人资料" }).waitFor();
     await owner.locator(".account-metrics dd").first().waitFor();
     assert.deepEqual(await owner.locator(".account-metrics dd").allTextContents(), ["1", "1", "0"]);
+    const graphiteStyle = owner.locator('label.account-style-option', { hasText: "石墨纸" });
+    const paperStyle = owner.locator('label.account-style-option', { hasText: "纸白" });
+    const duskStyle = owner.locator('label.account-style-option', { hasText: "黄昏" });
+    const cityPopStyle = owner.locator('label.account-style-option', { hasText: "City Pop" });
+    const classicLightStyle = owner.locator('label.account-style-option', { hasText: "原版白天" });
+    const classicDarkStyle = owner.locator('label.account-style-option', { hasText: "原版黑夜" });
+    await duskStyle.click();
+    await owner.waitForFunction(() => document.documentElement.dataset.theme === "dusk");
+    await cityPopStyle.click();
+    await owner.waitForFunction(() => document.documentElement.dataset.theme === "city-pop");
+    await classicLightStyle.click();
+    await owner.waitForFunction(() => document.documentElement.dataset.theme === "classic-light");
+    await classicDarkStyle.click();
+    await owner.waitForFunction(() => document.documentElement.dataset.theme === "classic-dark");
+    await paperStyle.click();
+    await owner.waitForFunction(() => document.documentElement.dataset.theme === "paper");
+    await owner.getByLabel("快切风格一").selectOption("dusk");
+    await owner.getByLabel("快切风格二").selectOption("city-pop");
+    await owner.getByRole("button", { name: "切换到黄昏风格" }).click();
+    await owner.waitForFunction(() => document.documentElement.dataset.theme === "dusk");
+    await owner.getByRole("button", { name: "切换到City Pop风格" }).click();
+    await owner.waitForFunction(() => document.documentElement.dataset.theme === "city-pop");
+    await owner.getByLabel("快切风格一").selectOption("paper");
+    await owner.getByLabel("快切风格二").selectOption("graphite");
+    await paperStyle.click();
+    await owner.waitForFunction(() => document.documentElement.dataset.theme === "paper");
+    assert.equal(await paperStyle.locator('input').isChecked(), true);
+    step("账户页可选择六套风格并指定两套导航快切风格");
     const dailyView = owner.getByRole("button", { name: "每日视图" });
     const weeklyView = owner.getByRole("button", { name: "每周视图" });
     const cumulativeView = owner.getByRole("button", { name: "累计视图" });
@@ -311,16 +364,16 @@ async function main() {
     if (captureDir) {
       const activity = owner.locator(".account-activity");
       await owner.setViewportSize({ width: 1440, height: 900 });
-      await activity.screenshot({ path: join(captureDir, "account-activity-custom-range-desktop-light.png") });
-      await owner.getByRole("button", { name: "切换到黑夜模式" }).click();
-      await owner.waitForFunction(() => document.documentElement.dataset.theme === "dark");
+      await activity.screenshot({ path: join(captureDir, "account-activity-custom-range-desktop-paper.png") });
+      await owner.getByRole("button", { name: "切换到石墨纸风格" }).click();
+      await owner.waitForFunction(() => document.documentElement.dataset.theme === "graphite");
       await owner.waitForTimeout(220);
-      await activity.screenshot({ path: join(captureDir, "account-activity-custom-range-desktop-dark.png") });
-      await owner.getByRole("button", { name: "切换到白天模式" }).click();
-      await owner.waitForFunction(() => document.documentElement.dataset.theme === "light");
+      await activity.screenshot({ path: join(captureDir, "account-activity-custom-range-desktop-graphite.png") });
+      await paperStyle.click();
+      await owner.waitForFunction(() => document.documentElement.dataset.theme === "paper");
       await owner.waitForTimeout(220);
       await owner.setViewportSize({ width: 390, height: 844 });
-      await activity.screenshot({ path: join(captureDir, "account-activity-custom-range-mobile-light.png") });
+      await activity.screenshot({ path: join(captureDir, "account-activity-custom-range-mobile-paper.png") });
       await owner.setViewportSize({ width: 1280, height: 720 });
     }
     await owner.keyboard.press("Escape");
@@ -340,9 +393,9 @@ async function main() {
     if (captureDir) {
       const activity = owner.locator(".account-activity");
       await owner.setViewportSize({ width: 1440, height: 900 });
-      await activity.screenshot({ path: join(captureDir, "account-activity-custom-range-applied-desktop-light.png") });
+      await activity.screenshot({ path: join(captureDir, "account-activity-custom-range-applied-desktop-paper.png") });
       await owner.setViewportSize({ width: 390, height: 844 });
-      await activity.screenshot({ path: join(captureDir, "account-activity-custom-range-applied-mobile-light.png") });
+      await activity.screenshot({ path: join(captureDir, "account-activity-custom-range-applied-mobile-paper.png") });
       await owner.setViewportSize({ width: 1280, height: 720 });
     }
     await owner.getByRole("button", { name: "90 天", exact: true }).click();
@@ -383,12 +436,33 @@ async function main() {
 
     if (captureDir) {
       await owner.setViewportSize({ width: 1440, height: 900 });
-      await owner.screenshot({ path: join(captureDir, "account-page-light.png"), fullPage: true });
-      await owner.getByRole("button", { name: "切换到黑夜模式" }).click();
-      await owner.screenshot({ path: join(captureDir, "account-page-dark.png"), fullPage: true });
+      await owner.screenshot({ path: join(captureDir, "account-page-paper.png"), fullPage: true });
+      await owner.getByRole("button", { name: "切换到石墨纸风格" }).click();
+      await owner.waitForFunction(() => document.documentElement.dataset.theme === "graphite");
+      await owner.waitForTimeout(220);
+      await owner.screenshot({ path: join(captureDir, "account-page-graphite.png"), fullPage: true });
+      await duskStyle.click();
+      await owner.waitForFunction(() => document.documentElement.dataset.theme === "dusk");
+      await owner.waitForTimeout(220);
+      await owner.screenshot({ path: join(captureDir, "account-page-dusk.png"), fullPage: true });
+      await cityPopStyle.click();
+      await owner.waitForFunction(() => document.documentElement.dataset.theme === "city-pop");
+      await owner.waitForTimeout(220);
+      await owner.screenshot({ path: join(captureDir, "account-page-city-pop.png"), fullPage: true });
+      await classicLightStyle.click();
+      await owner.waitForFunction(() => document.documentElement.dataset.theme === "classic-light");
+      await owner.waitForTimeout(220);
+      await owner.screenshot({ path: join(captureDir, "account-page-classic-light.png"), fullPage: true });
+      await classicDarkStyle.click();
+      await owner.waitForFunction(() => document.documentElement.dataset.theme === "classic-dark");
+      await owner.waitForTimeout(220);
+      await owner.screenshot({ path: join(captureDir, "account-page-classic-dark.png"), fullPage: true });
+      await cityPopStyle.click();
+      await owner.waitForFunction(() => document.documentElement.dataset.theme === "city-pop");
       await owner.setViewportSize({ width: 390, height: 844 });
-      await owner.screenshot({ path: join(captureDir, "account-page-mobile.png"), fullPage: true });
-      await owner.getByRole("button", { name: "切换到白天模式" }).click();
+      await owner.screenshot({ path: join(captureDir, "account-page-mobile-city-pop.png"), fullPage: true });
+      await paperStyle.click();
+      await owner.waitForFunction(() => document.documentElement.dataset.theme === "paper");
       await owner.setViewportSize({ width: 1280, height: 720 });
       step("账户资料页视觉快照已生成");
     }
@@ -493,13 +567,19 @@ async function main() {
     assert.equal(await wordManagerDialog.evaluate((dialog) => dialog.contains(document.activeElement)), true);
     await owner.keyboard.press("Escape");
     await wordManagerDialog.waitFor({ state: "hidden" });
-    await owner.waitForTimeout(50);
+    const wordManagerTriggerHandle = await wordManagerTrigger.elementHandle();
+    assert(wordManagerTriggerHandle);
+    await owner.waitForFunction(
+      (trigger) => trigger === document.activeElement,
+      wordManagerTriggerHandle,
+    );
     assert.equal(await wordManagerTrigger.evaluate((trigger) => trigger === document.activeElement), true);
     assert.notEqual(await owner.evaluate(() => document.body.style.overflow), "hidden");
     step("新词与复习仅读取当前轮次词条，弹窗焦点和页面滚动保持正确");
 
     const identityBeforeReset = await owner.evaluate(() => {
-      localStorage.setItem("vocab-ielts:theme:v1", "dark");
+      localStorage.setItem("vocab-ielts:theme:v1", "graphite");
+      localStorage.setItem("vocab-ielts:theme-quick-switch:v1", JSON.stringify(["dusk", "city-pop"]));
       localStorage.setItem("unrelated-e2e", "keep");
       return localStorage.getItem("vocab-ielts:client-id:v1");
     });
@@ -510,10 +590,12 @@ async function main() {
     const resetState = await owner.evaluate(() => ({
       clientId: localStorage.getItem("vocab-ielts:client-id:v1"),
       theme: localStorage.getItem("vocab-ielts:theme:v1"),
+      quickThemes: localStorage.getItem("vocab-ielts:theme-quick-switch:v1"),
       unrelated: localStorage.getItem("unrelated-e2e"),
     }));
     assert.equal(resetState.clientId, identityBeforeReset);
     assert.equal(resetState.theme, null);
+    assert.equal(resetState.quickThemes, null);
     assert.equal(resetState.unrelated, "keep");
     step("重置本机偏好保留匿名数据身份并仅清理应用偏好");
     await owner.setViewportSize({ width: 1280, height: 720 });
@@ -663,9 +745,9 @@ async function main() {
     step("私密上传无法通过分享码导入");
 
     await owner.goto("/");
-    await owner.getByRole("button", { name: "账号", exact: true }).click();
+    await openAccountMenu(owner);
     await owner.getByRole("menuitem", { name: "退出登录" }).click();
-    await owner.getByRole("button", { name: "账号", exact: true }).click();
+    await openAccountMenu(owner);
     await owner.getByText("未登录", { exact: true }).waitFor();
     await owner.keyboard.press("Escape");
     const anonymousAfterLogout = await api(owner, "/api/my/wordbooks");
@@ -700,9 +782,9 @@ async function main() {
     await owner.getByText("密码已更新，其他设备上的登录已退出。", { exact: true }).waitFor();
     step("账户资料页可更新密码");
 
-    await owner.getByRole("button", { name: "账号", exact: true }).click();
+    await openAccountMenu(owner);
     await owner.getByRole("menuitem", { name: "退出登录" }).click();
-    await owner.getByRole("button", { name: "账号", exact: true }).click();
+    await openAccountMenu(owner);
     await owner.getByText("未登录", { exact: true }).waitFor();
     await owner.keyboard.press("Escape");
     await signIn(owner, changedPassword);
@@ -721,7 +803,7 @@ async function main() {
     }
     await deleteDialog.getByRole("button", { name: "永久注销", exact: true }).click();
     await owner.waitForURL((url) => url.pathname === "/");
-    await owner.getByRole("button", { name: "账号", exact: true }).click();
+    await openAccountMenu(owner);
     await owner.getByText("未登录", { exact: true }).waitFor();
     await owner.keyboard.press("Escape");
     step("注销确认对话框删除账号并回到匿名状态");

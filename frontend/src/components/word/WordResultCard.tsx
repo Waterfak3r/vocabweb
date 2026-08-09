@@ -46,7 +46,10 @@ export function WordResultCard({ entry, showAddAction = true }: WordResultCardPr
     <article className={`${styles.card} home-word-card`}>
       <header className={styles.header}>
         <WordHeadword word={entry.word} phonetic={entry.phonetic} source={entry.source} />
-        <PronounceButton word={entry.word} />
+        <div className={styles.headerActions}>
+          {showAddAction && <AddToWordbookButton entry={entry} />}
+          <PronounceButton word={entry.word} />
+        </div>
       </header>
 
       <hr className={styles.rule} />
@@ -66,14 +69,6 @@ export function WordResultCard({ entry, showAddAction = true }: WordResultCardPr
         <MeaningList meanings={entry.meanings} />
       )}
 
-      {showAddAction && (
-        <>
-          <hr className={styles.rule} />
-          <footer className={styles.actions}>
-            <AddToWordbookButton entry={entry} />
-          </footer>
-        </>
-      )}
     </article>
   )
 }

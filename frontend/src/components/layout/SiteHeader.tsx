@@ -4,6 +4,7 @@ import { AuthDialog, type AuthMode } from '../account/AuthDialog'
 import { UserAvatar } from '../account/UserAvatar'
 import { useAuth } from '../../hooks/useAuth'
 import { useTheme } from '../../hooks/useTheme'
+import { THEME_LABELS, nextQuickTheme } from '../../data/themePreference'
 import { useModalDialog } from '../../hooks/useModalDialog'
 import { getEngagementApi } from '../../data/engagementApi'
 import { getWorkspaceApi } from '../../data/workspaceApi'
@@ -87,7 +88,7 @@ export function SiteHeader() {
   const mainNavRef = useRef<HTMLElement>(null)
   const navIndicatorRef = useRef<HTMLSpanElement>(null)
   const { user, loading, login, register, logout } = useAuth()
-  const { theme, toggleTheme } = useTheme()
+  const { theme, toggleTheme, quickThemes } = useTheme()
   const { pathname } = useLocation()
   const navigate = useNavigate()
   const importDraftBadge = useImportDraftBadge(user?.clientId)
@@ -332,6 +333,8 @@ export function SiteHeader() {
   const importStatusDetail = importDraftBadge
     ? `${importDraftBadge.title} · ${importDraftBadge.completedBatches}/${importDraftBadge.totalBatches} 批 · ${importDraftBadge.completedEntries}/${importDraftBadge.totalEntries} 条${importDraftBadge.problemCount ? ` · ${importDraftBadge.problemCount} 条待处理` : ''}${importDraftBadge.taskCount > 1 ? ` · 共 ${importDraftBadge.taskCount} 个任务` : ''}`
     : ''
+  const nextVisualTheme = nextQuickTheme(theme, quickThemes)
+  const themeActionLabel = `切换到${THEME_LABELS[nextVisualTheme]}风格`
 
   return (
     <header className="site-header">
@@ -401,27 +404,32 @@ export function SiteHeader() {
         <button
           type="button"
           className="nav-link theme-toggle"
-          aria-label={theme === 'dark' ? '切换到白天模式' : '切换到黑夜模式'}
-          aria-pressed={theme === 'dark'}
-          title={theme === 'dark' ? '切换到白天模式' : '切换到黑夜模式'}
+          aria-label={themeActionLabel}
+          title={themeActionLabel}
           onClick={toggleTheme}
         >
           <svg className="nav-icon" viewBox="0 0 24 24" aria-hidden="true">
-            {theme === 'dark' ? (
-              <>
-                <circle cx="12" cy="12" r="4.5" />
-                <path d="M12 2.5v2.5M12 19v2.5M2.5 12h2.5M19 12h2.5M5 5l1.8 1.8M17.2 17.2 19 19M19 5l-1.8 1.8M6.8 17.2 5 19" />
-              </>
-            ) : (
-              <path d="M20.4 14.5A8.5 8.5 0 0 1 9.5 3.6a8.5 8.5 0 1 0 10.9 10.9Z" />
-            )}
+            <rect x="4.5" y="4.5" width="10" height="10" rx="1.5" />
+            <rect x="9.5" y="9.5" width="10" height="10" rx="1.5" />
+            {(theme === 'graphite' || theme === 'classic-dark') && <path d="m12.5 13.5 4 4M15 11l3 3" />}
           </svg>
+          <span>风格</span>
         </button>
         <div ref={accountMenuRef} className="account-menu">
+          <Link
+            className={`nav-link account-trigger${pathname === '/account' ? ' active' : ''}`}
+            to="/account"
+            onClick={() => setAccountOpen(false)}
+          >
+            {user ? <UserAvatar username={user.username} avatarUrl={user.avatarUrl} size="sm" decorative /> : <NavIcon name="account" />}
+            账号
+            {pendingContributions > 0 && <span className="nav-unread" aria-label={`${pendingContributions} 条待审核建议`}>{pendingContributions > 99 ? '99+' : pendingContributions}</span>}
+          </Link>
           <button
             ref={accountTriggerRef}
-            className={`nav-link account-trigger${pathname === '/account' ? ' active' : ''}`}
             type="button"
+            className="account-menu-toggle"
+            aria-label={accountOpen ? '关闭账号菜单' : '打开账号菜单'}
             aria-expanded={accountOpen}
             aria-haspopup="menu"
             onClick={() => {
@@ -430,9 +438,6 @@ export function SiteHeader() {
             }}
             onKeyDown={handleTriggerKeyDown}
           >
-            {user ? <UserAvatar username={user.username} avatarUrl={user.avatarUrl} size="sm" decorative /> : <NavIcon name="account" />}
-            账号
-            {pendingContributions > 0 && <span className="nav-unread" aria-label={`${pendingContributions} 条待审核建议`}>{pendingContributions > 99 ? '99+' : pendingContributions}</span>}
             <svg className="nav-chevron" viewBox="0 0 16 16" aria-hidden="true">
               <path d="m4.5 6 3.5 3.5L11.5 6" />
             </svg>

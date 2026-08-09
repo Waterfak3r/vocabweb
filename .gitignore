@@ -12,3 +12,4 @@ backend/.env
 **/.codex-*.log
 **/.codex-*.png
 /*-baseline.png
+*.zip

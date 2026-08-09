@@ -14,8 +14,10 @@ import { PageHeader } from '../components/layout/PageHeader'
 import { Button } from '../components/ui/Button'
 import { TextField } from '../components/ui/TextField'
 import { WorkspaceApiError, getWorkspaceApi, type AccountStudyProfile } from '../data/workspaceApi'
+import { THEME_LABELS, isTheme, type QuickThemes, type Theme } from '../data/themePreference'
 import { useAuth } from '../hooks/useAuth'
 import { useDocumentTitle } from '../hooks/useDocumentTitle'
+import { useTheme } from '../hooks/useTheme'
 import { AccountAvatarImageError, prepareAccountAvatar } from '../lib/accountAvatar'
 
 const EMPTY_PASSWORDS: PasswordChangeFields = {
@@ -53,9 +55,122 @@ function avatarErrorMessage(error: unknown) {
   return '头像保存失败，请稍后重试。'
 }
 
+const VISUAL_STYLES: ReadonlyArray<{
+  value: Theme
+  label: string
+  description: string
+}> = [
+  { value: 'paper', label: '纸白', description: '暖白纸面、墨色正文与朱砂标记。' },
+  { value: 'graphite', label: '石墨纸', description: '炭灰纸面、柔白字色与低调颗粒。' },
+  { value: 'dusk', label: '黄昏', description: '暮紫底色、余晖珊瑚与暖金细节。' },
+  { value: 'city-pop', label: 'City Pop', description: '午夜蓝、霓虹粉与海风青色标记。' },
+  { value: 'classic-light', label: '原版白天', description: '改版前的暖白底、藏蓝文字与柔和光晕。' },
+  { value: 'classic-dark', label: '原版黑夜', description: '改版前的深海军蓝、亮色正文与蓝色光晕。' },
+]
+
+function AccountStylePicker({
+  theme,
+  quickThemes,
+  onChange,
+  onQuickThemesChange,
+}: {
+  theme: Theme
+  quickThemes: QuickThemes
+  onChange: (theme: Theme) => void
+  onQuickThemesChange: (themes: QuickThemes) => void
+}) {
+  function updateQuickTheme(position: 0 | 1, value: string) {
+    if (!isTheme(value)) return
+    const otherPosition = position === 0 ? 1 : 0
+    if (value === quickThemes[otherPosition]) return
+    onQuickThemesChange(position === 0 ? [value, quickThemes[1]] : [quickThemes[0], value])
+  }
+
+  return (
+    <section className="account-appearance" aria-labelledby="account-appearance-title">
+      <header className="account-appearance-copy">
+        <p className="marginal">APPEARANCE</p>
+        <h2 id="account-appearance-title">界面风格</h2>
+        <p>六种完整风格，选择后会立即应用到当前浏览器。</p>
+      </header>
+      <fieldset className="account-style-fieldset">
+        <legend className="sr-only">选择界面风格</legend>
+        <div className="account-style-options">
+          {VISUAL_STYLES.map((option) => {
+            const selected = theme === option.value
+            return (
+              <label key={option.value} className={`account-style-option${selected ? ' is-selected' : ''}`}>
+                <input
+                  className="sr-only"
+                  type="radio"
+                  name="account-visual-style"
+                  value={option.value}
+                  checked={selected}
+                  onChange={() => onChange(option.value)}
+                />
+                <span className={`account-style-sample is-${option.value}`} aria-hidden="true">
+                  <span /><span /><span />
+                </span>
+                <span className="account-style-option-copy">
+                  <strong>{option.label}</strong>
+                  <small>{option.description}</small>
+                </span>
+                <span className="account-style-option-status">{selected ? '使用中' : '选择'}</span>
+              </label>
+            )
+          })}
+        </div>
+        <div className="account-quick-switch" aria-labelledby="account-quick-switch-title">
+          <div className="account-quick-switch-copy">
+            <p className="marginal">QUICK SWITCH</p>
+            <h3 id="account-quick-switch-title">导航栏快切</h3>
+            <p>指定两种常用风格，页头“风格”按钮只在它们之间切换。</p>
+          </div>
+          <div className="account-quick-switch-controls">
+            <label>
+              风格一
+              <select
+                aria-label="快切风格一"
+                value={quickThemes[0]}
+                onChange={(event) => updateQuickTheme(0, event.currentTarget.value)}
+              >
+                {VISUAL_STYLES.map((option) => (
+                  <option key={option.value} value={option.value} disabled={option.value === quickThemes[1]}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <span aria-hidden="true">⇄</span>
+            <label>
+              风格二
+              <select
+                aria-label="快切风格二"
+                value={quickThemes[1]}
+                onChange={(event) => updateQuickTheme(1, event.currentTarget.value)}
+              >
+                {VISUAL_STYLES.map((option) => (
+                  <option key={option.value} value={option.value} disabled={option.value === quickThemes[0]}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <p aria-live="polite">
+              当前快切：{THEME_LABELS[quickThemes[0]]} / {THEME_LABELS[quickThemes[1]]}
+            </p>
+          </div>
+        </div>
+        <p className="account-style-storage-note">风格偏好仅保存在这台设备，不跟随账号同步。</p>
+      </fieldset>
+    </section>
+  )
+}
+
 export function AccountPage() {
   useDocumentTitle('个人资料')
   const { user, loading, login, register, replaceUser } = useAuth()
+  const { theme, selectTheme, quickThemes, selectQuickThemes } = useTheme()
   const [authMode, setAuthMode] = useState<AuthMode | null>(null)
   const [profile, setProfile] = useState<AccountStudyProfile | null>(null)
   const [profileLoading, setProfileLoading] = useState(false)
@@ -199,6 +314,13 @@ export function AccountPage() {
         title={title}
         description={!user && !loading ? '登录后管理账号、学习数据和安全设置。' : undefined}
         aside={user ? <a className="account-settings-link" href="#account-settings">账户设置</a> : undefined}
+      />
+
+      <AccountStylePicker
+        theme={theme}
+        quickThemes={quickThemes}
+        onChange={selectTheme}
+        onQuickThemesChange={selectQuickThemes}
       />
 
       {loading ? (

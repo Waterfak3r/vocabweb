@@ -1,6 +1,6 @@
 /* Base typography and elements */
 body {
-  background: var(--bg);
+  background: var(--bg-glow), var(--bg);
   color: var(--ink);
   font-family: var(--font-sans);
   font-size: var(--text-base);
@@ -10,6 +10,18 @@ body {
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
   transition: background-color 180ms var(--ease-paper), color 180ms var(--ease-paper);
+}
+
+body::before {
+  position: fixed;
+  z-index: 1000;
+  inset: 0;
+  background: url('/textures/paper-grain.svg') repeat;
+  background-size: 11.25rem 11.25rem;
+  content: '';
+  mix-blend-mode: var(--paper-grain-blend);
+  opacity: var(--paper-grain-opacity);
+  pointer-events: none;
 }
 
 @media (max-width: 640px) {
@@ -66,4 +78,8 @@ kbd {
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
+}
+
+@media (prefers-contrast: more), print {
+  body::before { display: none; }
 }

@@ -27,9 +27,8 @@
 /* ── Header ─────────────────────────────── */
 
 .site-header {
-  position: sticky;
+  position: relative;
   z-index: 40;
-  top: 0;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -141,12 +140,6 @@
   stroke-linejoin: round;
 }
 
-.main-nav > .nav-link:not(.theme-toggle) .nav-icon,
-.donation-trigger .nav-icon,
-.account-trigger > .nav-icon {
-  display: none;
-}
-
 .import-status-slot {
   position: relative;
   display: block;
@@ -239,9 +232,8 @@
   .import-status-spinner { animation-duration: 1.8s; }
 }
 
-.account-menu { position: relative; }
+.account-menu { position: relative; display: flex; align-items: stretch; }
 
-.account-trigger,
 .theme-toggle,
 .nav-action {
   border: 0;
@@ -249,6 +241,24 @@
   cursor: pointer;
   font-family: inherit;
 }
+
+.account-trigger { padding-right: 0.05rem; }
+
+.account-menu-toggle {
+  display: inline-grid;
+  min-width: 1.5rem;
+  padding: 0 0.15rem;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  place-items: center;
+  transition: color 180ms var(--ease-paper), transform 120ms ease;
+}
+
+.account-menu-toggle:hover { color: var(--ink); }
+.account-menu-toggle:active { transform: translateY(1px); }
+.account-menu-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 
 .donation-menu { position: relative; display: flex; }
 .donation-trigger { height: 100%; }
@@ -395,7 +405,7 @@
 .donation-settings-dialog > footer button:last-child { border-color: var(--accent); background: var(--accent); color: white; }
 .donation-settings-dialog button:disabled { cursor: wait; opacity: 0.6; }
 
-/* Icon-only control: pad sideways so the tap target clears 24px. */
+/* Two-sheet mark: the control switches complete visual styles, not day/night. */
 .theme-toggle {
   padding-inline: 0.35rem;
 }
@@ -471,7 +481,11 @@
 
 /* The home hero already supplies its own vertical composition. */
 .site-main.site-main-home {
-  padding-top: 2.25rem;
+  padding-top: 1rem;
+}
+
+.site-main-home .page {
+  gap: 0.75rem;
 }
 
 .site-main:focus {
@@ -614,9 +628,6 @@
   .account-popover { min-width: 9rem; }
 
   .nav-icon { width: 1rem; height: 1rem; flex: 0 0 auto; }
-  .main-nav > .nav-link:not(.theme-toggle) .nav-icon,
-  .donation-trigger .nav-icon,
-  .account-trigger > .nav-icon { display: none; }
   .import-status-slot { width: 100%; min-width: 0; flex-basis: auto; }
   .import-status-badge { width: 100%; min-width: 0; justify-content: center; padding-inline: 0.25rem; }
   .import-status-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
@@ -626,7 +637,7 @@
 @media (max-width: 390px) {
   .nav-link { font-size: 0.74rem; }
   .nav-icon { display: none; }
-  /* The theme toggle is icon-only, so it keeps its glyph where labels drop theirs. */
+  /* The style control keeps its two-sheet mark where other navigation icons drop. */
   .theme-toggle .nav-icon { display: block; }
   .import-status-badge { font-size: 0.68rem; }
 }
