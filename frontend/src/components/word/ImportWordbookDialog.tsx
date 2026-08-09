@@ -551,13 +551,13 @@ export function ImportWordbookDialog({ open, api, onClose, onCreated, initialTit
                     const key = decisionKey(entry)
                     const decision = decisions[key] ?? entry.resolution ?? (entry.status === 'conflict' || entry.status === 'duplicate' || entry.status === 'unmatched' ? 'keep' : undefined)
                     return <tr key={key}>
-                      <td>{entry.line}</td><td>{entry.word || '—'}</td>
+                      <td>{entry.line}</td><td>{entry.word || '暂无'}</td>
                       <td>
-                        <strong>{entry.pos || entry.entry?.meanings[0]?.pos || '—'}</strong>
+                        <strong>{entry.pos || entry.entry?.meanings[0]?.pos || '暂无'}</strong>
                         {(entry.enDefinition || entry.entry?.meanings[0]?.definition) && <div>{entry.enDefinition || entry.entry?.meanings[0]?.definition}</div>}
                         {(entry.example || entry.entry?.meanings[0]?.example) && <div className={styles.muted}>{entry.example || entry.entry?.meanings[0]?.example}</div>}
                       </td>
-                      <td>{entry.zhMeaning || entry.entry?.zhMeaning || '—'}</td>
+                      <td>{entry.zhMeaning || entry.entry?.zhMeaning || '暂无'}</td>
                       <td><span className={`${styles.status} ${statusClass(entry.status)}`}>{statusLabel[entry.status]}</span>{entry.reason && <div className={styles.muted}>{entry.reason}</div>}</td>
                       <td>
                         {commitMode === 'append' && entry.status === 'conflict' && <div className={styles.actions}>

@@ -1,13 +1,15 @@
 /* Base typography and elements */
 body {
-  background: var(--bg-glow), var(--bg);
+  background: var(--bg);
   color: var(--ink);
   font-family: var(--font-sans);
   font-size: var(--text-base);
-  line-height: 1.65;
+  line-height: 1.6;
+  letter-spacing: 0.002em;
   font-optical-sizing: auto;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+  transition: background-color 180ms var(--ease-paper), color 180ms var(--ease-paper);
 }
 
 @media (max-width: 640px) {
@@ -22,8 +24,11 @@ body {
 h1,
 h2,
 h3 {
-  line-height: 1.2;
+  color: var(--ink-strong);
+  font-family: var(--font-display);
+  line-height: 1.16;
   font-weight: 600;
+  text-wrap: balance;
 }
 
 a {
@@ -32,6 +37,7 @@ a {
 }
 
 a:hover {
+  text-decoration: underline;
   text-underline-offset: 0.2em;
 }
 

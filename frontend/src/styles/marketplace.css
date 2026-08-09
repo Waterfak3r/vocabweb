@@ -141,3 +141,142 @@
 /* Dark theme: dim the pastel cover art and hero decoration */
 [data-theme='dark'] .book-cover { filter: brightness(.72) saturate(.9); }
 [data-theme='dark'] .hero-books { opacity: .3; }
+
+/* V2 marketplace: catalog first, chrome second. */
+.marketplace-page {
+  gap: 2rem;
+  margin-top: 0;
+  padding-bottom: 3rem;
+}
+
+.marketplace-hero {
+  min-height: 0;
+  padding: 0 0 2rem;
+  overflow: visible;
+  border-bottom: 1px solid var(--rule);
+}
+
+.marketplace-hero h1 { font-size: clamp(2.6rem, 4vw, 4.5rem); }
+
+.marketplace-tools { align-items: stretch; }
+
+.market-search {
+  border-radius: var(--radius-sm);
+  box-shadow: none;
+}
+
+.market-search button,
+.market-primary,
+.market-secondary {
+  border-radius: var(--radius-sm);
+  box-shadow: none;
+}
+
+.hero-books { display: none; }
+
+.marketplace-layout {
+  grid-template-columns: minmax(15rem, 17rem) minmax(0, 1fr);
+  gap: clamp(1.5rem, 2.5vw, 3rem);
+}
+
+.market-filter {
+  position: sticky;
+  top: 6.5rem;
+  padding: 0 1.5rem 1.5rem 0;
+  border: 0;
+  border-right: 1px solid var(--rule);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.market-filter-count {
+  height: auto;
+  min-width: 0;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+}
+
+.market-content {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.category-tabs {
+  gap: 0;
+  border-bottom: 1px solid var(--rule);
+}
+
+.category-tabs button {
+  min-height: 3rem;
+  padding-inline: 0.8rem;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
+}
+
+.category-tabs button.active {
+  border-color: var(--accent);
+  background: transparent;
+  color: var(--accent-strong);
+}
+
+.view-controls select,
+.view-controls button { border-radius: var(--radius-sm); }
+
+.market-book-grid {
+  gap: 1rem;
+  margin-top: 1.5rem;
+}
+
+.market-book-card {
+  padding: 1rem;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: var(--surface-solid);
+  box-shadow: none;
+}
+
+.market-book-card.is-focused { box-shadow: inset 0 0 0 2px var(--accent); }
+
+.mini-collection {
+  padding: 1.25rem 0 0;
+  border: 0;
+  border-top: 1px solid var(--rule);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.mini-collection article {
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: var(--surface-solid);
+}
+
+@media (max-width: 880px) {
+  .marketplace-layout { grid-template-columns: minmax(0, 1fr); }
+
+  .market-filter {
+    position: static;
+    padding: 1rem 0;
+    border-right: 0;
+    border-bottom: 1px solid var(--rule);
+  }
+}
+
+@media (max-width: 640px) {
+  .marketplace-page { gap: 1.5rem; }
+  .marketplace-hero { padding-bottom: 1.5rem; }
+  .marketplace-hero h1 { font-size: clamp(2.35rem, 13vw, 3.5rem); }
+  .market-filter { padding-inline: 0; }
+  .market-content { padding: 0; }
+  .category-tabs button { min-height: 2.75rem; }
+  .market-book-card { padding: 0.85rem; }
+}

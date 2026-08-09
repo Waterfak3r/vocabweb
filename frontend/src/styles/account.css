@@ -1244,27 +1244,13 @@ button.account-heatmap-cell:focus-visible { position: relative; z-index: 1; outl
 
 .account-gate {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 1.25rem;
   align-items: center;
-  padding: 2rem;
-  border: 1px solid var(--rule);
-  border-radius: var(--radius-lg);
-  background: var(--surface-solid);
-  box-shadow: var(--shadow-soft);
-}
-
-.account-gate-mark {
-  display: grid;
-  width: 4rem;
-  height: 4rem;
-  place-items: center;
-  border-radius: 1rem;
-  background: var(--accent-soft);
-  color: var(--accent-strong);
-  font-family: var(--font-serif);
-  font-size: 2rem;
-  font-weight: 700;
+  width: min(68rem, 100%);
+  padding: 1.5rem 0 1.7rem;
+  border-top: 1px solid var(--rule);
+  border-bottom: 1px solid var(--rule);
 }
 
 .account-gate h2 { font-family: var(--font-serif); font-size: var(--text-lg); }
@@ -1323,8 +1309,7 @@ button.account-heatmap-cell:focus-visible { position: relative; z-index: 1; outl
   .account-form-footer .btn { width: 100%; }
   .account-ledger-action, .account-danger-action { align-items: flex-start; flex-direction: column; gap: 0.75rem; }
   .account-ledger-action .btn, .account-danger-action .btn { width: 100%; }
-  .account-gate { grid-template-columns: auto minmax(0, 1fr); }
-  .account-gate-actions { grid-column: 1 / -1; }
+  .account-gate { grid-template-columns: minmax(0, 1fr) auto; }
   .account-loading { grid-template-columns: 1fr; gap: 1rem; }
   .account-loading > span { min-height: 10rem; }
 }
@@ -1354,7 +1339,7 @@ button.account-heatmap-cell:focus-visible { position: relative; z-index: 1; outl
   .account-recent-item { grid-template-columns: 2.7rem minmax(0, 1fr); gap: 0.65rem; }
   .account-recent-item time { grid-column: 2; font-size: var(--text-xs); }
   .account-recent-copy small { white-space: normal; }
-  .account-gate { grid-template-columns: 1fr; padding: 1.1rem; }
+  .account-gate { grid-template-columns: 1fr; padding: 1.1rem 0 1.25rem; }
   .account-gate-actions { grid-column: auto; width: 100%; }
   .account-gate-actions .btn { flex: 1; }
 }

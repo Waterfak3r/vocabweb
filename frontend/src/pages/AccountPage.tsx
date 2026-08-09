@@ -208,7 +208,6 @@ export function AccountPage() {
         </div>
       ) : !user ? (
         <div className="account-gate">
-          <p className="account-gate-mark" aria-hidden="true">W</p>
           <div>
             <h2>{api ? '登录后管理账号' : '当前未启用账号服务'}</h2>
             <p>{api ? '登录后可查看学习概览、修改密码、导出数据或注销账号。' : '此部署仅提供本地学习功能。'}</p>

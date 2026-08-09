@@ -269,7 +269,7 @@ export function buildCumulativeActivity(days: ReadonlyArray<CalendarDay>) {
 
 function formatWeekRange(start: Date, end: Date) {
   const formatter = new Intl.DateTimeFormat('zh-CN', { month: 'numeric', day: 'numeric' })
-  return `${formatter.format(start)} – ${formatter.format(end)}`
+  return `${formatter.format(start)} 至 ${formatter.format(end)}`
 }
 
 function formatAxisDate(date: Date) {
@@ -312,7 +312,7 @@ export function AccountActivityHeatmap({ profile, loading, error, onRetry }: Acc
     ?? cumulativeActivity.find((point) => point.key === activeKey)
   const rangeLabel = rangeSelection.kind === 'custom'
     ? calendar
-      ? `${formatDate(calendar.start)} – ${formatDate(calendar.end)} · ${calendar.days.length} 天`
+      ? `${formatDate(calendar.start)} 至 ${formatDate(calendar.end)} · ${calendar.days.length} 天`
       : '自定义时间范围'
     : `近 ${calendar?.days.length ?? rangeSelection.days} 天`
   const todayKey = dateKey(new Date())

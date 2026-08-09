@@ -5,8 +5,8 @@ export type Theme = 'light' | 'dark'
 const THEME_KEY = storageKey('theme', 1)
 
 const THEME_COLORS: Record<Theme, string> = {
-  light: '#f3ede3',
-  dark: '#0c1622',
+  light: '#f2f2ee',
+  dark: '#12130f',
 }
 
 /** Light is always the default; the system preference is intentionally ignored. */

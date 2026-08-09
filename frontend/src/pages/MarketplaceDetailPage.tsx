@@ -316,8 +316,8 @@ export function MarketplaceDetailPage() {
             {wordBusy
               ? (normalizedQuery ? '正在搜索整本词表…' : `正在加载第 ${wordPage} 页…`)
               : debouncedQuery
-                ? `整本 ${book.wordCount} 词中找到 ${wordTotal} 个匹配词${wordTotal ? `，显示 ${firstVisibleWord}–${lastVisibleWord}` : ''}`
-                : `显示 ${firstVisibleWord}–${lastVisibleWord} / ${wordTotal || book.wordCount} 词`}
+                ? `整本 ${book.wordCount} 词中找到 ${wordTotal} 个匹配词${wordTotal ? `，显示 ${firstVisibleWord} 至 ${lastVisibleWord}` : ''}`
+                : `显示 ${firstVisibleWord} 至 ${lastVisibleWord} / ${wordTotal || book.wordCount} 词`}
           </p>
           {wordsError && <div className="market-detail-word-error" role="alert"><span>{wordsError}</span><button type="button" onClick={() => setWordsReload((value) => value + 1)}>重试</button></div>}
           <div className="market-detail-word-list" ref={wordListRef} aria-busy={wordBusy}>

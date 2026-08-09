@@ -1,4 +1,4 @@
-/* App shell: a wide, calm desk on warm paper */
+/* App shell: a focused reference workspace. */
 
 .app-shell {
   display: flex;
@@ -27,19 +27,24 @@
 /* ── Header ─────────────────────────────── */
 
 .site-header {
+  position: sticky;
+  z-index: 40;
+  top: 0;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 2.5rem;
+  gap: 2rem;
   width: 100%;
-  padding: 1rem max(1.25rem, calc((100% - var(--page-width)) / 2)) 0.9rem;
+  min-height: 4.75rem;
+  padding: 0.65rem max(1.25rem, calc((100% - var(--page-width)) / 2));
   border-bottom: 1px solid var(--rule);
+  background: var(--bg);
 }
 
 .brand {
   display: inline-flex;
   align-items: center;
-  gap: 0.7rem;
+  gap: 0.75rem;
   color: var(--ink);
   text-decoration: none;
 }
@@ -50,27 +55,27 @@
 
 .brand-mark {
   font-family: var(--font-serif);
-  font-size: 2.55rem;
-  font-weight: 700;
+  font-size: 2.2rem;
+  font-weight: 600;
   line-height: 0.9;
   color: var(--accent-strong);
 }
 
 .brand-name {
   font-family: var(--font-serif);
-  font-size: 1.55rem;
+  font-size: 1.4rem;
   font-weight: 600;
   letter-spacing: -0.025em;
   color: var(--ink);
 }
 
 .main-nav {
-  --nav-indicator-offset: 0.9rem;
+  --nav-indicator-offset: 0.65rem;
 
   position: relative;
   display: flex;
   align-items: stretch;
-  gap: clamp(0.7rem, 1.55vw, 1.55rem);
+  gap: clamp(0.25rem, 0.65vw, 0.75rem);
   align-self: stretch;
 }
 
@@ -78,9 +83,9 @@
   position: relative;
   display: inline-flex;
   align-items: center;
-  gap: 0.55rem;
-  padding-block: 0.6rem;
-  font-size: 1.08rem;
+  gap: 0.35rem;
+  padding: 0.65rem 0.3rem;
+  font-size: 0.9rem;
   font-weight: 600;
   color: var(--muted);
   text-decoration: none;
@@ -127,13 +132,19 @@
 }
 
 .nav-icon {
-  width: 1.45rem;
-  height: 1.45rem;
+  width: 1.15rem;
+  height: 1.15rem;
   fill: none;
   stroke: currentColor;
   stroke-width: 1.8;
   stroke-linecap: round;
   stroke-linejoin: round;
+}
+
+.main-nav > .nav-link:not(.theme-toggle) .nav-icon,
+.donation-trigger .nav-icon,
+.account-trigger > .nav-icon {
+  display: none;
 }
 
 .import-status-slot {
@@ -455,12 +466,12 @@
   flex: 1;
   width: min(var(--page-width), calc(100% - 2.5rem));
   margin-inline: auto;
-  padding-block: 3.1rem 1.2rem;
+  padding-block: 3.5rem 2rem;
 }
 
 /* The home hero already supplies its own vertical composition. */
 .site-main.site-main-home {
-  padding-top: 1rem;
+  padding-top: 2.25rem;
 }
 
 .site-main:focus {
@@ -478,26 +489,24 @@
 .site-footer {
   display: flex;
   align-items: center;
-  justify-content: center;
-  gap: 1.25rem;
+  justify-content: flex-start;
   width: min(var(--page-width), calc(100% - 2.5rem));
-  margin-inline: auto;
-  padding-block: 0.3rem 1.1rem;
+  margin: 3rem auto 0;
+  padding-block: 1.25rem 1.5rem;
+  border-top: 1px solid var(--rule);
   font-size: var(--text-sm);
-  letter-spacing: 0.12em;
+  letter-spacing: 0;
   color: var(--muted);
   text-align: center;
 }
 
 .site-footer > .footer-rule {
-  width: 1.1rem;
-  height: 1px;
-  background: var(--rule);
+  display: none;
 }
 
-.footer-copy { display: flex; flex-wrap: wrap; justify-content: center; gap: .35rem .75rem; }
+.footer-copy { display: flex; flex-wrap: wrap; justify-content: flex-start; gap: .35rem 1rem; }
 .site-footer a { white-space: nowrap; }
-.site-footer a::before { margin-right: .75rem; color: var(--muted); content: '·'; }
+.site-footer a::before { content: none; }
 
 /* The marketplace and wordbook references end with their content cards. */
 .app-shell:has(.marketplace-page, .workspace-page, .workspace-study) .site-footer {
@@ -527,19 +536,20 @@
     align-items: flex-start;
     gap: 0.75rem;
     flex-direction: column;
-    padding-block: 0.9rem 0.55rem;
+    min-height: 0;
+    padding-block: 0.8rem 0.45rem;
   }
 
   .brand-mark { font-size: 2.15rem; }
   .brand-name { font-size: 1.3rem; }
 
   .main-nav {
-    --nav-indicator-offset: 0.55rem;
+    --nav-indicator-offset: 0.45rem;
 
     align-self: auto;
     width: 100%;
     justify-content: space-between;
-    gap: 0.4rem;
+    gap: 0.2rem;
     flex-wrap: wrap;
   }
 
@@ -573,7 +583,8 @@
   .site-footer {
     flex-wrap: wrap;
     gap: 0.35rem 0.75rem;
-    letter-spacing: 0.06em;
+    align-items: flex-start;
+    text-align: left;
   }
 
   .site-footer > .footer-rule { display: none; }
@@ -581,7 +592,7 @@
   .main-nav {
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 0.15rem 0.3rem;
+    gap: 0.1rem 0.2rem;
     max-width: 100%;
   }
 
@@ -592,8 +603,9 @@
   .nav-link {
     min-width: 0;
     justify-content: center;
-    gap: 0.2rem;
-    font-size: 0.82rem;
+    gap: 0.15rem;
+    padding-inline: 0.2rem;
+    font-size: 0.8rem;
     white-space: nowrap;
   }
 
@@ -602,6 +614,9 @@
   .account-popover { min-width: 9rem; }
 
   .nav-icon { width: 1rem; height: 1rem; flex: 0 0 auto; }
+  .main-nav > .nav-link:not(.theme-toggle) .nav-icon,
+  .donation-trigger .nav-icon,
+  .account-trigger > .nav-icon { display: none; }
   .import-status-slot { width: 100%; min-width: 0; flex-basis: auto; }
   .import-status-badge { width: 100%; min-width: 0; justify-content: center; padding-inline: 0.25rem; }
   .import-status-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
