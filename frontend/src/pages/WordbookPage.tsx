@@ -1284,7 +1284,7 @@ export function WordbookPage() {
             <button type="button" className="overview-plan-settings" onClick={() => setSettingsSection('plan')}><WorkspaceIcon name="settings" />学习计划</button>
             <button type="button" disabled={!wordCount || !api} onClick={(event) => openWordManager('all', event.currentTarget)}><WorkspaceIcon name="edit" />浏览词条</button>
             {selectedBook.sourceCatalogId && <button type="button" disabled={authLoading} onClick={() => { if (!user) { setNotice('请先通过页头账号入口登录，再提交改进。'); return } setContributionBookId(selectedBook.id) }}><WorkspaceIcon name="edit" />提交改进</button>}
-            {publishedUpload && <button type="button" className="overview-publish-update" disabled={authLoading} onClick={() => openCatalogUpdate(publishedUpload)}><WorkspaceIcon name="repeat" />更新广场快照</button>}
+            {publishedUpload && <button type="button" disabled={authLoading} onClick={() => openCatalogUpdate(publishedUpload)}><WorkspaceIcon name="repeat" />更新广场快照</button>}
             <button type="button" disabled={!api || fullEntriesLoading} onClick={() => { void exportBookFile() }}><WorkspaceIcon name="book" />导出 CSV</button>
             <button type="button" disabled={!api || fullEntriesLoading} onClick={() => { void importBookFile() }}><WorkspaceIcon name="plus" />导入文件</button>
           </div>
