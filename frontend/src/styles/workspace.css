@@ -94,14 +94,21 @@
 .workspace-catalog-group > header h2 .workspace-icon { width: .95rem; height: .95rem; color: var(--accent-strong); }
 .workspace-catalog-group > header a { color: var(--accent-strong); font-size: .68rem; font-weight: 650; }
 .workspace-catalog-group > div { display: grid; gap: .2rem; margin-top: .35rem; }
-.workspace-catalog-group > div > a { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: .35rem; padding: .42rem .35rem; border-radius: .4rem; }
-.workspace-catalog-group > div > a:hover { background: var(--hover-bg); }
+.workspace-catalog-group > div > article { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: .15rem; }
+.workspace-catalog-group > div > a,
+.workspace-catalog-group > div > article > a { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: .35rem; min-width: 0; padding: .42rem .35rem; border-radius: .4rem; }
+.workspace-catalog-group > div > a:hover,
+.workspace-catalog-group > div > article > a:hover { background: var(--hover-bg); }
 .workspace-catalog-group strong, .workspace-catalog-group small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .workspace-catalog-group strong { font-size: .75rem; }
 .workspace-catalog-group small, .workspace-catalog-group > p { margin-top: .1rem; color: var(--muted); font-size: .65rem; }
-.workspace-catalog-group > div > a > .workspace-icon { width: .8rem; height: .8rem; color: var(--muted); }
+.workspace-catalog-group > div > a > .workspace-icon,
+.workspace-catalog-group > div > article > a > .workspace-icon { width: .8rem; height: .8rem; color: var(--muted); }
+.workspace-catalog-update { padding: .2rem .35rem; border-radius: .3rem; color: var(--accent-strong); font-size: .65rem; font-weight: 650; white-space: nowrap; }
+.workspace-catalog-update:hover { background: var(--accent-soft); }
 .overview-actions { align-self: start; }
-.overview-actions .overview-plan-settings { border: 1px solid var(--input-border); background: var(--accent-soft); color: var(--accent-strong); }
+.overview-actions .overview-plan-settings,
+.overview-actions .overview-publish-update { border: 1px solid var(--input-border); background: var(--accent-soft); color: var(--accent-strong); }
 .workspace-overview { position: relative; padding-bottom: 2.7rem; }
 .overview-recycle { position: absolute; right: 1rem; bottom: .7rem; display: inline-flex; align-items: center; gap: .35rem; padding: .3rem .45rem; border-radius: .35rem; color: var(--muted); font-size: .72rem; transition: background-color .2s ease, color .2s ease; }
 .overview-recycle .workspace-icon { width: .95rem; height: .95rem; }

@@ -18,7 +18,7 @@ import { THEME_LABELS, isTheme, type QuickThemes, type Theme } from '../data/the
 import { useAuth } from '../hooks/useAuth'
 import { useDocumentTitle } from '../hooks/useDocumentTitle'
 import { useTheme } from '../hooks/useTheme'
-import { AccountAvatarImageError, prepareAccountAvatar } from '../lib/accountAvatar'
+import { AccountAvatarImageError, ACCOUNT_AVATAR_SOURCE_MAX_LABEL, prepareAccountAvatar } from '../lib/accountAvatar'
 
 const EMPTY_PASSWORDS: PasswordChangeFields = {
   currentPassword: '',
@@ -44,7 +44,7 @@ function metricNumber(value: number) {
 function avatarErrorMessage(error: unknown) {
   if (error instanceof AccountAvatarImageError) {
     if (error.code === 'unsupported') return '请选择 JPG、PNG 或 WebP 图片。'
-    if (error.code === 'too-large') return '原图不能超过 10 MB。'
+    if (error.code === 'too-large') return `原图不能超过 ${ACCOUNT_AVATAR_SOURCE_MAX_LABEL}。`
     if (error.code === 'decode') return '无法读取这张图片，请尝试其他文件。'
     return '图片处理失败，请尝试其他文件。'
   }
@@ -367,7 +367,7 @@ export function AccountPage() {
                     )}
                   </div>
                   <p className={avatarError ? 'account-avatar-status error' : 'account-avatar-status'} aria-live="polite">
-                    {avatarStatus || 'JPG、PNG 或 WebP，自动裁切为正方形。'}
+                    {avatarStatus || `JPG、PNG 或 WebP，不超过 ${ACCOUNT_AVATAR_SOURCE_MAX_LABEL}，自动裁切为正方形。`}
                   </p>
                 </>
               )}

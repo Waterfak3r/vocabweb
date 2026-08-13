@@ -3,6 +3,8 @@ import { Link, useSearchParams } from 'react-router'
 import { Button } from '../components/ui/Button'
 import { EmptyState } from '../components/ui/EmptyState'
 import { ContributionSubmitDialog } from '../components/marketplace/ContributionSubmitDialog'
+import { PublishWordbookDialog } from '../components/marketplace/PublishWordbookDialog'
+import { findPublishedUploadForWordbook } from '../components/marketplace/publishWordbook'
 import { DictationPrompt } from '../components/word/DictationPrompt'
 import { DictationSummary } from '../components/word/DictationSummary'
 import { ImportWordbookDialog } from '../components/word/ImportWordbookDialog'
@@ -263,11 +265,13 @@ function WorkspaceCatalogGroup({
   icon,
   collection,
   books,
+  onUpdate,
 }: {
   title: string
   icon: 'star' | 'book'
   collection: 'favorites' | 'uploads'
   books: CatalogWordbook[]
+  onUpdate?: (book: CatalogWordbook) => void
 }) {
   return (
     <section className="workspace-catalog-group" aria-label={title}>
@@ -278,10 +282,17 @@ function WorkspaceCatalogGroup({
       {books.length ? (
         <div>
           {books.slice(0, 3).map((book) => (
-            <Link key={book.id} to={`/marketplace?collection=${collection}&focus=${encodeURIComponent(book.id)}`}>
-              <span><strong>{book.title}</strong><small>{book.wordCount} 词 · {book.author}</small></span>
-              <WorkspaceIcon name="chevron" />
-            </Link>
+            <article key={book.id}>
+              <Link to={`/marketplace?collection=${collection}&focus=${encodeURIComponent(book.id)}`}>
+                <span><strong>{book.title}</strong><small>{book.wordCount} 词 · {book.author}</small></span>
+                <WorkspaceIcon name="chevron" />
+              </Link>
+              {onUpdate && (
+                <button type="button" className="workspace-catalog-update" onClick={() => onUpdate(book)}>
+                  更新快照
+                </button>
+              )}
+            </article>
           ))}
         </div>
       ) : <p>{collection === 'favorites' ? '暂无收藏' : '暂无上传'}</p>}
@@ -339,6 +350,7 @@ export function WordbookPage() {
   const [showWordManager, setShowWordManager] = useState(false)
   const [wordManagerLevel, setWordManagerLevel] = useState<WordManagerLevelFilter>('all')
   const [contributionBookId, setContributionBookId] = useState<string | null>(null)
+  const [publishTarget, setPublishTarget] = useState<CatalogWordbook | null>(null)
   const [wordSaving, setWordSaving] = useState(false)
   const [bookQuery, setBookQuery] = useState(() => readWordbookFilters().query)
   const [bookCategory, setBookCategory] = useState(() => readWordbookFilters().category)
@@ -410,6 +422,9 @@ export function WordbookPage() {
   }, [bookCategory, bookQuery, bookSort, books])
   const selectedBook = filteredBooks.find((book) => book.id === selectedId) ?? filteredBooks[0]
   selectedBookIdRef.current = selectedBook?.id ?? ''
+  const publishedUpload = selectedBook
+    ? findPublishedUploadForWordbook(uploadCatalog, selectedBook.id)
+    : undefined
   const activeEntries = selectedBook && loadedEntriesWordbookId.current === selectedBook.id && remoteEntries !== null
     ? remoteEntries
     : EMPTY_WORKSPACE_ENTRIES
@@ -980,6 +995,35 @@ export function WordbookPage() {
     }
   }
 
+  function openCatalogUpdate(upload: CatalogWordbook) {
+    if (authLoading) {
+      setNotice('正在确认登录状态，请稍候。')
+      return
+    }
+    if (!user) {
+      setNotice('请先通过页头账号入口登录，再更新广场快照。')
+      return
+    }
+    setPublishTarget(upload)
+  }
+
+  async function finishCatalogUpdate(message: string) {
+    setPublishTarget(null)
+    setNotice(message)
+    if (user && api) {
+      try { setUploadCatalog(await api.listUploads()) } catch { /* keep the last known uploads rail */ }
+    }
+  }
+
+  const publishDialog = publishTarget ? (
+    <PublishWordbookDialog
+      target={publishTarget}
+      isLoggedIn={Boolean(user)}
+      onClose={() => setPublishTarget(null)}
+      onFinished={(message) => { void finishCatalogUpdate(message) }}
+    />
+  ) : null
+
   function selectWorkspaceBook(id: string) {
     setSelectedId(id)
     if (!compactBookLayout) return
@@ -1018,7 +1062,7 @@ export function WordbookPage() {
         {!filteredBooks.length && <div className="workspace-filter-empty"><p>没有匹配的单词本</p><button type="button" onClick={() => { setBookQuery(''); setBookCategory('全部') }}>清除筛选</button></div>}
       </div>
       <WorkspaceCatalogGroup title="广场收藏" icon="star" collection="favorites" books={favoriteCatalog} />
-      <WorkspaceCatalogGroup title="我的上传" icon="book" collection="uploads" books={uploadCatalog} />
+      <WorkspaceCatalogGroup title="我的上传" icon="book" collection="uploads" books={uploadCatalog} onUpdate={openCatalogUpdate} />
       <button type="button" className="workspace-recycle" onClick={() => void toggleRecycle()}><WorkspaceIcon name="trash" />回收站{remoteTrash.length ? ` (${remoteTrash.length})` : ''}</button>
       {showRecycle && <div className="recycle-panel"><p>回收站</p>{remoteTrash.length ? remoteTrash.map((book) => <div className="recycle-item" key={book.id}><strong title={book.title}>{book.title}</strong><span><button type="button" onClick={() => void restoreBook(book)}>恢复</button><button type="button" className="recycle-purge" onClick={() => void purgeBook(book)}>彻底删除</button></span></div>) : <small>暂无回收内容</small>}</div>}
     </aside>
@@ -1043,6 +1087,7 @@ export function WordbookPage() {
         onCreated={(created) => { void finishImport(created) }}
         initialDraftId={resumeImportDraftId}
       />
+      {publishDialog}
     </>
   }
 
@@ -1179,7 +1224,7 @@ export function WordbookPage() {
           <WorkspaceCover tone={selectedBook.tone} label={selectedBook.shortLabel} />
           <div className="workspace-overview-main">
             <div className="workspace-title-row"><h1 ref={workspaceTitleRef} id="workspace-title" tabIndex={-1}>{selectedBook.title}</h1></div>
-            <p>{wordCount} 个单词　|　创建于 {new Date(selectedBook.createdAt).toLocaleDateString('zh-CN')}　|　最后更新：{new Date(selectedBook.updatedAt).toLocaleString('zh-CN')}</p>
+            <p>{wordCount} 个单词　|　创建于 {new Date(selectedBook.createdAt).toLocaleDateString('zh-CN')}　|　最后更新：{new Date(selectedBook.updatedAt).toLocaleString('zh-CN')}{publishedUpload ? '　|　已发布到单词广场' : ''}</p>
             <div className={`workspace-category-editor ${categoryEditing ? 'is-editing' : ''}`}>
               <label htmlFor="wordbook-category">分类</label>
               <div className="workspace-category-field">
@@ -1239,6 +1284,7 @@ export function WordbookPage() {
             <button type="button" className="overview-plan-settings" onClick={() => setSettingsSection('plan')}><WorkspaceIcon name="settings" />学习计划</button>
             <button type="button" disabled={!wordCount || !api} onClick={(event) => openWordManager('all', event.currentTarget)}><WorkspaceIcon name="edit" />浏览词条</button>
             {selectedBook.sourceCatalogId && <button type="button" disabled={authLoading} onClick={() => { if (!user) { setNotice('请先通过页头账号入口登录，再提交改进。'); return } setContributionBookId(selectedBook.id) }}><WorkspaceIcon name="edit" />提交改进</button>}
+            {publishedUpload && <button type="button" className="overview-publish-update" disabled={authLoading} onClick={() => openCatalogUpdate(publishedUpload)}><WorkspaceIcon name="repeat" />更新广场快照</button>}
             <button type="button" disabled={!api || fullEntriesLoading} onClick={() => { void exportBookFile() }}><WorkspaceIcon name="book" />导出 CSV</button>
             <button type="button" disabled={!api || fullEntriesLoading} onClick={() => { void importBookFile() }}><WorkspaceIcon name="plus" />导入文件</button>
           </div>
@@ -1378,6 +1424,7 @@ export function WordbookPage() {
         onMarkKnown={markManagedWordKnown}
         onBatch={batchManagedWords}
       />}
+      {publishDialog}
     </section>
   )
 }

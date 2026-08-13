@@ -9,7 +9,6 @@ import {
   type CatalogVisibility,
   type CatalogWordbook,
   type LearningGoal,
-  type MyWordbook,
 } from '../data/workspaceApi'
 import {
   loadMarketplaceCatalogSnapshot,
@@ -18,8 +17,26 @@ import {
 } from '../data/marketplaceCatalogCache'
 import { getStudyClientId } from '../data/studyApi'
 import { ContributorAvatars } from '../components/account/ContributorAvatars'
+import { PublishWordbookDialog } from '../components/marketplace/PublishWordbookDialog'
+import {
+  hasOpenVisibilityChanges,
+  isAuthRequiredError,
+  isSnapshotSourceLocked,
+  MARKETPLACE_TITLE_MAX_LENGTH,
+  marketplaceTitleError,
+  UPLOAD_LOGIN_HINT,
+  VISIBILITY_LABELS,
+  VISIBILITY_OPTIONS,
+} from '../components/marketplace/publishWordbook'
 import { useAuth } from '../hooks/useAuth'
 import { useDocumentTitle } from '../hooks/useDocumentTitle'
+
+export {
+  hasOpenVisibilityChanges,
+  isSnapshotSourceLocked,
+  MARKETPLACE_TITLE_MAX_LENGTH,
+  marketplaceTitleError,
+}
 
 type IconName = 'search' | 'filter' | 'plus' | 'share' | 'grid' | 'list' | 'book' | 'star' | 'people' | 'heart' | 'cloud' | 'refresh'
 type CoverTone = 'blue' | 'amber' | 'green' | 'lavender' | 'rose' | 'slate'
@@ -45,43 +62,7 @@ export type MarketplaceBook = {
   openContributionCount?: number
   contributors?: CatalogContributor[]
 }
-type PublishStep = 'details' | 'preview'
-type PublishForm = {
-  sourceWordbookId: string
-  title: string
-  description: string
-  exam: string
-  goal: string
-  visibility: CatalogVisibility
-  revisionMessage: string
-}
-type PublishCatalogInput = {
-  sourceWordbookId: string
-  expectedHeadRevisionId?: string
-  title: string
-  description: string
-  exams: string[]
-  goals: string[]
-  visibility: CatalogVisibility
-  message?: string
-}
-type PublishingWorkspaceApi = {
-  updateCatalogSnapshot?: (catalogId: string, input: PublishCatalogInput) => Promise<unknown>
-}
-
 const MARKETPLACE_CATEGORIES = ['全部', 'IELTS', 'TOEFL', 'GRE', '高考', '四级', '六级', '考研', '写作', '阅读', '听力', '口语']
-const PUBLISH_EXAMS = ['IELTS', 'TOEFL', 'GRE', '高考', '四级', '六级', '考研']
-const PUBLISH_GOALS = ['写作', '阅读', '听力', '口语']
-export const MARKETPLACE_TITLE_MAX_LENGTH = 40
-const EMPTY_PUBLISH_FORM: PublishForm = { sourceWordbookId: '', title: '', description: '', exam: '', goal: '', visibility: 'public', revisionMessage: '' }
-const VISIBILITY_OPTIONS: Array<{ value: CatalogVisibility; label: string; hint: string }> = [
-  { value: 'public', label: '公开', hint: '所有人可在广场看到' },
-  { value: 'unlisted', label: '邀请码', hint: '不进列表，凭分享码导入' },
-  { value: 'private', label: '私密', hint: '仅自己可见' },
-]
-const VISIBILITY_LABELS: Record<CatalogVisibility, string> = { public: '公开', unlisted: '邀请码', private: '私密' }
-const UPLOAD_LOGIN_HINT = '登录后才能上传和管理单词本'
-const MODAL_FOCUSABLE = 'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [href], [tabindex]:not([tabindex="-1"])'
 const MARKETPLACE_EXAM_FILTERS = ['IELTS', 'TOEFL', 'GRE', '高考', '四级', '六级']
 const MARKETPLACE_GOAL_FILTERS = ['写作', '阅读', '听力', '口语']
 type MarketplaceSort = 'popular' | 'latest' | 'rating'
@@ -94,18 +75,6 @@ export type MarketplaceUrlState = {
   goalFilters: string[]
   sort: MarketplaceSort
   view: MarketplaceView
-}
-
-export function marketplaceTitleError(value: string): string {
-  const title = value.trim()
-  if (!title) return '请填写在广场展示的词库名称。'
-  return title.length > MARKETPLACE_TITLE_MAX_LENGTH ? `社区展示名称不能超过 ${MARKETPLACE_TITLE_MAX_LENGTH} 个字符。` : ''
-}
-
-/** A public upload with open suggestions cannot be made less visible safely. */
-export function hasOpenVisibilityChanges(visibility: CatalogVisibility | undefined, openContributionCount: number | undefined): boolean {
-  // Legacy catalog payloads omit visibility but are rendered as public entries.
-  return (visibility === 'public' || visibility === undefined) && (openContributionCount ?? 0) > 0
 }
 
 export function readMarketplaceUrlState(params: URLSearchParams): MarketplaceUrlState {
@@ -143,21 +112,6 @@ export function marketplaceDetailHref(id: string, marketplaceSearch: string): st
 
 export function parseMarketplaceCollection(value: string | null): 'all' | 'favorites' | 'uploads' {
   return value === 'favorites' || value === 'uploads' ? value : 'all'
-}
-
-export function isSnapshotSourceLocked(
-  sourceWordbookId: string | undefined,
-  wordbooks: readonly Pick<MyWordbook, 'id'>[],
-): boolean {
-  return Boolean(sourceWordbookId && wordbooks.some((book) => book.id === sourceWordbookId))
-}
-
-// Prefer the structured API status; retain the message fallback for older
-// injected repositories used by tests and local integrations.
-function isAuthRequiredError(error: unknown): boolean {
-  return error instanceof WorkspaceApiError
-    ? error.status === 401
-    : error instanceof Error && (error.message.includes('(401)') || error.message.includes('AUTH_REQUIRED_FOR_PUBLIC'))
 }
 
 const MARKETPLACE_ICON_PATHS: Record<IconName, ReactNode> = {
@@ -264,12 +218,7 @@ export function MarketplacePage() {
   ))
   const [filtersExpanded, setFiltersExpanded] = useState(false)
   const [showPublish, setShowPublish] = useState(false)
-  const [publishStep, setPublishStep] = useState<PublishStep>('details')
-  const [publishForm, setPublishForm] = useState<PublishForm>(EMPTY_PUBLISH_FORM)
-  const [personalWordbooks, setPersonalWordbooks] = useState<MyWordbook[]>([])
   const [publishTarget, setPublishTarget] = useState<CatalogWordbook | null>(null)
-  const [publishLoading, setPublishLoading] = useState(false)
-  const [publishError, setPublishError] = useState('')
   const { user: authUser, loading: authLoading } = useAuth()
   const isLoggedIn = authUser !== null
   const api = getWorkspaceApi()
@@ -286,9 +235,6 @@ export function MarketplacePage() {
   const [visibilityUpdatingIds, setVisibilityUpdatingIds] = useState<Set<string>>(() => new Set())
   const [syncMessage, setSyncMessage] = useState('')
   const [loadError, setLoadError] = useState('')
-  const publishReturnFocusRef = useRef<HTMLElement | null>(null)
-  const publishLoadingRef = useRef(publishLoading)
-  publishLoadingRef.current = publishLoading
 
   useEffect(() => {
     if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return
@@ -356,41 +302,6 @@ export function MarketplacePage() {
   // instead of caching an anonymous snapshot.
   useEffect(() => { if (!authLoading) void refreshRemote(true) }, [authLoading, refreshRemote])
 
-  useEffect(() => {
-    if (!showPublish) return
-    const previousOverflow = document.body.style.overflow
-    document.body.style.overflow = 'hidden'
-    const dialog = () => document.querySelector<HTMLElement>('.market-publish-modal')
-    requestAnimationFrame(() => dialog()?.querySelector<HTMLElement>(MODAL_FOCUSABLE)?.focus())
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        if (!publishLoadingRef.current) {
-          setShowPublish(false)
-          setPublishError('')
-        }
-        return
-      }
-      if (event.key !== 'Tab') return
-      const focusable = Array.from(dialog()?.querySelectorAll<HTMLElement>(MODAL_FOCUSABLE) ?? [])
-      if (!focusable.length) return
-      const first = focusable[0]
-      const last = focusable[focusable.length - 1]
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault()
-        last?.focus()
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault()
-        first?.focus()
-      }
-    }
-    window.addEventListener('keydown', handleKeyDown)
-    return () => {
-      document.body.style.overflow = previousOverflow
-      window.removeEventListener('keydown', handleKeyDown)
-      publishReturnFocusRef.current?.focus()
-    }
-  }, [showPublish])
-
   const activeCatalog = useMemo(() => collection === 'favorites'
     ? (favoritesCatalog ?? (remoteCatalog ?? []).filter((book) => book.favorited))
     : collection === 'uploads'
@@ -428,8 +339,6 @@ export function MarketplacePage() {
   const myUploads = (uploadsCatalog ?? (remoteCatalog ?? []).filter((book) => book.uploaded)).map(catalogToMarketplace)
   const myFavorites = (favoritesCatalog ?? (remoteCatalog ?? []).filter((book) => book.favorited)).map(catalogToMarketplace)
   const findOwnUpload = (id: string): CatalogWordbook | null => (uploadsCatalog ?? []).find((book) => book.id === id) ?? remoteCatalog?.find((book) => book.id === id) ?? null
-  const selectedSource = personalWordbooks.find((book) => book.id === publishForm.sourceWordbookId)
-  const snapshotSourceLocked = isSnapshotSourceLocked(publishTarget?.sourceWordbookId, personalWordbooks)
 
   useEffect(() => {
     if (!focusId || !filtered.some((book) => book.id === focusId)) return
@@ -448,12 +357,11 @@ export function MarketplacePage() {
   }
 
   function closePublish() {
-    if (publishLoading) return
     setShowPublish(false)
-    setPublishError('')
+    setPublishTarget(null)
   }
 
-  async function openPublish(target: CatalogWordbook | null = null) {
+  function openPublish(target: CatalogWordbook | null = null) {
     if (authLoading) {
       setSyncMessage('正在确认登录状态，请稍候。')
       return
@@ -462,146 +370,15 @@ export function MarketplacePage() {
       setSyncMessage(UPLOAD_LOGIN_HINT)
       return
     }
-    publishReturnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
-    setShowPublish(true)
-    setPublishStep('details')
     setPublishTarget(target)
-    setPublishError('')
-    setPersonalWordbooks([])
-    setPublishLoading(true)
-    if (!api) {
-      setPublishError('未配置后端，无法读取个人词本。')
-      setPublishLoading(false)
-      return
-    }
-    try {
-      const wordbooks = await api.listMyWordbooks()
-      const available = wordbooks.filter((book) => book.wordCount > 0)
-      // Never guess an update source from a mutable display title. New uploads
-      // can safely start on the first book; existing uploads use the explicit
-      // owner-only source id when available, otherwise require a fresh choice.
-      const matchingBook = target
-        ? wordbooks.find((book) => book.id === target.sourceWordbookId)
-        : available[0]
-      // An existing active source is the only safe full-snapshot source. If it no
-      // longer exists, expose the remaining books so the owner can explicitly repair it.
-      setPersonalWordbooks(target && matchingBook ? [matchingBook] : available)
-      // Keep an existing entry's visibility; new uploads default to 公开, falling
-      // back to 邀请码 when the user is not logged in (公开 needs an account).
-      let visibility: CatalogVisibility = target?.visibility ?? 'public'
-      if (!authUser && visibility === 'public') visibility = 'unlisted'
-      setPublishForm({
-        sourceWordbookId: matchingBook?.id ?? '',
-        title: target?.title ?? matchingBook?.title ?? '',
-        description: target?.description ?? matchingBook?.description ?? '',
-        exam: target?.exams[0] ?? '',
-        goal: target?.goals[0] ?? '',
-        visibility,
-        revisionMessage: target ? '更新词书' : '首次发布',
-      })
-      if (target && matchingBook && matchingBook.wordCount === 0) setPublishError('原发布源当前没有词条，请先补充词条后再更新快照。')
-      else if (!available.length) setPublishError('请先在“我的单词本”创建并导入至少一个非空词本。')
-      else if (target && !matchingBook) setPublishError('为避免更新错词本，请重新选择这次快照的来源。')
-    } catch {
-      setPublishError('个人词本加载失败，请稍后重试。')
-    } finally {
-      setPublishLoading(false)
-    }
+    setShowPublish(true)
   }
 
-  function chooseSourceWordbook(sourceWordbookId: string) {
-    if (snapshotSourceLocked && sourceWordbookId !== publishTarget?.sourceWordbookId) return
-    setPublishForm((current) => {
-      const nextBook = personalWordbooks.find((book) => book.id === sourceWordbookId)
-      const previousBook = personalWordbooks.find((book) => book.id === current.sourceWordbookId)
-      const title = !current.title || current.title === previousBook?.title ? (nextBook?.title ?? '') : current.title
-      const description = !current.description || current.description === previousBook?.description ? (nextBook?.description ?? '') : current.description
-      return { ...current, sourceWordbookId, title, description }
-    })
-  }
-
-  function openPreview() {
-    if (!selectedSource) {
-      setPublishError('请选择一个非空词本。')
-      return
-    }
-    if (selectedSource.wordCount === 0) {
-      setPublishError('原发布源当前没有词条，请先补充词条后再更新快照。')
-      return
-    }
-    const titleError = marketplaceTitleError(publishForm.title)
-    if (titleError) {
-      setPublishError(titleError)
-      return
-    }
-    setPublishError('')
-    setPublishStep('preview')
-  }
-
-  async function submitPublish() {
-    if (!api || !selectedSource || !publishForm.title.trim()) return
-    if (hasOpenVisibilityChanges(publishTarget?.visibility, publishTarget?.openContributionCount) && publishForm.visibility !== 'public') {
-      setPublishForm((current) => ({ ...current, visibility: 'public' }))
-      setPublishError('还有待处理建议，请先处理后再更改可见性。')
-      return
-    }
-    if (publishTarget && !publishTarget.headRevisionId) {
-      setPublishStep('details')
-      setPublishError('当前上传缺少版本信息，请刷新单词广场后重新打开更新窗口。')
-      return
-    }
-    const publishApi = api as typeof api & PublishingWorkspaceApi
-    const input: PublishCatalogInput = {
-      sourceWordbookId: selectedSource.id,
-      ...(publishTarget ? { expectedHeadRevisionId: publishTarget.headRevisionId } : {}),
-      title: publishForm.title.trim(),
-      description: publishForm.description.trim(),
-      exams: publishForm.exam ? [publishForm.exam] : [],
-      goals: publishForm.goal ? [publishForm.goal] : [],
-      visibility: publishForm.visibility,
-      message: publishForm.revisionMessage.trim() || (publishTarget ? '更新词书' : '首次发布'),
-    }
-    setPublishLoading(true)
-    setPublishError('')
-    try {
-      if (publishTarget) {
-        if (!publishApi.updateCatalogSnapshot) throw new Error('update unavailable')
-        await publishApi.updateCatalogSnapshot(publishTarget.id, input)
-        setSyncMessage(`「${input.title}」的社区快照已更新。已加入的用户词本不会受影响。`)
-      } else {
-        await api.uploadWordbook(input)
-        setSyncMessage(`「${input.title}」已作为独立快照发布到单词广场。`)
-      }
-      setShowPublish(false)
-      await refreshRemote()
-    } catch (error) {
-      if (error instanceof WorkspaceApiError && (
-        error.code === 'CATALOG_HEAD_REQUIRED'
-        || error.code === 'CATALOG_HEAD_STALE'
-        || error.code === 'CATALOG_SOURCE_MISMATCH'
-      )) {
-        setShowPublish(false)
-        setPublishTarget(null)
-        await refreshRemote()
-        setSyncMessage(error.code === 'CATALOG_SOURCE_MISMATCH'
-          ? '快照未更新：该上传已绑定另一发布源，请重新打开并使用原发布源。'
-          : '快照未更新：广场版本已经变化，请重新打开更新窗口确认最新内容。')
-      } else if (error instanceof WorkspaceApiError && error.code === 'CATALOG_OPEN_CONTRIBUTIONS') {
-        const count = typeof error.details?.openContributionCount === 'number'
-          ? error.details.openContributionCount
-          : publishTarget?.openContributionCount ?? 0
-        setPublishStep('details')
-        setPublishForm((current) => ({ ...current, visibility: 'public' }))
-        setPublishError(`还有 ${count} 条待处理建议，请先处理后再更改可见性。`)
-      } else if (input.visibility === 'public' && isAuthRequiredError(error)) {
-        setPublishStep('details')
-        setPublishError(UPLOAD_LOGIN_HINT)
-      } else {
-        setPublishError('发布失败，请确认后端服务已更新后重试。')
-      }
-    } finally {
-      setPublishLoading(false)
-    }
+  async function finishPublish(message: string) {
+    setShowPublish(false)
+    setPublishTarget(null)
+    setSyncMessage(message)
+    await refreshRemote()
   }
 
   async function importShareCode() {
@@ -816,7 +593,14 @@ export function MarketplacePage() {
         </div>
       </div>
 
-      {showPublish && <div className="market-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closePublish() }}><section className="market-modal market-publish-modal" role="dialog" aria-modal="true" aria-labelledby="publish-title"><button className="modal-close" type="button" aria-label="关闭" onClick={closePublish}>×</button>{publishLoading && !personalWordbooks.length ? <p className="publish-loading" role="status">正在读取你的个人词本…</p> : <>{publishStep === 'details' ? <><p className="marginal">{publishTarget ? '更新社区快照' : '新建共享词库'}</p><h2 id="publish-title">{publishTarget ? '更新我的上传' : '发布我的词本'}</h2><p>选择词本并填写展示信息。发布的是独立快照，之后修改个人词本不会影响已发布内容。</p><label>选择个人词本<select value={publishForm.sourceWordbookId} onChange={(event) => chooseSourceWordbook(event.target.value)} disabled={!personalWordbooks.length}><option value="">请选择非空词本</option>{personalWordbooks.map((book) => <option key={book.id} value={book.id}>{book.title}（{book.wordCount} 词）</option>)}</select></label>{publishTarget && !publishForm.sourceWordbookId && <p className="publish-source-hint">为避免覆盖错词本，请明确选择这次快照的来源。</p>}<label>社区展示名称<input value={publishForm.title} maxLength={MARKETPLACE_TITLE_MAX_LENGTH} onChange={(event) => setPublishForm((current) => ({ ...current, title: event.target.value }))} placeholder="例如：7 月阅读积累" autoFocus /><small>{publishForm.title.trim().length} / {MARKETPLACE_TITLE_MAX_LENGTH}</small></label><label>简介<textarea value={publishForm.description} maxLength={240} onChange={(event) => setPublishForm((current) => ({ ...current, description: event.target.value }))} placeholder="告诉大家这本词库适合什么场景。" /></label><label>版本说明<input value={publishForm.revisionMessage} maxLength={80} onChange={(event) => setPublishForm((current) => ({ ...current, revisionMessage: event.target.value }))} placeholder={publishTarget ? '例如：补充 7 月阅读词条' : '首次发布'} /></label><div className="publish-meta-fields"><label>考试类型<select value={publishForm.exam} onChange={(event) => setPublishForm((current) => ({ ...current, exam: event.target.value }))}><option value="">不设置</option>{PUBLISH_EXAMS.map((exam) => <option key={exam}>{exam}</option>)}</select></label><label>学习目标<select value={publishForm.goal} onChange={(event) => setPublishForm((current) => ({ ...current, goal: event.target.value }))}><option value="">不设置</option>{PUBLISH_GOALS.map((goal) => <option key={goal}>{goal}</option>)}</select></label></div><fieldset className="publish-visibility"><legend>可见性</legend>{VISIBILITY_OPTIONS.map((option) => { const hasPending = hasOpenVisibilityChanges(publishTarget?.visibility, publishTarget?.openContributionCount); const optionDisabled = (option.value !== 'public' && hasPending) || (option.value === 'public' && !isLoggedIn); return <label key={option.value} className={optionDisabled ? 'is-disabled' : ''}><input type="radio" name="publish-visibility" value={option.value} checked={publishForm.visibility === option.value} disabled={optionDisabled} onChange={() => setPublishForm((current) => ({ ...current, visibility: option.value }))} /><span><strong>{option.label}</strong><small>{option.hint}</small></span></label> })}{hasOpenVisibilityChanges(publishTarget?.visibility, publishTarget?.openContributionCount) && publishTarget && <p className="visibility-hint" role="note">还有 {publishTarget.openContributionCount} 条待处理建议，请先处理后再更改可见性。<Link to={`/marketplace/${encodeURIComponent(publishTarget.id)}?tab=contributions`}>处理该词本的建议</Link> · <Link to="/marketplace/contributions">打开协作收件箱</Link></p>}{!isLoggedIn && <p className="visibility-hint">{UPLOAD_LOGIN_HINT}</p>}</fieldset>{publishError && <p className="publish-error" role="alert">{publishError}</p>}<div className="publish-actions"><button className="market-secondary" type="button" onClick={closePublish}>取消</button><button className="market-primary" type="button" disabled={!personalWordbooks.length} onClick={openPreview}>预览发布</button></div></> : <><p className="marginal">发布预览</p><h2 id="publish-title">确认社区快照</h2><div className="publish-preview"><BookCover tone="blue" label={(publishForm.exam || publishForm.title.slice(0, 5)).toUpperCase()} /><div><strong>{publishForm.title}</strong><span>{selectedSource?.wordCount ?? 0} 词 · {selectedSource?.title}</span><p>{publishForm.description || '暂无简介'}</p><small>{[publishForm.exam, publishForm.goal].filter(Boolean).join(' · ') || '未设置分类'}</small><small>版本说明：{publishForm.revisionMessage || (publishTarget ? '更新词书' : '首次发布')}</small><small>可见性：{VISIBILITY_LABELS[publishForm.visibility]}</small></div></div><p>确认后，社区会保存这本词本的当前副本。以后主动更新快照，也不会改动其他用户已加入的词本。</p>{publishError && <p className="publish-error" role="alert">{publishError}</p>}<div className="publish-actions"><button className="market-secondary" type="button" disabled={publishLoading} onClick={() => setPublishStep('details')}>返回修改</button><button className="market-primary" type="button" disabled={publishLoading} onClick={() => void submitPublish()}>{publishLoading ? '正在发布…' : publishTarget ? '更新社区快照' : '确认发布'}</button></div></>}</>}</section></div>}
+      {showPublish && (
+        <PublishWordbookDialog
+          target={publishTarget}
+          isLoggedIn={isLoggedIn}
+          onClose={closePublish}
+          onFinished={(message) => { void finishPublish(message) }}
+        />
+      )}
     </section>
   )
 }

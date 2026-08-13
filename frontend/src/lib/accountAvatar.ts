@@ -1,5 +1,6 @@
 export const ACCOUNT_AVATAR_UPLOAD_MAX_BYTES = 512 * 1024
-export const ACCOUNT_AVATAR_SOURCE_MAX_BYTES = 10 * 1024 * 1024
+export const ACCOUNT_AVATAR_SOURCE_MAX_BYTES = Math.round(2.5 * 1024 * 1024)
+export const ACCOUNT_AVATAR_SOURCE_MAX_LABEL = '2.5 MB'
 export const ACCOUNT_AVATAR_TYPES = ['image/jpeg', 'image/png', 'image/webp'] as const
 const ACCOUNT_AVATAR_SOURCE_MAX_DIMENSION = 12_000
 const ACCOUNT_AVATAR_SOURCE_MAX_PIXELS = 64_000_000

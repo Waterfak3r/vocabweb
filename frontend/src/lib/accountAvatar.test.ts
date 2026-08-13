@@ -31,6 +31,7 @@ function stubCanvas(blobFactory: () => Blob | null = () => new Blob([new Uint8Ar
 describe('prepareAccountAvatar', () => {
   it('rejects unsupported and oversized source files before decoding', async () => {
     await expect(prepareAccountAvatar(imageFile('image/gif'))).rejects.toMatchObject({ code: 'unsupported' } satisfies Partial<AccountAvatarImageError>)
+    expect(ACCOUNT_AVATAR_SOURCE_MAX_BYTES).toBe(2_621_440)
     await expect(prepareAccountAvatar(imageFile('image/png', ACCOUNT_AVATAR_SOURCE_MAX_BYTES + 1))).rejects.toMatchObject({ code: 'too-large' } satisfies Partial<AccountAvatarImageError>)
   })
 

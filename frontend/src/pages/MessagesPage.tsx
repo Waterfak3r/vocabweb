@@ -117,7 +117,7 @@ export function MessagesPage() {
           {messages.map((message) => (
             <article key={message.id} className={`message-item message-depth-${message.depth} status-${message.status}`}>
               <header>
-                <UserAvatar username={message.author} avatarUrl={message.avatarUrl} size="sm" decorative />
+                <UserAvatar username={message.author} avatarUrl={message.avatarUrl} size="md" decorative />
                 <strong>{message.author}</strong>
                 {message.replyTo && <span>回复 @{message.replyTo}</span>}
                 <time dateTime={message.createdAt}>{new Intl.DateTimeFormat('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(message.createdAt))}</time>

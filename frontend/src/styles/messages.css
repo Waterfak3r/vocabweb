@@ -32,7 +32,13 @@
 .message-depth-1 { margin-left: 2.5rem; }
 .message-depth-2 { margin-left: 5rem; }
 .message-item > header { display: flex; align-items: center; flex-wrap: wrap; gap: 0.55rem; }
-.message-item > header .user-avatar { margin-right: 0.1rem; }
+.message-item > header .user-avatar {
+  width: 3.3rem;
+  height: 3.3rem;
+  margin-right: 0.2rem;
+  border-radius: 0.85rem;
+  font-size: 1.15rem;
+}
 .message-item > header strong { color: var(--accent-strong); }
 .message-item > header span, .message-item > header time, .message-item > header small { color: var(--muted); font-size: var(--text-xs); }
 .message-item > p { margin: 0.65rem 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.75; }
@@ -47,6 +53,15 @@
 .message-error { margin-top: 1rem; color: var(--danger); }
 .message-loading, .message-empty { padding: 3rem 0; color: var(--muted); text-align: center; }
 .messages-more { display: block; margin: 2rem auto 0; }
+
+@media (max-width: 900px) {
+  .message-item > header .user-avatar {
+    width: 2.5rem;
+    height: 2.5rem;
+    border-radius: 0.7rem;
+    font-size: 0.95rem;
+  }
+}
 
 @media (max-width: 640px) {
   .messages-page { padding-top: 2.5rem; }
