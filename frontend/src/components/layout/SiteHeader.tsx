@@ -157,7 +157,7 @@ export function SiteHeader() {
   }, [pathname])
 
   useEffect(() => {
-    if (!engagementApi) return
+    if (!engagementApi || !donationOpen || donationImageUrl || donationImageFailed) return
     let active = true
     void engagementApi.siteSettings()
       .then((settings) => {
@@ -167,7 +167,7 @@ export function SiteHeader() {
       })
       .catch(() => undefined)
     return () => { active = false }
-  }, [engagementApi])
+  }, [donationImageFailed, donationImageUrl, donationOpen, engagementApi])
 
   useEffect(() => {
     if (!user) { setUnreadMessages(0); return }
@@ -288,6 +288,15 @@ export function SiteHeader() {
     setDonationDraft(donationImageUrl)
     setDonationSettingsError('')
     setDonationSettingsOpen(true)
+    if (!engagementApi || donationImageUrl) return
+    void engagementApi.siteSettings()
+      .then((settings) => {
+        if (!settings.donationImageUrl) return
+        setDonationImageUrl(settings.donationImageUrl)
+        setDonationDraft(settings.donationImageUrl)
+        setDonationImageFailed(false)
+      })
+      .catch(() => undefined)
   }
 
   function chooseDonationImage(file: File | undefined) {

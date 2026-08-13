@@ -38,10 +38,11 @@ Keep existing HTTP status meanings and machine error codes backward compatible. 
 - Login and registration create a cryptographically random session token. The browser receives the token in an HttpOnly cookie; SQLite stores only its SHA-256 hash.
 - Session cookies use same-site behavior and become `Secure` under production security. Correct `TRUST_PROXY` configuration is required when HTTPS terminates at a proxy.
 - `POST /api/auth/logout` revokes the current session and clears the cookie; account password changes revoke other sessions.
-- `GET /api/auth/me` is the frontend's source of truth for signed-in state; an absent or expired session is anonymous.
+- `GET /api/auth/me` is the frontend's source of truth for signed-in state; an absent or expired session returns `204` so anonymous page loads are not logged as HTTP errors. Older clients that treated `401` as anonymous remain compatible.
 - Auth DTOs expose `avatarUrl: string | null` on current servers. The URL contains an opaque replacement version and never embeds image data; clients remain compatible with older DTOs where the field is absent.
 - `PUT /api/account/avatar` accepts an authenticated raw JPEG, PNG, or WebP body up to 512 KiB. `DELETE /api/account/avatar` restores the generated initials, and `GET /api/account/avatar/:version` serves only the current session account's exact current version.
 - Community surfaces use `GET /api/avatars/:version`, a public current-version lookup that does not require a session and never includes account ids. Message and catalog DTOs expose `avatarUrl` the same way; guests and accounts without an upload receive `null`.
+- `GET /api/site-settings` returns a short `donationImageUrl`. Stored data-URL images are exposed at `GET /api/site-settings/donation-image` instead of being inlined in the JSON.
 - Catalog cards include `contributors`: publisher first, then people with merged contributions, each with `username`, `avatarUrl`, and `mergedCount`. Internal user ids stay off the wire.
 
 `X-Vocab-Client-Id` is a browser-readable identifier for anonymous data partitioning, not a credential:

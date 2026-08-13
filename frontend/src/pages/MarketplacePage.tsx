@@ -330,9 +330,8 @@ export function MarketplacePage() {
       const snapshot = await loadMarketplaceCatalogSnapshot(cacheKey, async () => {
         const [catalog, uploads, favorites] = await Promise.all([
           api.listCatalog(catalogQuery),
-          // The 我的上传 rail needs every own visibility; a missing/erroring endpoint
-          // (older server) yields null and the rail falls back to the public list.
-          api.listUploads().catch(() => null),
+          // Own uploads require a session; skip the 401 for anonymous visitors.
+          isLoggedIn ? api.listUploads().catch(() => null) : Promise.resolve(null),
           // Favorites need their dedicated feed: an item can remain favorited after
           // its owner changes it from public to unlisted.
           api.listFavorites().catch(() => null),
@@ -351,11 +350,11 @@ export function MarketplacePage() {
       setFavoritesCatalog([])
       setLoadError('单词广场加载失败，请确认后端服务可用后重试。')
     }
-  }, [api, cacheClientId, examFilters, goalFilters, sort])
+  }, [api, cacheClientId, examFilters, goalFilters, isLoggedIn, sort])
 
-  // Route remounts reuse a fresh catalog snapshot; explicit refreshes and all
-  // mutations call refreshRemote() without this flag and bypass the cache.
-  useEffect(() => { void refreshRemote(true) }, [refreshRemote])
+  // Wait for session lookup so a signed-in first paint includes the uploads rail
+  // instead of caching an anonymous snapshot.
+  useEffect(() => { if (!authLoading) void refreshRemote(true) }, [authLoading, refreshRemote])
 
   useEffect(() => {
     if (!showPublish) return

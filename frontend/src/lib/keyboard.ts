@@ -13,6 +13,13 @@ export function usesOnScreenKeyboard(): boolean {
     && window.matchMedia('(pointer: coarse)').matches
 }
 
+/** Narrow search layout stacks the form above the result card. */
+export function isCompactSearchLayout(): boolean {
+  return typeof window !== 'undefined'
+    && typeof window.matchMedia === 'function'
+    && window.matchMedia('(max-width: 640px)').matches
+}
+
 /** True when the event target is a text-entry element. */
 export function isTypingTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false

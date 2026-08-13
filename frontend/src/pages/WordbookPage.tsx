@@ -515,7 +515,8 @@ export function WordbookPage() {
       setNotice('')
       setLoading(false)
       void api.listFavorites().then(setFavoriteCatalog).catch(() => undefined)
-      void api.listUploads().then(setUploadCatalog).catch(() => undefined)
+      if (user) void api.listUploads().then(setUploadCatalog).catch(() => undefined)
+      else setUploadCatalog([])
       return true
     } catch {
       setNotice('单词本加载失败，请确认后端服务可用后重试。')
@@ -523,9 +524,9 @@ export function WordbookPage() {
     } finally {
       setLoading(false)
     }
-  }, [api])
+  }, [api, user])
 
-  useEffect(() => { void refreshMyWordbooks() }, [refreshMyWordbooks])
+  useEffect(() => { if (!authLoading) void refreshMyWordbooks() }, [authLoading, refreshMyWordbooks])
 
   const invalidateFullEntries = useCallback((wordbookId: string, clearVisible = true) => {
     fullEntriesGeneration.current.set(wordbookId, (fullEntriesGeneration.current.get(wordbookId) ?? 0) + 1)

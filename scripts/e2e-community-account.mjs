@@ -95,7 +95,7 @@ function watchPage(page, label, errors) {
     const text = message.text();
     // Chromium reports expected HTTP authorization/missing-resource responses as
     // console errors even when application code handles them. This flow
-    // deliberately exercises anonymous /auth/me (401) and a rejected private
+    // deliberately exercises anonymous session lookup and a rejected private
     // share code (404); every other console error remains fatal.
     if (/^Failed to load resource: the server responded with a status of (401|404) \(/.test(text)) return;
     errors.push(`[${label}] console.error: ${text}`);

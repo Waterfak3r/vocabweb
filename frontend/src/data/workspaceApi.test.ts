@@ -133,6 +133,11 @@ describe('WorkspaceApi account contracts', () => {
     })
 
     await expect(api.me()).resolves.toEqual(account)
+    const signedOut = new WorkspaceApi('https://api.example.test/', {
+      fetch: vi.fn<FetchLike>().mockResolvedValue(new Response(null, { status: 204 })),
+      clientId: () => 'client-account-0001',
+    })
+    await expect(signedOut.me()).resolves.toBeNull()
     await expect(api.changePassword('password-123', 'new-password-456')).resolves.toBeUndefined()
     expect(fetch.mock.calls.map(([url, init]) => [url.toString(), init?.method, init?.body])).toEqual([
       ['https://api.example.test/api/auth/me', undefined, undefined],

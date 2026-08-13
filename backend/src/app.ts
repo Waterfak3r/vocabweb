@@ -206,15 +206,22 @@ function phoneticBody(value: string): string {
 }
 
 const DONATION_IMAGE_SETTING = "donation_image_url";
+const PUBLIC_DONATION_IMAGE_PATH = "/api/site-settings/donation-image";
+const DONATION_DATA_URL = /^data:image\/(png|jpeg|webp|gif);base64,([a-z0-9+/=\s]+)$/i;
 
 function parseDonationImageUrl(value: unknown): string | null | undefined {
   if (value === null || value === "") return null;
   if (typeof value !== "string") return undefined;
   const candidate = value.trim();
   if (!candidate || candidate.length > 1_900_000) return undefined;
-  if (/^data:image\/(?:png|jpeg|webp|gif);base64,[a-z0-9+/=\s]+$/i.test(candidate)) return candidate;
+  if (DONATION_DATA_URL.test(candidate)) return candidate;
   if (candidate.startsWith("/") && !candidate.startsWith("//") && candidate.length <= 2_048) return candidate;
   return undefined;
+}
+
+function publicDonationImageUrl(stored: string | null): string | null {
+  if (!stored) return null;
+  return DONATION_DATA_URL.test(stored) ? PUBLIC_DONATION_IMAGE_PATH : stored;
 }
 
 
@@ -737,7 +744,7 @@ export function createApp(options: CreateAppOptions = {}) {
   app.get("/api/auth/me", (_request, response) => {
     const user = identityOf(response).user;
     if (!user) {
-      response.status(401).json(apiError("AUTH_REQUIRED", "No active account session"));
+      response.status(204).end();
       return;
     }
     response.status(200).json(authDto(user));
@@ -917,10 +924,29 @@ export function createApp(options: CreateAppOptions = {}) {
 
   app.get("/api/site-settings", async (_request, response, next) => {
     try {
-      response.setHeader("Cache-Control", "no-store");
-      response.status(200).json({
-        donationImageUrl: await engagementStore.getSiteSetting(DONATION_IMAGE_SETTING),
-      });
+      const stored = await engagementStore.getSiteSetting(DONATION_IMAGE_SETTING);
+      response.setHeader("Cache-Control", "public, max-age=300");
+      response.status(200).json({ donationImageUrl: publicDonationImageUrl(stored) });
+    } catch (error) { next(error); }
+  });
+
+  app.get("/api/site-settings/donation-image", async (_request, response, next) => {
+    try {
+      const stored = await engagementStore.getSiteSetting(DONATION_IMAGE_SETTING);
+      const match = stored ? DONATION_DATA_URL.exec(stored) : null;
+      if (!match) {
+        response.status(404).json(apiError("DONATION_IMAGE_NOT_FOUND", "Donation image was not found"));
+        return;
+      }
+      const bytes = Buffer.from(match[2]!.replace(/\s+/g, ""), "base64");
+      if (!bytes.length) {
+        response.status(404).json(apiError("DONATION_IMAGE_NOT_FOUND", "Donation image was not found"));
+        return;
+      }
+      response.setHeader("Cache-Control", "public, max-age=86400");
+      response.setHeader("Content-Type", `image/${match[1]!.toLowerCase()}`);
+      response.setHeader("Content-Disposition", "inline");
+      response.status(200).send(bytes);
     } catch (error) { next(error); }
   });
 
@@ -931,9 +957,8 @@ export function createApp(options: CreateAppOptions = {}) {
       return;
     }
     try {
-      response.status(200).json({
-        donationImageUrl: await engagementStore.getSiteSetting(DONATION_IMAGE_SETTING),
-      });
+      const stored = await engagementStore.getSiteSetting(DONATION_IMAGE_SETTING);
+      response.status(200).json({ donationImageUrl: publicDonationImageUrl(stored) });
     } catch (error) { next(error); }
   });
 
@@ -949,8 +974,13 @@ export function createApp(options: CreateAppOptions = {}) {
       return;
     }
     try {
+      if (donationImageUrl === PUBLIC_DONATION_IMAGE_PATH) {
+        const stored = await engagementStore.getSiteSetting(DONATION_IMAGE_SETTING);
+        response.status(200).json({ donationImageUrl: publicDonationImageUrl(stored) });
+        return;
+      }
       await engagementStore.setSiteSetting(DONATION_IMAGE_SETTING, donationImageUrl);
-      response.status(200).json({ donationImageUrl });
+      response.status(200).json({ donationImageUrl: publicDonationImageUrl(donationImageUrl) });
     } catch (error) { next(error); }
   });
 

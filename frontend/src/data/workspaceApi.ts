@@ -1672,7 +1672,7 @@ export class WorkspaceApi {
   /** Returns the signed-in user, or null when the session is absent/expired. */
   async me(): Promise<AuthUser | null> {
     const response = await this.fetch(new URL('api/auth/me', this.baseUrl), this.requestInit({}))
-    if (response.status === 401) return null
+    if (response.status === 204 || response.status === 401) return null
     if (!response.ok) throw await responseError(response)
     let payload: unknown
     try { payload = await response.json() } catch { throw new Error('Backend response is not valid JSON.') }

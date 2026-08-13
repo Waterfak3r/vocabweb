@@ -13,7 +13,7 @@ import { selectWordbookItems, useWordbook } from '../data/wordbookStore'
 import type { WordEntry } from '../domain/types'
 import { getEngagementApi, type PopularSearch } from '../data/engagementApi'
 import { wordRepository } from '../data/createRepositories'
-import { usesOnScreenKeyboard } from '../lib/keyboard'
+import { isCompactSearchLayout, usesOnScreenKeyboard } from '../lib/keyboard'
 
 type StudyStepIconName = 'search' | 'bookmark' | 'practice'
 
@@ -108,6 +108,9 @@ export function HomePage() {
     }
     inputRef.current?.focus({ preventScroll: true })
     inputRef.current?.select()
+    if (isCompactSearchLayout()) {
+      resultRef.current?.scrollIntoView({ block: 'start', behavior: 'auto' })
+    }
   }, [state])
 
   useEffect(() => {

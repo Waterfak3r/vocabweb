@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { meaningChoiceShortcutIndex, usesOnScreenKeyboard } from './keyboard'
+import { isCompactSearchLayout, meaningChoiceShortcutIndex, usesOnScreenKeyboard } from './keyboard'
 
 describe('meaningChoiceShortcutIndex', () => {
   it('maps number and letter keys onto the four options', () => {
@@ -25,6 +25,17 @@ function stubMatchMedia(matches: (query: string) => boolean) {
     }),
   })
 }
+
+describe('isCompactSearchLayout', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('is true at the mobile search breakpoint', () => {
+    stubMatchMedia((query) => query.includes('max-width: 640px'))
+    expect(isCompactSearchLayout()).toBe(true)
+  })
+})
 
 describe('usesOnScreenKeyboard', () => {
   afterEach(() => {

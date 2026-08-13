@@ -99,7 +99,7 @@ test("sessions override client headers, claimed ids require auth, and logout is 
     assert.match(firstLogout.headers.get("set-cookie") ?? "", /Max-Age=0/);
     const repeatedLogout = await fetch(`${app.baseUrl}/api/auth/logout`, { method: "POST" });
     assert.equal(repeatedLogout.status, 204);
-    assert.equal((await fetch(`${app.baseUrl}/api/auth/me`, { headers: { cookie: alice.cookie } })).status, 401);
+    assert.equal((await fetch(`${app.baseUrl}/api/auth/me`, { headers: { cookie: alice.cookie } })).status, 204);
 
     const repeatedClient = await fetch(`${app.baseUrl}/api/auth/register`, {
       method: "POST", headers: jsonHeaders(ALICE_CLIENT),
@@ -266,6 +266,21 @@ test("only administrators can configure the public donation image", async () => 
       donationImageUrl: "/images/reward.png",
     });
 
+    const png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+    const embedded = await fetch(`${app.baseUrl}/api/admin/site-settings`, {
+      method: "PATCH",
+      headers: accountHeaders,
+      body: JSON.stringify({ donationImageUrl: png }),
+    });
+    assert.equal(embedded.status, 200);
+    assert.deepEqual(await embedded.json(), { donationImageUrl: "/api/site-settings/donation-image" });
+    assert.deepEqual(await (await fetch(`${app.baseUrl}/api/site-settings`)).json(), {
+      donationImageUrl: "/api/site-settings/donation-image",
+    });
+    const image = await fetch(`${app.baseUrl}/api/site-settings/donation-image`);
+    assert.equal(image.status, 200);
+    assert.equal(image.headers.get("content-type"), "image/png");
+
     const unsafe = await fetch(`${app.baseUrl}/api/admin/site-settings`, {
       method: "PATCH",
       headers: accountHeaders,
@@ -377,7 +392,7 @@ test("accounts can export their data and password-confirmed deletion removes pri
     });
     assert.equal(deleted.status, 204);
     assert.match(deleted.headers.get("set-cookie") ?? "", /Max-Age=0/);
-    assert.equal((await fetch(`${app.baseUrl}/api/auth/me`, { headers: accountHeaders })).status, 401);
+    assert.equal((await fetch(`${app.baseUrl}/api/auth/me`, { headers: accountHeaders })).status, 204);
     assert.equal(await app.store.getUserByUsername("Alice"), null);
     assert.deepEqual(await app.store.listMyWordbooks(ALICE_CLIENT, false), []);
 
@@ -427,7 +442,7 @@ test("password changes verify the current secret and revoke other sessions", asy
     });
     assert.equal(changed.status, 204);
     assert.equal((await fetch(`${app.baseUrl}/api/auth/me`, { headers: { cookie: alice.cookie } })).status, 200);
-    assert.equal((await fetch(`${app.baseUrl}/api/auth/me`, { headers: { cookie: secondCookie } })).status, 401);
+    assert.equal((await fetch(`${app.baseUrl}/api/auth/me`, { headers: { cookie: secondCookie } })).status, 204);
 
     const oldLogin = await fetch(`${app.baseUrl}/api/auth/login`, {
       method: "POST",
