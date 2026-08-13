@@ -315,9 +315,9 @@ export function SyncedFlashcardRound({
         <span>{pendingVerdict === 'vague' ? '熟练度不下降，但会缩短下次间隔，并在本轮稍后再问。' : '会降低复习熟练度，并在本轮稍后再问。'}</span>
         <Button disabled={busy} onClick={continueFeedback}>{busy ? '同步中…' : '继续（Enter）'}</Button>
       </div> : <div className="study-actions study-verdicts three-way">
-        <button className="study-verdict unknown" type="button" disabled={busy} onClick={() => showUncertainAnswer('unknown')}><span>不认识</span><b>{shortcutLabel(shortcuts.unknown)}</b><i aria-hidden="true" /></button>
-        <button className="study-verdict vague" type="button" disabled={busy} onClick={() => showUncertainAnswer('vague')}><span>模糊</span><b>{shortcutLabel(shortcuts.vague)}</b><i aria-hidden="true" /></button>
-        <button className="study-verdict known" type="button" disabled={busy} onClick={() => { void commit('know') }}><span>{busy ? '同步中…' : '认识'}</span><b>{shortcutLabel(shortcuts.known)}</b><i aria-hidden="true" /></button>
+        <button className="study-verdict unknown" type="button" disabled={busy} onClick={() => showUncertainAnswer('unknown')}><span>不认识</span><b aria-hidden="true">{shortcutLabel(shortcuts.unknown)}</b><i aria-hidden="true" /></button>
+        <button className="study-verdict vague" type="button" disabled={busy} onClick={() => showUncertainAnswer('vague')}><span>模糊</span><b aria-hidden="true">{shortcutLabel(shortcuts.vague)}</b><i aria-hidden="true" /></button>
+        <button className="study-verdict known" type="button" disabled={busy} onClick={() => { void commit('know') }}><span>{busy ? '同步中…' : '认识'}</span><b aria-hidden="true">{shortcutLabel(shortcuts.known)}</b><i aria-hidden="true" /></button>
         {!flipped && <button className="study-flip" type="button" disabled={busy} onClick={() => setFlipped(true)}>翻面</button>}
         {nextReviewDays !== undefined && <p className="study-next-review-hint">两项练习都完成后进入「初识」，约 {nextReviewDays} 天后复习</p>}
       </div>}
