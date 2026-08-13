@@ -101,14 +101,15 @@ function watchPage(page, label, errors) {
     errors.push(`[${label}] console.error: ${text}`);
   });
   page.on("requestfailed", (request) => {
-    // These successful 204 mutations are immediately followed by a reload or
-    // navigation in the verified UI flow, so Chromium may later mark their
-    // already-handled request records as aborted.
-    const completedMutation = [
+    // Successful 204s (logout, password, deletion, anonymous /auth/me) are
+    // often followed by a reload or navigation, so Chromium may later mark
+    // their already-handled request records as aborted.
+    const completedEmptyResponse = [
       "/api/auth/logout",
+      "/api/auth/me",
       "/api/account/password",
       "/api/account",
-    ].some((path) => request.url().endsWith(path));
+    ].some((path) => new URL(request.url()).pathname === path);
     // Closing a study surface intentionally tears down its Audio element. If
     // the same-origin pronunciation redirect is still resolving, Chromium
     // reports either the original route or its final Youdao URL as aborted.
@@ -121,7 +122,7 @@ function watchPage(page, label, errors) {
       /^\/api\/pronunciations\/[^/]+\/audio$/.test(requestUrl.pathname)
       || youdaoPronunciation
     );
-    if ((completedMutation || cancelledPronunciation) && request.failure()?.errorText === "net::ERR_ABORTED") return;
+    if ((completedEmptyResponse || cancelledPronunciation) && request.failure()?.errorText === "net::ERR_ABORTED") return;
     errors.push(`[${label}] requestfailed: ${request.method()} ${request.url()} (${request.failure()?.errorText ?? "unknown"})`);
   });
 }
