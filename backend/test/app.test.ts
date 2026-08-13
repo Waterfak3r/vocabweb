@@ -152,7 +152,10 @@ test("public message routes support guest threads, editing, and soft deletion", 
     assert.equal(replyResponse.status, 201);
     const listing = await fetch(`${server.baseUrl}/api/messages?limit=20`, { headers });
     assert.equal(listing.status, 200);
-    assert.equal(((await listing.json()) as { items: unknown[] }).items.length, 2);
+    const listed = await listing.json() as { items: Array<Record<string, unknown>> };
+    assert.equal(listed.items.length, 2);
+    assert.equal(listed.items[0]?.avatarUrl, null);
+    assert.equal("authorUserId" in (listed.items[0] ?? {}), false);
     const edited = await fetch(`${server.baseUrl}/api/messages/${root.id}`, {
       method: "PATCH", headers, body: JSON.stringify({ content: "修改后的留言" }),
     });

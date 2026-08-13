@@ -36,6 +36,7 @@ describe('EngagementApi', () => {
       rootId: '11111111-1111-1111-1111-111111111111',
       depth: 0,
       author: '访客',
+      avatarUrl: null,
       content: '你好',
       status: 'active',
       createdAt: '2026-07-28T00:00:00.000Z',

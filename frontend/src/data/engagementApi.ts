@@ -15,6 +15,7 @@ export type Message = {
   rootId: string
   depth: 0 | 1 | 2
   author: string
+  avatarUrl: string | null
   replyTo?: string
   contact?: string
   content?: string
@@ -186,6 +187,7 @@ function parseMessage(value: unknown): Message | null {
   if (typeof item.id !== 'string' || typeof item.rootId !== 'string'
     || (item.depth !== 0 && item.depth !== 1 && item.depth !== 2)
     || typeof item.author !== 'string'
+    || (item.avatarUrl !== undefined && item.avatarUrl !== null && typeof item.avatarUrl !== 'string')
     || (item.status !== 'active' && item.status !== 'deleted' && item.status !== 'hidden')
     || typeof item.createdAt !== 'string' || typeof item.updatedAt !== 'string'
     || typeof item.edited !== 'boolean' || typeof item.canEdit !== 'boolean' || typeof item.canDelete !== 'boolean'
@@ -198,6 +200,7 @@ function parseMessage(value: unknown): Message | null {
     rootId: item.rootId,
     depth: item.depth,
     author: item.author,
+    avatarUrl: typeof item.avatarUrl === 'string' ? item.avatarUrl : null,
     status: item.status,
     createdAt: item.createdAt,
     updatedAt: item.updatedAt,

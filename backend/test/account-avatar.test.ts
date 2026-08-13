@@ -104,6 +104,43 @@ test("account avatars validate, replace, isolate, export, cache, and delete", as
   }
 });
 
+test("public avatar versions are readable without a session and hide stale versions", async () => {
+  const app = await fixture();
+  try {
+    const cookie = await register(app.baseUrl, ALICE_CLIENT, "PublicAvatar");
+    const uploaded = await upload(app.baseUrl, cookie, "image/png", avatarFixtures[1].bytes);
+    assert.equal(uploaded.status, 200);
+    const privateUrl = (await uploaded.json() as { avatarUrl: string }).avatarUrl;
+    const version = privateUrl.split("/").at(-1)!;
+    const publicUrl = `/api/avatars/${version}`;
+
+    const anonymous = await fetch(`${app.baseUrl}${publicUrl}`);
+    assert.equal(anonymous.status, 200);
+    assert.equal(anonymous.headers.get("content-type"), "image/png");
+    assert.equal(anonymous.headers.get("cache-control"), "public, max-age=31536000, immutable");
+    assert.deepEqual(Buffer.from(await anonymous.arrayBuffer()), avatarFixtures[1].bytes);
+
+    const posted = await fetch(`${app.baseUrl}/api/messages`, {
+      method: "POST",
+      headers: {
+        cookie,
+        "content-type": "application/json",
+        "x-vocab-client-id": ALICE_CLIENT,
+      },
+      body: JSON.stringify({ content: "带上头像的留言" }),
+    });
+    assert.equal(posted.status, 201);
+    assert.equal((await posted.json() as { avatarUrl: string | null }).avatarUrl, publicUrl);
+
+    const replaced = await upload(app.baseUrl, cookie, "image/jpeg", avatarFixtures[0].bytes);
+    assert.equal(replaced.status, 200);
+    assert.equal((await fetch(`${app.baseUrl}${publicUrl}`)).status, 404);
+    assert.equal((await fetch(`${app.baseUrl}/api/avatars/not-a-version`)).status, 404);
+  } finally {
+    await app.close();
+  }
+});
+
 test("account avatar uploads expose stable MIME, image, size, and encoding errors", async () => {
   const app = await fixture();
   try {

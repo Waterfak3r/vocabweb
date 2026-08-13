@@ -144,6 +144,10 @@ test("a full contribution merge preserves same-spelling progress and revert crea
     ["alpha", "改进后的甲"],
     ["gamma", "丙"],
   ]);
+  assert.deepEqual(publicAfterMerge?.contributors.map((person) => [person.username, person.mergedCount, "userId" in person]), [
+    [publisher.username, 0, false],
+    [contributor.username, 1, false],
+  ]);
   const publisherAfterMerge = await store.listWords(PUBLISHER_CLIENT, source.id);
   assert.equal(publisherAfterMerge?.find((word) => word.word === "alpha")?.id, originalAlphaId);
   assert.equal(publisherAfterMerge?.find((word) => word.word === "alpha")?.level, 1);

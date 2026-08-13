@@ -453,6 +453,7 @@ export function catalogCard(
     enabled?: boolean;
     openContributionCount?: number;
     latestRevision?: CatalogRevisionSummary;
+    contributors?: CatalogCard["contributors"];
   } = {},
 ): CatalogCard {
   const {
@@ -467,6 +468,7 @@ export function catalogCard(
     uploaded: book.ownerClientId === clientId,
     collaborationEnabled: collaboration.enabled ?? false,
     openContributionCount: collaboration.openContributionCount ?? 0,
+    contributors: clone(collaboration.contributors ?? []),
     ...(collaboration.latestRevision ? { latestRevision: clone(collaboration.latestRevision) } : {}),
     ...(book.ownerClientId === clientId && book.sourceWordbookId ? { sourceWordbookId: book.sourceWordbookId } : {}),
   };

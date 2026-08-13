@@ -348,6 +348,22 @@ describe('WorkspaceApi marketplace owner feeds', () => {
     })
   })
 
+  it('parses catalog contributor avatars without requiring them on older payloads', async () => {
+    const fetch = vi.fn<FetchLike>().mockResolvedValue(new Response(JSON.stringify(catalog({
+      contributors: [
+        { username: '墨客', avatarUrl: '/api/avatars/avatar-version-1', mergedCount: 0 },
+        { username: '协作者', avatarUrl: null, mergedCount: 2 },
+      ],
+    }))))
+    const api = new WorkspaceApi('https://api.example.test/', { fetch, clientId: () => 'learner' })
+    await expect(api.getCatalogSummary('catalog-1')).resolves.toMatchObject({
+      contributors: [
+        { username: '墨客', avatarUrl: '/api/avatars/avatar-version-1', mergedCount: 0 },
+        { username: '协作者', avatarUrl: null, mergedCount: 2 },
+      ],
+    })
+  })
+
   it('loads lightweight catalog metadata and a server-filtered word page separately', async () => {
     const word = { word: 'resilient', phonetic: '/rɪˈzɪliənt/', source: 'user', meanings: [{ pos: 'adjective', definition: 'Able to recover.' }] }
     const fetch = vi.fn<FetchLike>()

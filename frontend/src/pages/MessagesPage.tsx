@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
+import { UserAvatar } from '../components/account/UserAvatar'
 import { getEngagementApi, type Message } from '../data/engagementApi'
 import { useAuth } from '../hooks/useAuth'
 import { useDocumentTitle } from '../hooks/useDocumentTitle'
@@ -115,7 +116,13 @@ export function MessagesPage() {
         <div className="message-list">
           {messages.map((message) => (
             <article key={message.id} className={`message-item message-depth-${message.depth} status-${message.status}`}>
-              <header><strong>{message.author}</strong>{message.replyTo && <span>回复 @{message.replyTo}</span>}<time dateTime={message.createdAt}>{new Intl.DateTimeFormat('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(message.createdAt))}</time>{message.edited && <small>已编辑</small>}</header>
+              <header>
+                <UserAvatar username={message.author} avatarUrl={message.avatarUrl} size="sm" decorative />
+                <strong>{message.author}</strong>
+                {message.replyTo && <span>回复 @{message.replyTo}</span>}
+                <time dateTime={message.createdAt}>{new Intl.DateTimeFormat('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(message.createdAt))}</time>
+                {message.edited && <small>已编辑</small>}
+              </header>
               {message.status === 'active' ? <p>{message.content}</p> : <p className="message-tombstone">{message.status === 'deleted' ? '该留言已被作者删除' : '该内容已被管理员隐藏'}</p>}
               {isAdmin && message.contact && <p className="message-contact">联系方式：{message.contact}</p>}
               <footer>

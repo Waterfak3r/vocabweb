@@ -675,8 +675,17 @@ test("collaboration API supports preview, public audit, atomic merge, version hi
     assert.equal((await mergeResponse.json() as { status: string }).status, "merged");
     const mergedCatalog = await (await fetch(`${app.baseUrl}/api/catalog/wordbooks/${catalog.id}`, {
       headers: jsonHeaders(ALICE_CLIENT, publisher.cookie),
-    })).json() as { words: Array<{ word: string; zhMeaning?: string }>; headRevisionId: string };
+    })).json() as {
+      words: Array<{ word: string; zhMeaning?: string }>
+      headRevisionId: string
+      contributors: Array<{ username: string; avatarUrl: string | null; mergedCount: number }>
+    };
     assert.equal(mergedCatalog.words.find((word) => word.word === "alpha")?.zhMeaning, "改进后的甲");
+    assert.deepEqual(mergedCatalog.contributors.map((person) => [person.username, person.mergedCount]), [
+      ["Publisher", 0],
+      ["Contributor", 1],
+    ]);
+    assert.equal("userId" in (mergedCatalog.contributors[0] ?? {}), false);
 
     const missingSnapshotHead = await fetch(`${app.baseUrl}/api/catalog/wordbooks/${catalog.id}`, {
       method: "PATCH",

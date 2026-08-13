@@ -16,7 +16,7 @@ Production creates `SqliteStudyStore` and `SqliteEngagementStore` against the sa
 `SqliteStudyStore` keeps immutable audit snapshots where they are useful, but private learner data is record-oriented:
 
 - `users` and `sessions` are relational and constrained for identity and lifecycle queries.
-- `user_avatars` stores bounded private image BLOBs separately from hot session/user state. SQLite reads a BLOB only for authenticated image delivery or an account export; the random version metadata remains lightweight and supports safe cache invalidation.
+- `user_avatars` stores bounded image BLOBs separately from hot session/user state. SQLite reads a BLOB for the owner's authenticated image route, the public current-version community route, or an account export. The random version metadata remains lightweight, unique, and supports safe cache invalidation.
 - catalog wordbooks, revisions, and contributions have relational index columns plus JSON snapshots for domain payloads.
 - `clients` identifies an anonymous/account data space and stores only small synchronized settings; favorites are rows in `client_favorites`.
 - `dictionary_entries` stores immutable, content-addressed entry snapshots. `wordbook_words.id` remains the public/study `wordId`, scoped by client and wordbook, while its `entry_id` identifies dictionary content. The same spelling may therefore have multiple dictionary-entry identities without changing learning references.

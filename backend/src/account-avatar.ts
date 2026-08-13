@@ -9,6 +9,13 @@ export function isAccountAvatarVersion(value: unknown): value is string {
   return typeof value === "string" && ACCOUNT_AVATAR_VERSION_PATTERN.test(value);
 }
 
+/** Community surfaces expose avatars by the current opaque version, never by account id. */
+export function publicAvatarUrl(version: string | undefined): string | null {
+  return version && isAccountAvatarVersion(version)
+    ? `/api/avatars/${encodeURIComponent(version)}`
+    : null;
+}
+
 export function parseAccountAvatarMimeType(value: string | undefined): AccountAvatarMimeType | null {
   const mimeType = value?.split(";", 1)[0]?.trim().toLowerCase();
   return mimeType === "image/jpeg" || mimeType === "image/png" || mimeType === "image/webp"

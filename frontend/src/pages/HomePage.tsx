@@ -13,6 +13,7 @@ import { selectWordbookItems, useWordbook } from '../data/wordbookStore'
 import type { WordEntry } from '../domain/types'
 import { getEngagementApi, type PopularSearch } from '../data/engagementApi'
 import { wordRepository } from '../data/createRepositories'
+import { usesOnScreenKeyboard } from '../lib/keyboard'
 
 type StudyStepIconName = 'search' | 'bookmark' | 'practice'
 
@@ -50,6 +51,7 @@ export function HomePage() {
   const [inputFocused, setInputFocused] = useState(false)
   const [activeSuggestion, setActiveSuggestion] = useState(-1)
   const inputRef = useRef<HTMLInputElement>(null)
+  const resultRef = useRef<HTMLDivElement>(null)
 
   const [todayHeadword, setTodayHeadword] = useState(() => wordOfTheDay())
   const [todayState, setTodayState] = useState<
@@ -93,12 +95,19 @@ export function HomePage() {
   const isRemote = summarySource === 'remote'
   const recent = summary.recent
 
-  // Keep repeated lookups fast. The live result region still announces changes.
+  // Desktop: keep the query selected so the next word can be typed immediately.
+  // Touch: dismiss the on-screen keyboard so it does not cover the result card.
   useEffect(() => {
-    if (state.status === 'success' || state.status === 'empty' || state.status === 'error') {
-      inputRef.current?.focus({ preventScroll: true })
-      inputRef.current?.select()
+    if (state.status !== 'success' && state.status !== 'empty' && state.status !== 'error') {
+      return
     }
+    if (usesOnScreenKeyboard()) {
+      inputRef.current?.blur()
+      resultRef.current?.scrollIntoView({ block: 'start', behavior: 'auto' })
+      return
+    }
+    inputRef.current?.focus({ preventScroll: true })
+    inputRef.current?.select()
   }, [state])
 
   useEffect(() => {
@@ -144,6 +153,9 @@ export function HomePage() {
     setActiveSuggestion(-1)
     const error = lookup(raw)
     setInputError(error ?? '')
+    if (!error && usesOnScreenKeyboard()) {
+      inputRef.current?.blur()
+    }
   }
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -309,7 +321,7 @@ export function HomePage() {
       </div>
 
       <div className="home-dashboard">
-        <div className="home-result" aria-live="polite">
+        <div className="home-result" ref={resultRef} aria-live="polite">
           {state.status === 'idle' && (
             <>
               <InkRule label="今日词头" />

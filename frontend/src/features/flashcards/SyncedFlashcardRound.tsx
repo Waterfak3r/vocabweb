@@ -17,6 +17,7 @@ import {
 } from '../../data/workspaceApi'
 import { useKeyboardShortcuts } from '../../hooks/useKeyboardShortcuts'
 import { usePronounce } from '../../hooks/usePronounce'
+import { meaningChoiceShortcutIndex } from '../../lib/keyboard'
 
 type SyncedFlashcardRoundProps = {
   wordbookId: string
@@ -206,16 +207,31 @@ export function SyncedFlashcardRound({
     }
   }, [commit, pendingVerdict, selectedOption, task])
 
+  const chooseOption = useCallback((index: number) => {
+    if (busy || selectedOption || task?.exercise !== 'meaning-choice') return
+    const option = options[index]
+    if (option) setSelectedOption(option)
+  }, [busy, options, selectedOption, task?.exercise])
+
   const shortcutBindings = useMemo(() => {
     if (!task || resumeDecisionPending || busy) return []
-    if (task.exercise === 'meaning-choice') {
+    const continueReady = Boolean(pendingVerdict || selectedOption)
+    if (continueReady) {
       return [
+        { key: 'enter', action: continueFeedback },
         { key: shortcuts.pronounce, action: pronounce },
         { key: shortcuts.mastered, action: () => { void commit('mastered') } },
       ]
     }
-    if (pendingVerdict) {
+    if (task.exercise === 'meaning-choice') {
       return [
+        ...(['1', '2', '3', '4', 'a', 'b', 'c', 'd'] as const).map((key) => ({
+          key,
+          action: () => {
+            const index = meaningChoiceShortcutIndex(key)
+            if (index !== null) chooseOption(index)
+          },
+        })),
         { key: shortcuts.pronounce, action: pronounce },
         { key: shortcuts.mastered, action: () => { void commit('mastered') } },
       ]
@@ -228,8 +244,8 @@ export function SyncedFlashcardRound({
       { key: shortcuts.mastered, action: () => { void commit('mastered') } },
       { key: shortcuts.flip, action: () => setFlipped((value) => !value) },
     ]
-  }, [busy, commit, pendingVerdict, pronounce, resumeDecisionPending, shortcuts, showUncertainAnswer, task])
-  useKeyboardShortcuts(shortcutBindings, Boolean(task) && !selectedOption)
+  }, [busy, chooseOption, commit, continueFeedback, pendingVerdict, pronounce, resumeDecisionPending, selectedOption, shortcuts, showUncertainAnswer, task])
+  useKeyboardShortcuts(shortcutBindings, Boolean(task) && !resumeDecisionPending)
 
   if (loading) {
     return <div className="synced-round-state" role="status"><span className="study-round-spinner" />正在同步学习进度…</div>
@@ -297,19 +313,23 @@ export function SyncedFlashcardRound({
       {pendingVerdict ? <div className={`study-answer-feedback ${pendingVerdict}`}>
         <strong>{pendingVerdict === 'vague' ? '已记为模糊' : '已记为不认识'}</strong>
         <span>{pendingVerdict === 'vague' ? '熟练度不下降，但会缩短下次间隔，并在本轮稍后再问。' : '会降低复习熟练度，并在本轮稍后再问。'}</span>
-        <Button disabled={busy} onClick={continueFeedback}>{busy ? '同步中…' : '继续'}</Button>
+        <Button disabled={busy} onClick={continueFeedback}>{busy ? '同步中…' : '继续（Enter）'}</Button>
       </div> : <div className="study-actions study-verdicts three-way">
-        <button className="study-verdict unknown" type="button" disabled={busy} onClick={() => showUncertainAnswer('unknown')}><span>不认识</span><i aria-hidden="true" /></button>
-        <button className="study-verdict vague" type="button" disabled={busy} onClick={() => showUncertainAnswer('vague')}><span>模糊</span><i aria-hidden="true" /></button>
-        <button className="study-verdict known" type="button" disabled={busy} onClick={() => { void commit('know') }}><span>{busy ? '同步中…' : '认识'}</span><i aria-hidden="true" /></button>
+        <button className="study-verdict unknown" type="button" disabled={busy} onClick={() => showUncertainAnswer('unknown')}><span>不认识</span><b>{shortcutLabel(shortcuts.unknown)}</b><i aria-hidden="true" /></button>
+        <button className="study-verdict vague" type="button" disabled={busy} onClick={() => showUncertainAnswer('vague')}><span>模糊</span><b>{shortcutLabel(shortcuts.vague)}</b><i aria-hidden="true" /></button>
+        <button className="study-verdict known" type="button" disabled={busy} onClick={() => { void commit('know') }}><span>{busy ? '同步中…' : '认识'}</span><b>{shortcutLabel(shortcuts.known)}</b><i aria-hidden="true" /></button>
         {!flipped && <button className="study-flip" type="button" disabled={busy} onClick={() => setFlipped(true)}>翻面</button>}
         {nextReviewDays !== undefined && <p className="study-next-review-hint">两项练习都完成后进入「初识」，约 {nextReviewDays} 天后复习</p>}
       </div>}
-      <ShortcutHint shortcuts={[
+      <ShortcutHint shortcuts={pendingVerdict ? [
+        { keys: 'Enter', action: '继续' },
+        { keys: shortcutLabel(shortcuts.pronounce), action: '发音' },
+        { keys: shortcutLabel(shortcuts.mastered), action: '标熟' },
+      ] : [
         { keys: shortcutLabel(shortcuts.unknown), action: '不认识' },
         { keys: shortcutLabel(shortcuts.vague), action: '模糊' },
-        { keys: shortcutLabel(shortcuts.pronounce), action: '发音' },
         { keys: shortcutLabel(shortcuts.known), action: '认识' },
+        { keys: shortcutLabel(shortcuts.pronounce), action: '发音' },
         { keys: shortcutLabel(shortcuts.mastered), action: '标熟' },
         { keys: shortcutLabel(shortcuts.flip), action: '翻面' },
       ]} />
@@ -351,9 +371,14 @@ export function SyncedFlashcardRound({
       {selectedOption && <div className={`meaning-choice-feedback ${selectedCorrect ? 'correct' : 'incorrect'}`}>
         <strong>{selectedCorrect ? '选择正确' : '选择错误'}</strong>
         <span>{selectedCorrect ? '已找到对应释义。' : `正确释义来自 ${correctOption?.word ?? current.word}。本题会在队尾再次出现。`}</span>
-        <Button disabled={busy} onClick={continueFeedback}>{busy ? '同步中…' : '继续'}</Button>
+        <Button disabled={busy} onClick={continueFeedback}>{busy ? '同步中…' : '继续（Enter）'}</Button>
       </div>}
-      <ShortcutHint shortcuts={[
+      <ShortcutHint shortcuts={selectedOption ? [
+        { keys: 'Enter', action: '继续' },
+        { keys: shortcutLabel(shortcuts.pronounce), action: '发音' },
+        { keys: shortcutLabel(shortcuts.mastered), action: '标熟' },
+      ] : [
+        { keys: 'A–D / 1–4', action: '选择释义' },
         { keys: shortcutLabel(shortcuts.pronounce), action: '发音' },
         { keys: shortcutLabel(shortcuts.mastered), action: '标熟' },
       ]} />

@@ -1,3 +1,18 @@
+/** Map 1–4 / A–D to a meaning-choice option index. */
+export function meaningChoiceShortcutIndex(key: string): number | null {
+  const normalized = key.toLocaleLowerCase()
+  if (/^[1-4]$/.test(normalized)) return Number(normalized) - 1
+  if (/^[a-d]$/.test(normalized)) return normalized.charCodeAt(0) - 97
+  return null
+}
+
+/** Phones and tablets keep an on-screen keyboard while a text field is focused. */
+export function usesOnScreenKeyboard(): boolean {
+  return typeof window !== 'undefined'
+    && typeof window.matchMedia === 'function'
+    && window.matchMedia('(pointer: coarse)').matches
+}
+
 /** True when the event target is a text-entry element. */
 export function isTypingTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false

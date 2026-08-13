@@ -319,9 +319,33 @@
 .shortcut-settings > button { justify-self: start; color: var(--accent-strong); font-size: var(--text-sm); font-weight: 650; }
 
 .study-session-backdrop { padding: 2rem; }
-.workspace-study-modal { width: min(62rem, 100%); max-height: calc(100vh - 4rem); padding: 1rem; }
-.workspace-study-modal .session-close { position: absolute; z-index: 3; top: .6rem; right: .7rem; background: var(--surface-solid); }
-.workspace-study-modal .workspace-study { width: 100%; min-height: 0; margin: 0; padding: .4rem; border: 0; border-radius: 0; box-shadow: none; }
+.workspace-study-modal {
+  display: flex;
+  flex-direction: column;
+  width: min(62rem, 100%);
+  max-height: calc(100vh - 4rem);
+  max-height: calc(100dvh - 4rem);
+  overflow: hidden;
+  padding: 1rem;
+}
+.workspace-study-modal .session-close {
+  position: absolute;
+  z-index: 5;
+  top: .6rem;
+  right: .7rem;
+  background: var(--surface-solid);
+}
+.workspace-study-modal .workspace-study {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  margin: 0;
+  padding: .4rem;
+  overflow: auto;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
 .workspace-study-modal .workspace-study-header { padding-right: 3rem; }
 .workspace-study-modal .workspace-study-header > button { display: none; }
 .workspace-study-modal .workspace-session-summary { margin: 2rem auto; }
@@ -347,10 +371,26 @@
   .study-settings-dialog { padding: 1rem; }
   .study-plan-settings > label { grid-template-columns: minmax(0,1fr) 4.5rem auto; }
   .review-schedule-settings > div { grid-template-columns: 1fr; }
-  .workspace-study-modal { padding: .7rem; }
-  .workspace-study-modal .workspace-study-header { grid-template-columns: 1fr; padding-right: 2.5rem; }
-  .workspace-study-modal .workspace-study-header > span { grid-row: auto; }
-  .workspace-study-modal .workspace-study-header h1 { grid-row: auto; }
+  .workspace-study-modal { padding: .7rem; max-height: 92vh; max-height: 92dvh; }
+  .workspace-study-modal .session-close {
+    top: .45rem;
+    right: .45rem;
+    width: 2.6rem;
+    height: 2.6rem;
+  }
+  .workspace-study-modal .workspace-study-header {
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    padding-right: 2.85rem;
+  }
+  .workspace-study-modal .workspace-study-header > button {
+    display: inline-flex;
+    align-items: center;
+    min-height: 2.5rem;
+    padding: 0.3rem 0.7rem;
+  }
+  .workspace-study-modal .workspace-study-header > span { grid-row: auto; min-width: 0; }
+  .workspace-study-modal .workspace-study-header h1 { display: none; }
   .meaning-preference { grid-template-columns: 1fr; }
 }
 

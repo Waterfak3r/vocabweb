@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router'
+import { ContributorAvatars } from '../components/account/ContributorAvatars'
 import { Button } from '../components/ui/Button'
 import { EmptyState } from '../components/ui/EmptyState'
 import { ContributionSubmitDialog } from '../components/marketplace/ContributionSubmitDialog'
@@ -285,6 +286,9 @@ export function MarketplaceDetailPage() {
             作者：{book.author} · 更新于 {new Date(book.updatedAt ?? book.createdAt).toLocaleDateString('zh-CN')}
             {book.headRevisionId ? ` · 版本 ${shortRevision(book.headRevisionId)}` : ''}
           </small>
+          {book.contributors && book.contributors.length > 0 && (
+            <ContributorAvatars contributors={book.contributors} size="md" />
+          )}
         </div>
         <div className="market-detail-actions">
           <Button variant="secondary" onClick={() => void toggleFavorite()}>{book.favorited ? '取消收藏' : '收藏'} · {book.favoriteCount}</Button>

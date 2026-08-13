@@ -31,7 +31,8 @@
 .message-item::before { content: ''; position: absolute; top: 1.45rem; bottom: 1.45rem; left: 0; width: 2px; background: var(--accent-soft); }
 .message-depth-1 { margin-left: 2.5rem; }
 .message-depth-2 { margin-left: 5rem; }
-.message-item > header { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0.55rem; }
+.message-item > header { display: flex; align-items: center; flex-wrap: wrap; gap: 0.55rem; }
+.message-item > header .user-avatar { margin-right: 0.1rem; }
 .message-item > header strong { color: var(--accent-strong); }
 .message-item > header span, .message-item > header time, .message-item > header small { color: var(--muted); font-size: var(--text-xs); }
 .message-item > p { margin: 0.65rem 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.75; }

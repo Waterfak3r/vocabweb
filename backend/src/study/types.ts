@@ -35,11 +35,18 @@ export interface CatalogWordbook {
   /** Internal client identities already counted toward `uses`. */
   adopterClientIds?: string[];
 }
+export interface CatalogContributor {
+  username: string;
+  avatarUrl: string | null;
+  /** Merged contributions from this person. The publisher may be 0. */
+  mergedCount: number;
+}
 export type CatalogCard = Omit<CatalogWordbook, "words" | "ownerClientId" | "sourceWordbookId" | "authorUserId" | "seedKey" | "legacyUses" | "adopterClientIds"> & {
   wordCount: number; favoriteCount: number; favorited: boolean; added: boolean; uploaded: boolean;
   collaborationEnabled: boolean;
   openContributionCount: number;
   latestRevision?: CatalogRevisionSummary;
+  contributors: CatalogContributor[];
   /** Only exposed to the owner, so the upload UI can refresh the correct private source. */
   sourceWordbookId?: string;
 };
@@ -539,6 +546,8 @@ export interface StudyStore {
   /** Replaces a password hash and revokes every session except the one making the change. */
   updateUserPassword(userId: string, passwordHash: string, keepSessionTokenHash: string): Promise<AccountUser | null>;
   getUserAvatar(userId: string): Promise<AccountAvatar | null>;
+  /** Serves the current avatar for a public community URL; stale versions are not found. */
+  getUserAvatarByVersion(version: string): Promise<AccountAvatar | null>;
   setUserAvatar(userId: string, input: AccountAvatarInput | null): Promise<AccountUser | null>;
   exportUserData(userId: string): Promise<unknown | null>;
   deleteUser(userId: string): Promise<boolean>;

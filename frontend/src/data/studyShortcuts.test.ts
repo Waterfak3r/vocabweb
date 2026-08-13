@@ -23,8 +23,18 @@ describe('study shortcuts', () => {
     expect(normalizeShortcutKey('F1')).toBeNull()
   })
 
+  it('defaults unknown, vague and known to 1, 2 and 3', () => {
+    expect(DEFAULT_STUDY_SHORTCUTS).toMatchObject({
+      unknown: '1',
+      vague: '2',
+      known: '3',
+      pronounce: 'tab',
+    })
+    expect(normalizeStudyShortcuts(null)).toEqual(DEFAULT_STUDY_SHORTCUTS)
+  })
+
   it('restores defaults for conflicts and reserved dictation Enter', () => {
-    expect(normalizeStudyShortcuts({ ...DEFAULT_STUDY_SHORTCUTS, known: 'q' }))
+    expect(normalizeStudyShortcuts({ ...DEFAULT_STUDY_SHORTCUTS, known: '1' }))
       .toEqual(DEFAULT_STUDY_SHORTCUTS)
     expect(normalizeStudyShortcuts({ ...DEFAULT_STUDY_SHORTCUTS, dictationPronounce: 'Enter' }))
       .toEqual(DEFAULT_STUDY_SHORTCUTS)

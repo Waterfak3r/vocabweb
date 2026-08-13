@@ -23,6 +23,8 @@ export type MessageDto = {
   rootId: string;
   depth: 0 | 1 | 2;
   author: string;
+  /** Internal account id for route-level avatar enrichment; never sent to clients. */
+  authorUserId?: string;
   replyTo?: string;
   contact?: string;
   content?: string;
@@ -175,7 +177,23 @@ export class MemoryEngagementStore implements EngagementStore {
   private owns(item: { authorUserId?: string; authorClientId: string }, actor: MessageActor) { return actor.userId ? item.authorUserId === actor.userId : !item.authorUserId && item.authorClientId === actor.clientId; }
   private dto(item: typeof this.messages[number], actor: MessageActor | null): MessageDto {
     const owns = actor ? this.owns(item, actor) : false;
-    return { id: item.id, parentId: item.parentId, rootId: item.rootId, depth: item.depth, author: item.author, replyTo: item.replyTo, ...(actor?.isAdmin && item.contact ? { contact: item.contact } : {}), content: item.status === "active" ? item.content : undefined, status: item.status, createdAt: item.createdAt, updatedAt: item.updatedAt, edited: item.updatedAt !== item.createdAt, canEdit: owns && item.status === "active" && this.now().getTime() - Date.parse(item.createdAt) <= 30 * 60_000, canDelete: owns };
+    return {
+      id: item.id,
+      parentId: item.parentId,
+      rootId: item.rootId,
+      depth: item.depth,
+      author: item.author,
+      ...(item.authorUserId ? { authorUserId: item.authorUserId } : {}),
+      replyTo: item.replyTo,
+      ...(actor?.isAdmin && item.contact ? { contact: item.contact } : {}),
+      content: item.status === "active" ? item.content : undefined,
+      status: item.status,
+      createdAt: item.createdAt,
+      updatedAt: item.updatedAt,
+      edited: item.updatedAt !== item.createdAt,
+      canEdit: owns && item.status === "active" && this.now().getTime() - Date.parse(item.createdAt) <= 30 * 60_000,
+      canDelete: owns,
+    };
   }
 }
 
@@ -464,6 +482,7 @@ export class SqliteEngagementStore implements EngagementStore {
       rootId: row.root_id,
       depth: row.depth,
       author: row.author_name,
+      ...(row.author_user_id ? { authorUserId: row.author_user_id } : {}),
       ...(row.reply_to_name ? { replyTo: row.reply_to_name } : {}),
       ...(actor?.isAdmin && row.contact ? { contact: row.contact } : {}),
       ...(row.status === "active" ? { content: row.content } : {}),

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
-import { createAccountAvatar } from "../account-avatar.js";
+import { createAccountAvatar, publicAvatarUrl } from "../account-avatar.js";
 import { isValidWordQuery, normalizeWord } from "../words/normalize.js";
 import { isJsonObject } from "./validation.js";
 import {
@@ -293,6 +293,12 @@ export abstract class BaseStore implements StudyStore {
   async getUserAvatar(userId: string): Promise<AccountAvatar | null> { return await this.read((state) => {
     const avatar = state.userAvatars[userId];
     return avatar ? clone(avatar) : null;
+  }); }
+  async getUserAvatarByVersion(version: string): Promise<AccountAvatar | null> { return await this.read((state) => {
+    const user = state.users.find((item) => item.avatarVersion === version);
+    if (!user) return null;
+    const avatar = state.userAvatars[user.id];
+    return avatar && avatar.version === version ? clone(avatar) : null;
   }); }
   async setUserAvatar(userId: string, input: AccountAvatarInput | null): Promise<AccountUser | null> { return await this.mutate((state) => {
     const user = state.users.find((item) => item.id === userId);
@@ -1139,10 +1145,10 @@ export abstract class BaseStore implements StudyStore {
       const client = this.client(state, clientId);
       const current = client.studySettings ?? {
         shortcuts: {
-          unknown: "q",
-          vague: "w",
-          pronounce: "enter",
-          known: "e",
+          unknown: "1",
+          vague: "2",
+          pronounce: "tab",
+          known: "3",
           mastered: "r",
           flip: " ",
           dictationPronounce: "tab",
@@ -2037,7 +2043,45 @@ export abstract class BaseStore implements StudyStore {
       latestRevision: this.revisionSummary(
         state.revisions.find((revision) => revision.id === book.headRevisionId),
       ),
+      contributors: this.catalogContributors(state, book),
     });
+  }
+
+  private catalogContributors(state: State, book: CatalogWordbook): CatalogCard["contributors"] {
+    type Acc = { username: string; userId?: string; mergedCount: number; publisher: boolean };
+    const byKey = new Map<string, Acc>();
+    const add = (key: string, username: string, userId: string | undefined, mergedDelta: number, publisher: boolean) => {
+      const current = byKey.get(key);
+      if (!current) {
+        byKey.set(key, { username, userId, mergedCount: mergedDelta, publisher });
+        return;
+      }
+      current.mergedCount += mergedDelta;
+      if (publisher) current.publisher = true;
+      if (userId && !current.userId) current.userId = userId;
+    };
+    if (book.authorUserId) add(book.authorUserId, book.author, book.authorUserId, 0, true);
+    else if (book.author) add(`name:${book.author}`, book.author, undefined, 0, true);
+    for (const contribution of state.contributions) {
+      if (contribution.catalogId !== book.id || contribution.status !== "merged") continue;
+      add(
+        contribution.contributorUserId ?? `name:${contribution.contributor}`,
+        contribution.contributor,
+        contribution.contributorUserId,
+        1,
+        false,
+      );
+    }
+    const users = new Map(state.users.map((user) => [user.id, user]));
+    return [...byKey.values()]
+      .sort((left, right) => Number(right.publisher) - Number(left.publisher)
+        || right.mergedCount - left.mergedCount
+        || left.username.localeCompare(right.username, "zh-CN"))
+      .map(({ username, userId, mergedCount }) => ({
+        username,
+        avatarUrl: publicAvatarUrl(userId ? users.get(userId)?.avatarVersion : undefined),
+        mergedCount,
+      }));
   }
 
   private contributionPreview(

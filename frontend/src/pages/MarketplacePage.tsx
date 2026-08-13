@@ -5,6 +5,7 @@ import {
   WorkspaceApiError,
   type CatalogExam,
   type CatalogQuery,
+  type CatalogContributor,
   type CatalogVisibility,
   type CatalogWordbook,
   type LearningGoal,
@@ -16,6 +17,7 @@ import {
   readMarketplaceCatalogCache,
 } from '../data/marketplaceCatalogCache'
 import { getStudyClientId } from '../data/studyApi'
+import { ContributorAvatars } from '../components/account/ContributorAvatars'
 import { useAuth } from '../hooks/useAuth'
 import { useDocumentTitle } from '../hooks/useDocumentTitle'
 
@@ -41,6 +43,7 @@ export type MarketplaceBook = {
   exams: string[]
   goals: string[]
   openContributionCount?: number
+  contributors?: CatalogContributor[]
 }
 type PublishStep = 'details' | 'preview'
 type PublishForm = {
@@ -203,6 +206,7 @@ export function catalogToMarketplace(book: CatalogWordbook, index: number): Mark
     exams: book.exams,
     goals: book.goals,
     openContributionCount: book.openContributionCount ?? 0,
+    contributors: book.contributors,
   }
 }
 
@@ -757,6 +761,9 @@ export function MarketplacePage() {
                     <h2>{book.title}</h2>
                     <p>{book.description}</p>
                     <small>作者：{book.author}</small>
+                    {book.contributors && book.contributors.length > 0 && (
+                      <ContributorAvatars contributors={book.contributors} />
+                    )}
                     <div className="market-metrics">
                       <span><MarketplaceIcon name="book" />{book.wordCount}词</span>
                       <span><MarketplaceIcon name="heart" />{book.favoriteCount}</span>

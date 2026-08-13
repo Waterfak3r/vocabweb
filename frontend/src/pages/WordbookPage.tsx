@@ -1681,7 +1681,7 @@ function ShortcutSettings({ value, onChange }: { value: StudyShortcutPreferences
     onChange({ ...value, [action]: key })
   }
   return <div className="shortcut-settings">
-    <p>点击按键框后直接按下新按键。卡片快捷键用于新词和复习，听写 Enter 始终用于提交。</p>
+    <p>点击按键框后直接按下新按键，所有快捷键都可改。默认不认识 1、模糊 2、认识 3、发音 Tab。看词选义时仍用 A–D 或 1–4 选选项，答完后 Enter 继续。听写 Enter 始终用于提交。</p>
     {SHORTCUT_ROWS.map((row) => <label key={row.action}><span><strong>{row.label}</strong><small>{row.group === 'card' ? '新词 / 复习' : '听写输入框内可用'}</small></span><input readOnly value={shortcutLabel(value[row.action])} aria-label={`设置${row.label}快捷键`} onKeyDown={(event) => capture(row.action, event)} /></label>)}
     {error && <p className="field-error" role="alert">{error}</p>}
     <button type="button" onClick={() => { setError(''); onChange({ ...DEFAULT_STUDY_SHORTCUTS }) }}>恢复默认快捷键</button>

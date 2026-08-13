@@ -318,6 +318,38 @@
 .user-avatar-md { width: 2.1rem; height: 2.1rem; border-radius: 0.58rem; font-size: 0.82rem; }
 .user-avatar-lg { width: 7.2rem; height: 7.2rem; border-radius: 1.35rem; font-size: clamp(2.6rem, 6vw, 4rem); }
 
+.contributor-avatars {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  margin-top: 0.55rem;
+}
+.contributor-avatars ul {
+  display: flex;
+  align-items: center;
+  margin: 0;
+  padding: 0 0 0 0.45rem;
+  list-style: none;
+}
+.contributor-avatars li {
+  margin-left: -0.45rem;
+}
+.contributor-avatars .user-avatar {
+  border: 2px solid var(--surface-solid);
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--rule) 70%, transparent);
+}
+.contributor-avatars > span {
+  color: var(--muted);
+  font-size: var(--text-xs);
+  font-weight: 600;
+}
+.contributor-avatars-md ul { padding-left: 0.55rem; }
+.contributor-avatars-md li { margin-left: -0.55rem; }
+.market-detail-hero .contributor-avatars { margin-top: 0.85rem; }
+.market-card-body .contributor-avatars { margin-top: 0.4rem; }
+.market-card-body .contributor-avatars > span { font-size: 0.68rem; }
+
 .account-trigger .user-avatar {
   border-color: color-mix(in srgb, currentColor 25%, transparent);
   background: color-mix(in srgb, var(--accent) 18%, transparent);

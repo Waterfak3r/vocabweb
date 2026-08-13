@@ -6,9 +6,11 @@ import {
   ACCOUNT_AVATAR_MAX_BYTES,
   decodeAccountAvatar,
   hasAccountAvatarSignature,
+  isAccountAvatarVersion,
   parseAccountAvatarMimeType,
+  publicAvatarUrl,
 } from "./account-avatar.js";
-import { MemoryEngagementStore, type EngagementStore, type FeedbackInput, type FeedbackType, type MessageActor } from "./engagement/store.js";
+import { MemoryEngagementStore, type EngagementStore, type FeedbackInput, type FeedbackType, type MessageActor, type MessageDto, type MessagePage } from "./engagement/store.js";
 import {
   clearSessionCookie, createSessionToken, hashPassword, hashSessionToken, parseAuthCredentials, parsePasswordChange,
   readSessionToken, sessionCookie, sessionExpiresAt, verifyPassword,
@@ -741,6 +743,26 @@ export function createApp(options: CreateAppOptions = {}) {
     response.status(200).json(authDto(user));
   });
 
+  app.get("/api/avatars/:version", async (request, response, next) => {
+    const version = request.params.version;
+    if (!isAccountAvatarVersion(version)) {
+      response.status(404).json(apiError("AVATAR_NOT_FOUND", "Account avatar was not found"));
+      return;
+    }
+    try {
+      const avatar = await studyStore.getUserAvatarByVersion(version);
+      const bytes = avatar ? decodeAccountAvatar(avatar) : null;
+      if (!avatar || !bytes) {
+        response.status(404).json(apiError("AVATAR_NOT_FOUND", "Account avatar was not found"));
+        return;
+      }
+      response.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+      response.setHeader("Content-Type", avatar.mimeType);
+      response.setHeader("Content-Disposition", "inline");
+      response.status(200).send(bytes);
+    } catch (error) { next(error); }
+  });
+
   app.get("/api/account/avatar/:version", requireAccount, async (request, response, next) => {
     const user = identityOf(response).user!;
     if (!user.avatarVersion || request.params.version !== user.avatarVersion) {
@@ -1001,6 +1023,20 @@ export function createApp(options: CreateAppOptions = {}) {
     const content = typeof value === "string" ? value.trim() : "";
     return content.length >= 1 && content.length <= 1_000 ? content : null;
   };
+  const publicMessage = (message: MessageDto, avatarUrl: string | null) => {
+    const { authorUserId: _authorUserId, ...rest } = message;
+    return { ...rest, avatarUrl };
+  };
+  const attachMessageAvatars = async (items: MessageDto[]) => {
+    const ids = [...new Set(items.flatMap((item) => item.authorUserId ? [item.authorUserId] : []))];
+    const users = await Promise.all(ids.map((id) => studyStore.getUserById(id)));
+    const urlByUser = new Map(ids.map((id, index) => [id, publicAvatarUrl(users[index]?.avatarVersion)]));
+    return items.map((item) => publicMessage(item, item.authorUserId ? urlByUser.get(item.authorUserId) ?? null : null));
+  };
+  const publicMessagePage = async (page: MessagePage) => ({
+    items: await attachMessageAvatars(page.items),
+    ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
+  });
   const requireMessageAdmin = (response: express.Response): boolean => {
     const user = identityOf(response).user;
     if (hasCapability(user, "messages.moderate")) return true;
@@ -1032,7 +1068,7 @@ export function createApp(options: CreateAppOptions = {}) {
       response.status(400).json(apiError("INVALID_MESSAGE_QUERY", "Message query is invalid"));
       return;
     }
-    try { response.status(200).json(await engagementStore.listMessages(actor, cursor, limit)); } catch (error) { next(error); }
+    try { response.status(200).json(await publicMessagePage(await engagementStore.listMessages(actor, cursor, limit))); } catch (error) { next(error); }
   });
 
   app.post("/api/messages", enforceMessagePostingLimit, async (request, response, next) => {
@@ -1048,7 +1084,7 @@ export function createApp(options: CreateAppOptions = {}) {
     try {
       const created = await engagementStore.createMessage(actor, { content, ...(nickname ? { nickname } : {}), ...(contact ? { contact } : {}), ...(parentId ? { parentId } : {}) });
       if (!created) response.status(404).json(apiError("PARENT_MESSAGE_NOT_FOUND", "Parent message was not found"));
-      else response.status(201).json(created);
+      else response.status(201).json((await attachMessageAvatars([created]))[0]);
     } catch (error) { next(error); }
   });
 
@@ -1060,7 +1096,7 @@ export function createApp(options: CreateAppOptions = {}) {
       const result = await engagementStore.editMessage(actor, id, content);
       if (!result) response.status(404).json(apiError("MESSAGE_NOT_FOUND", "Message was not found"));
       else if (result === "forbidden") response.status(403).json(apiError("MESSAGE_EDIT_FORBIDDEN", "Message can no longer be edited"));
-      else response.status(200).json(result);
+      else response.status(200).json((await attachMessageAvatars([result]))[0]);
     } catch (error) { next(error); }
   });
 

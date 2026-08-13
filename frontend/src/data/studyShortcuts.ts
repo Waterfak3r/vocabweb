@@ -12,10 +12,10 @@ export type StudyShortcutAction =
 export type StudyShortcutPreferences = Record<StudyShortcutAction, string>
 
 export const DEFAULT_STUDY_SHORTCUTS: StudyShortcutPreferences = {
-  unknown: 'q',
-  vague: 'w',
-  pronounce: 'enter',
-  known: 'e',
+  unknown: '1',
+  vague: '2',
+  pronounce: 'tab',
+  known: '3',
   mastered: 'r',
   flip: ' ',
   dictationPronounce: 'tab',

@@ -143,6 +143,26 @@ export class SqliteStudyStore extends BaseStore {
     await db.backup(destination);
   }
 
+  override async getUserAvatarByVersion(version: string): Promise<AccountAvatar | null> {
+    return await this.serialize(async () => {
+      const db = await this.open();
+      const row = db.prepare(`
+        SELECT a.mime_type, a.data, a.version, a.updated_at
+        FROM user_avatars a
+        JOIN users u ON u.id = a.user_id
+        WHERE a.version = ?
+      `).get(version) as AvatarRow | undefined;
+      if (!row) return null;
+      const avatar: AccountAvatar = {
+        mimeType: row.mime_type,
+        dataBase64: row.data.toString("base64"),
+        version: row.version,
+        updatedAt: row.updated_at,
+      };
+      return decodeAccountAvatar(avatar) ? avatar : null;
+    });
+  }
+
   override async getUserAvatar(userId: string): Promise<AccountAvatar | null> {
     return await this.serialize(async () => {
       const db = await this.open();
@@ -417,6 +437,7 @@ export class SqliteStudyStore extends BaseStore {
         version TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
+      CREATE UNIQUE INDEX IF NOT EXISTS user_avatars_version_idx ON user_avatars(version);
       CREATE TABLE IF NOT EXISTS sessions (
         token_hash TEXT PRIMARY KEY,
         user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,

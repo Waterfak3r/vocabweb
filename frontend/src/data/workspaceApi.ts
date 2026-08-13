@@ -62,6 +62,11 @@ export type CatalogQuery = { q?: string; exam?: CatalogExam; goal?: LearningGoal
 export type RecognitionStreak = 0 | 1 | 2
 export type LevelCounts = { l0: number; l1: number; l2: number; l3: number; l4: number }
 
+export type CatalogContributor = {
+  username: string
+  avatarUrl: string | null
+  mergedCount: number
+}
 export type CatalogWordbook = {
   id: string
   title: string
@@ -82,6 +87,7 @@ export type CatalogWordbook = {
   uploaded: boolean
   collaborationEnabled?: boolean
   openContributionCount?: number
+  contributors?: CatalogContributor[]
   latestRevision?: CatalogRevisionSummary
   /** Present on servers with community accounts; absent values render as legacy public entries. */
   visibility?: CatalogVisibility
@@ -640,6 +646,26 @@ function parseRevisionSummary(value: unknown): CatalogRevisionSummary | null {
   }
 }
 
+function parseContributors(value: unknown): CatalogContributor[] | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value)) return undefined
+  const contributors: CatalogContributor[] = []
+  for (const item of value) {
+    if (
+      !isRecord(item)
+      || !isText(item.username)
+      || !isCount(item.mergedCount)
+      || (item.avatarUrl !== null && item.avatarUrl !== undefined && !isText(item.avatarUrl))
+    ) return undefined
+    contributors.push({
+      username: item.username,
+      avatarUrl: typeof item.avatarUrl === 'string' ? item.avatarUrl : null,
+      mergedCount: item.mergedCount,
+    })
+  }
+  return contributors
+}
+
 function parseCatalog(value: unknown): CatalogWordbook | null {
   if (!isRecord(value) || !isText(value.id) || !isText(value.title) || !isText(value.description) || !isText(value.author) || !isCount(value.rating) || !isCount(value.uses) || !isText(value.createdAt) || !isText(value.shareCode) || !isCount(value.wordCount)) return null
   const exams = textArray(value.exams)
@@ -656,6 +682,8 @@ function parseCatalog(value: unknown): CatalogWordbook | null {
   if (value.openContributionCount !== undefined && !isCount(value.openContributionCount)) return null
   const latestRevision = value.latestRevision === undefined ? undefined : parseRevisionSummary(value.latestRevision)
   if (value.latestRevision !== undefined && !latestRevision) return null
+  const contributors = parseContributors(value.contributors)
+  if (value.contributors !== undefined && !contributors) return null
   const favoriteCount = isCount(value.favoriteCount) ? value.favoriteCount : 0
   return {
     id: value.id,
@@ -677,6 +705,7 @@ function parseCatalog(value: unknown): CatalogWordbook | null {
     uploaded: value.uploaded,
     collaborationEnabled: value.collaborationEnabled,
     openContributionCount: value.openContributionCount,
+    contributors,
     latestRevision: latestRevision ?? undefined,
     visibility: value.visibility,
     sourceWordbookId: value.sourceWordbookId,
